@@ -3,7 +3,7 @@ name: GHCR cleanup
 
 on:
   schedule:
-    - cron: '32 7 * * *'
+    - cron: '32 7 * * 0'
   workflow_dispatch:
     inputs:
       apply:
