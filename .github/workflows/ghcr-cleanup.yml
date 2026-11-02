@@ -1,0 +1,58 @@
+# Bound GHCR storage while preserving deployed images and OCI manifest dependencies.
+name: GHCR cleanup
+
+on:
+  schedule:
+    - cron: '32 7 * * 0'
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: Delete eligible versions (false previews the plan)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: ghcr-cleanup
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    if: github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Verify retention rules
+        run: node --test .github/scripts/ghcr-retention.test.mjs
+      - name: Read live inventory and clean obsolete images
+        env:
+          INVENTORY_KEY: ${{ secrets.GHCR_INVENTORY_SSH_KEY }}
+          INVENTORY_KNOWN_HOSTS: ${{ vars.GHCR_INVENTORY_KNOWN_HOSTS }}
+          GITHUB_TOKEN: ${{ github.token }}
+          GHCR_RETAIN_IMAGES: ${{ vars.GHCR_RETAIN_IMAGES }}
+          GHCR_APPLY: ${{ github.event_name == 'schedule' || inputs.apply }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$INVENTORY_KEY"
+          test -n "$INVENTORY_KNOWN_HOSTS"
+          key="$RUNNER_TEMP/ghcr-inventory-key"
+          hosts="$RUNNER_TEMP/ghcr-known-hosts"
+          socket="$RUNNER_TEMP/ghcr-inventory-socket"
+          trap 'ssh -F /dev/null -S "$socket" -O exit ghcr-inventory@159.89.222.183 2>/dev/null || true; rm -f "$key" "$hosts" "$socket"' EXIT
+          umask 077
+          printf '%s\n' "$INVENTORY_KEY" > "$key"
+          printf '%s\n' "$INVENTORY_KNOWN_HOSTS" > "$hosts"
+          export GHCR_INVENTORY_KEY_FILE="$key"
+          export GHCR_INVENTORY_HOSTS_FILE="$hosts"
+          export GHCR_INVENTORY_CONTROL_PATH="$socket"
+          node .github/scripts/ghcr-retention.mjs
