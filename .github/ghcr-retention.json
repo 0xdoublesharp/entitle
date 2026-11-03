@@ -1,0 +1,10 @@
+{
+  "packages": [
+    {
+      "name": "entitle-server"
+    },
+    {
+      "name": "entitle-web-runtime"
+    }
+  ]
+}
