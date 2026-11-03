@@ -359,7 +359,7 @@ export async function buyerRoutes(
         framework: product.framework,
         frameworkConfig: JSON.parse(product.framework_config),
         plan_name: plan?.name ?? "Complimentary",
-        provenance: l.provenance ?? "paid",
+        provenance: l.provenance,
         expires_at: l.expires_at == null ? null : Number(l.expires_at),
         site_allowance: l.site_allowance,
         paid_through: Number(l.paid_through),

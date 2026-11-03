@@ -1251,7 +1251,7 @@ test("private S3 destination preflight rejects public grants, policies and occup
                       Type: "Group",
                       URI: "http://acs.amazonaws.com/groups/global/AllUsers",
                     }
-                  : { Type: "CanonicalUser", ID: "owner" },
+                  : { Type: "CanonicalUser", ...(mode === "missing-owner" ? {} : { ID: "owner" }) },
               Permission: "FULL_CONTROL",
             },
           ],
@@ -1264,7 +1264,7 @@ test("private S3 destination preflight rejects public grants, policies and occup
     },
   } as unknown as InstanceType<typeof S3Client>;
   await verifyEmptyPrivatePortabilityBucket(client, "portable-fresh");
-  for (mode of ["occupied", "public", "policy", "outage", "inconsistent"])
+  for (mode of ["occupied", "public", "policy", "outage", "inconsistent", "missing-owner"])
     await assert.rejects(
       verifyEmptyPrivatePortabilityBucket(client, "portable-fresh"),
     );

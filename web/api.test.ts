@@ -64,6 +64,7 @@ test("public login requests omit session CSRF and preserve server errors with re
       assert.equal(error.message, "Try again shortly.");
       assert.equal(error.status, 429);
       assert.equal(error.requestId, "req-123");
+      assert.equal(error.code, "rate_limited");
       return true;
     },
   );

@@ -61,6 +61,9 @@ test("lifecycle email notices require verified current recipients, dedupe atomic
   const job=await db("emails").where({tenant_id:tenant.id,kind:"lifecycle"}).first();assert.ok(job);assert.equal(job.payload.includes("buyer@example.test"),false);
   const {Outbox}=await import("../src/email.ts");const {unseal}=await import("../src/crypto.ts");
   assert.equal(unseal<{to:string}>(job.payload,secret).to,"buyer@example.test");
+  const message = unseal<import("../src/email.ts").Message>(job.payload, secret);
+  assert.match(message.html ?? "", /email-content/);
+  assert.ok(message.html?.includes(new Date(now + 86400000).toISOString()));
   let sent=0;await new Outbox(db,secret,{send:async()=>{sent++;}},tenant,0).run();assert.equal(sent,0);
   assert.equal((await db("emails").where({tenant_id:tenant.id,id:job.id}).first()).attempts,0);
   await db("emails").where({tenant_id:tenant.id,id:job.id}).update({available_at:0});

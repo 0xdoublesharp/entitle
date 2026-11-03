@@ -138,8 +138,11 @@ let keys = [
   },
 ];
 const routes = new Map<string, (call: Call) => Response | Promise<Response>>();
-const denied = (status = 401, message = "Please sign in.") =>
-  Response.json({ error: { message, requestId: "request-ref" } }, { status });
+const denied = (status = 401, message = "Please sign in.", code?: string) =>
+  Response.json(
+    { error: { message, code, requestId: "request-ref" } },
+    { status },
+  );
 const fetcher: typeof fetch = async (input, init = {}) => {
   const call = {
     path: String(input),
@@ -373,7 +376,7 @@ test("a configured platform does not require a connected seller account or price
   await mount("/seller", () => {
     getOverview = () => ({ ...overview(), billingAvailable: true });
     routes.set("GET /api/v1/tenants/alpha/seller/prices", () =>
-      denied(409, "Connect a Stripe account first."),
+      denied(409, "Connect a Stripe account first.", "stripe_not_connected"),
     );
   });
   await click("Products");
@@ -506,17 +509,27 @@ test("hosted dashboard discloses its configured fee separately from Stripe charg
   assert.match(text(), /1% application fee/);
   assert.match(text(), /Stripe.*fees.*separate/i);
 });
-test("unconnected Stripe accounts keep the dashboard and connection action available", async () => {
+test("unconnected Stripe accounts load without an error and keep optional billing available", async () => {
   await mount("/seller", () => {
+    getOverview = () => ({ ...overview(), billingAvailable: true });
     routes.set("GET /api/v1/tenants/alpha/seller/prices", () =>
-      denied(409, "Connect a Stripe account first."),
+      denied(409, "Connect a Stripe account first.", "stripe_not_connected"),
     );
     routes.set("POST /api/v1/tenants/alpha/seller/stripe/connect", () =>
       Response.json({ url: "https://stripe.example.test/connect" }),
     );
   });
   assert.match(text(), /Your workspace in numbers/);
-  assert.match(text(), /Connect a Stripe account first/);
+  assert.equal(
+    dom.document.querySelector('[role="alert"]')?.textContent ?? "",
+    "",
+  );
+  assert.doesNotMatch(text(), /Connect a Stripe account first/);
+  await click("Billing");
+  assert.match(
+    el("#seller-panel-billing").textContent || "",
+    /Stripe is optional/,
+  );
   await click("Connect Stripe");
   assert.deepEqual(redirects, ["https://stripe.example.test/connect"]);
   await click("Products");
@@ -525,6 +538,27 @@ test("unconnected Stripe accounts keep the dashboard and connection action avail
     el<HTMLButtonElement>('#product-create button[type="submit"]').disabled,
     false,
   );
+  assert.equal(el<HTMLInputElement>("#include-paid-plan").checked, false);
+  await click("Licenses");
+  assert.ok(dom.document.querySelector("#complimentary-issue"));
+  routes.delete("GET /api/v1/tenants/alpha/seller/prices");
+  await click("Refresh dashboard");
+  await click("Products");
+  assert.equal(el<HTMLInputElement>("#include-paid-plan").checked, true);
+  assert.equal(el<HTMLSelectElement>("#price-id").value, "price_annual");
+});
+
+test("unexpected price conflicts remain visible", async () => {
+  await mount("/seller", () => {
+    routes.set("GET /api/v1/tenants/alpha/seller/prices", () =>
+      denied(409, "Price catalog conflict.", "price_catalog_conflict"),
+    );
+  });
+  assert.match(
+    el('[role="alert"]').textContent || "",
+    /Price catalog conflict.*request-ref/,
+  );
+  assert.match(text(), /Your workspace in numbers/);
 });
 
 test("a temporary price outage preserves workspace data and recovers on refresh", async () => {
@@ -712,6 +746,40 @@ test("seller overview displays real private metrics with exact separate currenci
       .every((c) => c.path.startsWith("/api/v1/tenants/alpha/seller/")),
   );
 });
+test("authenticated sellers discard emailed sign-in links on arrival and hash changes", async () => {
+  await mount("/seller#seller-login=old-secret");
+  assert.equal(dom.location.hash, "");
+  assert.match(text(), /seller@example.test/);
+  assert.doesNotMatch(text(), /Confirm seller sign in/);
+  dom.location.hash = "#seller-login=another-secret";
+  dom.dispatchEvent(new dom.HashChangeEvent("hashchange"));
+  await flush();
+  assert.equal(dom.location.hash, "");
+  assert.doesNotMatch(text(), /Confirm seller sign in/);
+  assert.equal(calls.some((c) => c.path.endsWith("/auth/consume")), false);
+  await click("Sign out");
+  assert.match(text(), /Sign in to sell/);
+  assert.doesNotMatch(text(), /Confirm seller sign in/);
+});
+
+test("seller sign-in confirmation waits for the initial session lookup", async () => {
+  let resolve!: (value: Response) => void;
+  const pending = new Promise<Response>((done) => {
+    resolve = done;
+  });
+  await mount("/seller#seller-login=pending-secret", () => {
+    signed = false;
+    routes.set("GET /api/v1/platform/me", () => pending);
+  });
+  assert.equal(dom.location.hash, "");
+  assert.match(text(), /Loading seller session/);
+  assert.doesNotMatch(text(), /Confirm seller sign in/);
+  resolve(denied());
+  await flush();
+  assert.equal(button("Confirm seller sign in").disabled, false);
+  assert.equal(calls.some((c) => c.path.endsWith("/auth/consume")), false);
+});
+
 test("seller email token clears before requests and requires explicit confirmation; cancel and hash changes work", async () => {
   await mount("/seller#seller-login=first-secret", () => {
     signed = false;
@@ -733,6 +801,7 @@ test("seller email token clears before requests and requires explicit confirmati
   await flush();
   await click("Confirm seller sign in");
   assert.match(text(), /seller@example.test/);
+  assert.doesNotMatch(text(), /Confirm seller sign in/);
   await click("Sign out");
   assert.match(text(), /Sign in to sell/);
   await input("#seller-email", " person@example.test ");
@@ -1241,22 +1310,22 @@ test("missing or cleared upload files never send publication bytes", async () =>
   );
 });
 
-test("an in-flight seller request cannot be duplicated and a failed sign-in retains the owner session", async () => {
+test("an in-flight seller request cannot be duplicated and a failed sign-in stays signed out", async () => {
   let resolve!: (value: Response) => void;
   const pending = new Promise<Response>((done) => {
     resolve = done;
   });
-  await mount("/seller#seller-login=invalid", () =>
-    routes.set("POST /api/v1/platform/auth/request", () => pending),
-  );
+  await mount("/seller#seller-login=invalid", () => {
+    signed = false;
+    routes.set("POST /api/v1/platform/auth/request", () => pending);
+  });
   routes.set("POST /api/v1/platform/auth/consume", () =>
     denied(401, "Invalid link."),
   );
   await click("Confirm seller sign in");
-  assert.match(text(), /seller@example.test/);
+  assert.match(text(), /Sign in to sell/);
   assert.match(text(), /Invalid link/);
   await click("Cancel sign in");
-  await click("Sign out");
   await input("#seller-email", "seller@example.test");
   const form = el("#seller-login");
   const submitEvent = () =>
@@ -2421,6 +2490,38 @@ test("email change deduplicates links and resets proofs for a different request"
   await click("Sign out");
   assert.equal(dom.sessionStorage.length, 0);
 });
+test("email change remains usable when session storage cannot save proofs", async () => {
+  const storage = dom.sessionStorage;
+  const descriptor = Object.getOwnPropertyDescriptor(dom, "sessionStorage");
+  Object.defineProperty(dom, "sessionStorage", {
+    configurable: true,
+    value: { getItem: storage.getItem.bind(storage), removeItem: storage.removeItem.bind(storage), setItem: () => { throw Error("Storage disabled"); } },
+  });
+  try {
+    await mount("/seller#account-email-change=request-id&token=current-proof");
+    await click("Account security");
+    await click("Use link from current mailbox");
+    assert.equal(el<HTMLInputElement>("#changeId").value, "request-id");
+    assert.equal(el<HTMLInputElement>("#currentToken").value, "current-proof");
+  } finally {
+    if (descriptor) Object.defineProperty(dom, "sessionStorage", descriptor);
+    else Reflect.deleteProperty(dom, "sessionStorage");
+  }
+});
+
+test("complimentary issuance rejects fractional seats and past expiration before confirmation", async () => {
+  await mount("/seller");
+  await click("Licenses");
+  await input("#complimentary-email", "pilot@example.test");
+  for (const [allowance, expiry] of [["1.5", "2030-06-01T12:00"], ["100001", "2030-06-01T12:00"], ["1", "2020-01-01T12:00"]]) {
+    await input("#complimentary-allowance", allowance!);
+    await input("#complimentary-expiry", expiry!);
+    await submit("#complimentary-issue");
+    assert.match(text(), /Choose an installation allowance from 1 to 100000 and a future expiration date/);
+    assert.ok(!calls.some((call) => call.path.endsWith("/licenses/complimentary")));
+  }
+});
+
 test("email change restores only unexpired proofs belonging to the current seller", async () => {
   const draft = {
     id: "request-id",
@@ -2430,6 +2531,8 @@ test("email change restores only unexpired proofs belonging to the current selle
   };
   for (const stored of [
     "not-json",
+    JSON.stringify({ sellerId: "seller", expiresAt: Date.now() + 900000, draft: null }),
+    JSON.stringify({ sellerId: "seller", expiresAt: Date.now() + 900000, draft: "invalid" }),
     JSON.stringify({ sellerId: "seller", expiresAt: Date.now() - 1, draft }),
     JSON.stringify({
       sellerId: "another-seller",
@@ -2449,6 +2552,29 @@ test("email change restores only unexpired proofs belonging to the current selle
     assert.equal(el<HTMLInputElement>("#currentToken").value, "");
     assert.equal(dom.sessionStorage.length, 0);
   }
+});
+
+test("queued seller-session retries retain this seller's proofs and clear them after an identity change", async () => {
+  await mount("/seller#account-email-change=request-id&token=current-proof", () => {
+    routes.set("GET /api/v1/platform/me", () => denied(503, "Session unavailable"));
+  });
+  const retry = button("Retry session");
+  let sellerId = "seller";
+  routes.set("GET /api/v1/platform/me", () => Response.json({ user: { id: sellerId, email: `${sellerId}@example.test` }, csrfToken: "csrf", tenants }));
+  const retrySession = async () => {
+    retry.dispatchEvent(new dom.MouseEvent("click", { bubbles: true }));
+    await flush();
+  };
+  await retrySession();
+  assert.equal(el<HTMLInputElement>("#changeId").value, "request-id");
+  await retrySession();
+  assert.equal(el<HTMLInputElement>("#changeId").value, "request-id");
+  sellerId = "another-seller";
+  await retrySession();
+  assert.match(text(), /another-seller@example.test/);
+  assert.equal(dom.sessionStorage.length, 0);
+  await click("Account security");
+  assert.equal(el<HTMLInputElement>("#changeId").value, "");
 });
 test("security survives restricted workspace access and revoking the current session clears the seller", async () => {
   await mount("/seller", () => {

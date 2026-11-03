@@ -1017,7 +1017,7 @@ test("default Nodemailer transport authenticates to a real SMTP sink and drains 
   assert.equal((await f.post("/seller/jobs/run")).statusCode, 200);
   assert.equal(smtp.messages.length, 1);
   assert.match(smtp.messages[0]!, /To: alice@example.test/);
-  assert.match(smtp.messages[0]!, /Subject: Sign in to Doublesharp Entitle/);
+  assert.match(smtp.messages[0]!, /Subject: Primary: Sign in/);
   assert.match(smtp.messages[0]!, /Content-Type: multipart\/alternative;/);
   assert.match(smtp.messages[0]!, /Content-Type: text\/plain; charset=utf-8/);
   assert.match(smtp.messages[0]!, /Content-Type: text\/html; charset=utf-8/);

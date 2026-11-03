@@ -4,7 +4,7 @@ import type { DB, Tx, License, Installation, Customer, TenantContext } from "./d
 import { hash, random, seal, unseal } from "./crypto.ts";
 import { check } from "./errors.ts";
 import { enqueueEmail } from "./email.ts";
-import { site } from "./site.ts";
+import { licenseKeyEmail } from "./transactional-email.ts";
 import { lock } from "./db.ts";
 import { z } from "zod";
 import { activationKind, validateFramework, validateFrameworkConfig } from "./frameworks.ts";
@@ -141,6 +141,10 @@ export class Licenses {
       .where({ tenant_id: this.tenant.id, id: l.customer_id })
       .first();
     check(c, 404, "not_found", "Customer not found.");
+    const product = await tx("products")
+      .where({ tenant_id: this.tenant.id, id: l.product_id })
+      .first("name");
+    check(product, 404, "not_found", "Product not found.");
     await enqueueEmail(
       tx,
       this.secret,
@@ -148,11 +152,7 @@ export class Licenses {
       c.id,
       l.id,
       "license_key",
-      {
-        to: c.email,
-        subject: `Your ${site.name} license key`,
-        text: `Your license key is ${key}\n\n${l.provenance === "complimentary" ? `This is a complimentary license. Access to new activations, downloads and updates expires at ${new Date(entitlementEnd(l)).toISOString()}. You will not be charged automatically or enrolled in a subscription.\n\n` : ""}Save this key securely. If it is lost, request an email login link on the customer website and replace it. Key replacement revokes existing activation tokens; reconnect your sites with the new key. Expiration and service outages never disable installed functionality.`,
-      },
+      licenseKeyEmail(c.email, key, { publisher: this.tenant.name, product: product.name }, l.provenance === "complimentary" ? new Date(entitlementEnd(l)).toISOString() : undefined),
       this.tenant.id,
     );
   }

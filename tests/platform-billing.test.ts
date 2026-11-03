@@ -256,6 +256,16 @@ beforeEach(async () => {
     ]),
   );
 });
+
+test("the platform Stripe client is configured lazily, reused, and can be explicitly replaced", () => {
+  const service = new Billing(db, { ...config, stripeSecret: "sk_test_lazy_fixture" });
+  const client = service.stripe;
+  assert.equal(service.stripe, client);
+  service.stripe = stripe;
+  assert.equal(service.stripe, stripe);
+  const unconfigured = new Billing(db, { ...config, stripeSecret: "" });
+  assert.throws(() => unconfigured.stripe, /Stripe billing is not configured/);
+});
 after(async () => {
   await database.close();
   await new Promise<void>((r) => server.close(() => r()));

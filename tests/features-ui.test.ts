@@ -1283,6 +1283,19 @@ test("email change receives new link props without losing a previously assigned 
   await input("currentToken", "corrected-current-proof");
   assert.equal(emailChangeState.value?.currentToken, "corrected-current-proof");
 });
+test("email change keeps empty draft fields and ignores a second queued use of the same link", async () => {
+  handler = () => ({ sessions: [] });
+  await mount("security");
+  await input("currentToken", "entered-proof");
+  assert.equal(emailChangeState.value?.id, "");
+  await mount("security", true, false, undefined, "", { id: "request-id", currentToken: "", newToken: "", pendingTokens: ["current-proof"] });
+  const button = [...dom.document.querySelectorAll("button")].find((node) => node.textContent === "Use link from current mailbox")!;
+  button.click(); button.click();
+  await flush();
+  assert.equal(emailChangeState.value?.currentToken, "current-proof");
+  assert.deepEqual(emailChangeState.value?.pendingTokens, []);
+});
+
 test("email change requires distinct mailbox proofs and a replacement request clears old credentials", async () => {
   handler = (path) =>
     path.endsWith("/email-change/request")

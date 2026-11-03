@@ -1,11 +1,13 @@
 export class ApiError extends Error {
   status: number;
   requestId: string | undefined;
-  constructor(message: string, status = 0, requestId?: string) {
+  code: string | undefined;
+  constructor(message: string, status = 0, requestId?: string, code?: string) {
     super(message);
     this.name = "ApiError";
     this.status = status;
     this.requestId = requestId;
+    this.code = code;
   }
 }
 
@@ -40,13 +42,14 @@ export class ApiClient {
     }
     if (!response.ok) {
       const body = (await response.json().catch(() => null)) as {
-        error?: { message?: string; requestId?: string };
+        error?: { message?: string; requestId?: string; code?: string };
       } | null;
       throw new ApiError(
         body?.error?.message ||
           "The request could not be completed. Please try again.",
         response.status,
         body?.error?.requestId,
+        body?.error?.code,
       );
     }
     if (response.status === 204) return undefined as T;

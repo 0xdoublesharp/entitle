@@ -77,6 +77,31 @@ Mailpit and S3 delivery to a local engine test real protocols, but do not establ
 the behavior of an external provider account. Qualify actual Stripe test-mode
 Checkout, Elements, Portal, refunds, disputes and connected accounts separately.
 
+For the local StripeDouble integration, install Python 3.15.2 and make the
+[`doublesharp/stripe-double`](https://github.com/doublesharp/stripe-double)
+checkout available next to this repository, or set
+`STRIPE_DOUBLE_APP` to its absolute path. The harness launches and owns a fresh
+simulator with Entitle's `2026-09-30.endive` profile, keeps synthetic credentials
+in private pipes, and removes its task-owned Scratch state after shutdown:
+
+```sh
+TMPDIR=/Volumes/Scratch/entitle/tmp PYTHONDONTWRITEBYTECODE=1 \
+  pnpm test:stripe-double
+```
+
+`STRIPE_DOUBLE_WORK_ROOT` selects another existing private Scratch directory;
+`NODE_BINARY` selects the Node executable used for the consumer check. The test
+exercises a synthetic subscription and partial refund through Entitle's actual
+Stripe billing snapshot, CLI and MCP product configuration against the simulated
+annual price, and Entitle's hosted Checkout, portal cancellation and Elements
+session creation. The hosted pages are exercised over HTTP with synthetic data;
+this is not a browser journey. StripeDouble also provides synthetic OAuth, but
+this check does not exercise it. Elements secrets are placeholders and do not
+work with Stripe.js. Real Stripe behavior still requires separate provider
+qualification. The test uses the checkout supplied locally; update it separately
+to test a newer StripeDouble revision. The current check was verified against
+StripeDouble commit `d060b03dabef112c01d3e0b102a2ae117b912a8c`.
+
 ## Invariant and fuzz tests
 
 The bounded fast-check suites are included in `pnpm test`. They generate license,

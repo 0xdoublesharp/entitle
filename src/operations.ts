@@ -5,6 +5,7 @@ import { hash } from "./crypto.ts";
 import { AppError, check } from "./errors.ts";
 import type { OutboundWebhooks } from "./outbound-webhooks.ts";
 import { enqueueEmail } from "./email.ts";
+import { lifecycleEmail } from "./transactional-email.ts";
 
 const settingsSchema = z.object({
   failureThreshold: z.number().int().min(1).max(1000000),
@@ -159,6 +160,8 @@ export class Operations {
       const rows=await tx("operation_notifications as n")
         .join("customers as c",function(){this.on("c.tenant_id","=","n.tenant_id").andOn("c.id","=","n.customer_id");})
         .join("licenses as l",function(){this.on("l.tenant_id","=","n.tenant_id").andOn("l.id","=","n.license_id");})
+        .join("products as p",function(){this.on("p.tenant_id","=","l.tenant_id").andOn("p.id","=","l.product_id");})
+        .join("tenants as t","t.id","l.tenant_id")
         .where({"n.tenant_id":this.tenantId,"n.dismissed":0,"l.revoked":0,"l.refund_revoked":0,"l.suspended":0})
         .whereRaw("?? = ??",["n.paid_through","l.paid_through"]).whereNot("c.email","like","%.invalid")
         .where(function(){
@@ -169,10 +172,9 @@ export class Operations {
           this.where(function(){this.where("n.kind","expired").andWhere("n.paid_through","<=",now);})
             .orWhere(function(){this.where("n.kind","canceled_no_autorenew").andWhere("l.billing_status","canceled").andWhere("n.paid_through",">",now);})
             .orWhere(function(){this.where("n.kind","expiry_approaching").andWhere("n.paid_through",">",now).andWhere("n.paid_through","<=",now+settings.warningDays*86400000);});
-        }).select("n.id","n.customer_id","n.license_id","n.kind","n.paid_through","c.email").orderBy("n.created_at").orderBy("n.id").limit(limit);
+        }).select("n.id","n.customer_id","n.license_id","n.kind","n.paid_through","c.email","p.name as product_name","t.name as publisher_name").orderBy("n.created_at").orderBy("n.id").limit(limit);
       for(const row of rows) {
-        const subject=row.kind==="expired" ? "Your software license has expired" : row.kind==="canceled_no_autorenew" ? "Your software license will not renew automatically" : "Your software license expires soon";
-        await enqueueEmail(tx,secret,row.id,row.customer_id,row.license_id,"lifecycle",{to:row.email,subject,text:`${subject}. Paid access ends at ${new Date(Number(row.paid_through)).toISOString()}. Sign in to your publisher account to review your license. Installed software is not removed. Renewal and payment-failure email preferences are managed by your publisher through Stripe.`},this.tenantId);
+        await enqueueEmail(tx,secret,row.id,row.customer_id,row.license_id,"lifecycle",lifecycleEmail(row.email,row.kind,new Date(Number(row.paid_through)).toISOString(),{publisher:row.publisher_name,product:row.product_name}),this.tenantId);
       }
       return rows.length;
     });

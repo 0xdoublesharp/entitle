@@ -1,8 +1,13 @@
-import { readFile, open } from "node:fs/promises";
+import { open } from "node:fs/promises";
 import { constants } from "node:fs";
 import { Readable } from "node:stream";
 import { loadConfig } from "./config.ts";
 import { createDb, migrate } from "./db.ts";
+import { genericApi } from "./cli-api.ts";
+import { readRegularFile } from "./cli-files.ts";
+import { agentOperations, runAgentCli } from "./agent-operations.ts";
+import { createExport, downloadExport } from "./agent-export.ts";
+import { loginStart, loginFinish, refreshSession, consumeVerification, activateInstallation, buyerLoginStart, buyerLoginFinish, refreshBuyerSession } from "./agent-session.ts";
 
 const tenantCommands = new Set([
   "product",
@@ -16,6 +21,10 @@ const tenantCommands = new Set([
   "jobs",
   "work",
   "demo-purchase",
+  "features",
+  "prices",
+  "operations",
+  "webhooks",
 ]);
 const operatorCommands = new Set([
   "tenants",
@@ -27,7 +36,7 @@ const operatorCommands = new Set([
   "local-tenant",
 ]);
 const usage =
-  "Commands: migrate | product [FILE] | publish PRODUCT VERSION ZIP METADATA_FILE | publish-asset PRODUCT VERSION FILE METADATA_FILE | licenses | revoke ID | restore ID | withdraw ID | reconcile [SUBSCRIPTION] | jobs | work | demo-purchase PLAN_ID EMAIL | tenants | tenant-status ID JSON_FILE | tenant-owner ID EMAIL | platform-reconcile ID | platform-jobs | platform-work | local-tenant ID JSON_FILE";
+  `Commands: migrate | product | publish | publish-asset | licenses | revoke | restore | withdraw | reconcile | jobs | work | demo-purchase | features | prices | operations | webhooks | tenants | tenant-status | tenant-owner | platform-reconcile | platform-jobs | platform-work | local-tenant | ${Object.keys(agentOperations).join(" | ")} | export-create | export-download | owner-login-start | owner-login-finish | owner-session-refresh | owner-verification-consume | buyer-login-start | buyer-login-finish | buyer-session-refresh | activation-create | api | operator-api | request. See docs/cli.md for arguments.`;
 
 export async function runCli(
   argv: string[] = process.argv.slice(2),
@@ -39,12 +48,76 @@ export async function runCli(
       env.TENANT_API_KEY,
       env.OPERATOR_TOKEN,
       env.APP_SECRET,
+      env.ENTITLE_AUTHORIZATION,
+      env.ENTITLE_COOKIE,
+      env.ENTITLE_CSRF_TOKEN,
+      env.ENTITLE_VERIFICATION,
     ])
       if (credential) message = message.split(credential).join("[redacted]");
     return message;
   }
   try {
     const [command = "", ...args] = argv;
+    if (command === "buyer-login-start") {
+      if (args.length !== 1) throw Error("Usage: buyer-login-start EMAIL");
+      await buyerLoginStart(args[0]!,env,io);
+      return 0;
+    }
+    if (command === "buyer-login-finish") {
+      if (args.length !== 2) throw Error("Usage: buyer-login-finish PRIVATE_TOKEN_FILE NEW_SESSION_FILE");
+      await buyerLoginFinish(args[0]!,args[1]!,env,io);
+      return 0;
+    }
+    if (command === "buyer-session-refresh") {
+      if (args.length !== 1) throw Error("Usage: buyer-session-refresh SESSION_FILE");
+      await refreshBuyerSession(args[0]!,env);
+      io.log(JSON.stringify({sessionFile:args[0]}));
+      return 0;
+    }
+    if (command === "owner-login-start") {
+      if (args.length !== 2) throw Error("Usage: owner-login-start EMAIL NEW_PREAUTH_FILE");
+      await loginStart(args[0]!,args[1]!,env,io);
+      return 0;
+    }
+    if (command === "owner-login-finish") {
+      if (args.length !== 3) throw Error("Usage: owner-login-finish PREAUTH_FILE PRIVATE_TOKEN_FILE NEW_SESSION_FILE");
+      await loginFinish(args[0]!,args[1]!,args[2]!,env,io);
+      return 0;
+    }
+    if (command === "owner-session-refresh") {
+      if (args.length !== 1) throw Error("Usage: owner-session-refresh SESSION_FILE");
+      await refreshSession(args[0]!,env);
+      io.log(JSON.stringify({sessionFile:args[0]}));
+      return 0;
+    }
+    if (command === "owner-verification-consume") {
+      if (args.length !== 2) throw Error("Usage: owner-verification-consume PRIVATE_BODY_JSON_FILE NEW_PROOF_FILE");
+      await consumeVerification(args[0]!,args[1]!,env,io);
+      return 0;
+    }
+    if (command === "activation-create") {
+      if (args.length !== 2) throw Error("Usage: activation-create PRIVATE_INPUT_JSON_FILE NEW_ACTIVATION_FILE");
+      await activateInstallation(args[0]!,args[1]!,env,io);
+      return 0;
+    }
+    if (command === "export-create") {
+      if (args.length !== 1) throw Error("Usage: export-create PRIVATE_BODY_JSON_FILE");
+      await createExport(args[0]!, env, io);
+      return 0;
+    }
+    if (command === "export-download") {
+      if (args.length !== 2) throw Error("Usage: export-download EXPORT_ID NEW_DIRECTORY");
+      await downloadExport(args[0]!, args[1]!, env, io);
+      return 0;
+    }
+    if (["api", "operator-api", "request"].includes(command)) {
+      await genericApi(command, args, env, io);
+      return 0;
+    }
+    if (Object.hasOwn(agentOperations, command)) {
+      await runAgentCli(command, args, env, io);
+      return 0;
+    }
     if (command === "migrate") {
       const config = loadConfig(env);
       const db = createDb(config.databaseUrl);
@@ -145,8 +218,14 @@ export async function runCli(
       return encodeURIComponent(value);
     }
     const json = async (file: string): Promise<unknown> =>
-      JSON.parse(await readFile(file, "utf8"));
+      JSON.parse((await readRegularFile(file)).toString("utf8"));
     switch (command) {
+      case "features":
+      case "prices":
+      case "operations":
+      case "webhooks":
+        await request(`/${command}`);
+        break;
       case "product":
         await request("/products", await json(args[0] ?? "product.json"));
         break;
@@ -159,7 +238,7 @@ export async function runCli(
         await request(
           `/releases/${segment(product)}/${segment(version)}`,
           undefined,
-          await readFile(file),
+          await readRegularFile(file, 100 * 1024 * 1024),
           await json(metadata),
         );
         break;
@@ -169,7 +248,7 @@ export async function runCli(
         const product = required(0, message), version = required(1, message),
           file = required(2, message), metadata = required(3, message);
         const info=await json(metadata);
-        const handle=await open(file,constants.O_RDONLY|constants.O_NOFOLLOW);
+        const handle=await open(file,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);
         try {
           const stat=await handle.stat();
           if(!stat.isFile() || stat.size<1 || stat.size>2048*1024**2)throw Error("Native artifact must be a regular file of 1 byte to 2048 MiB.");

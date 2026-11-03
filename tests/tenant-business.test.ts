@@ -11,6 +11,7 @@ import { Auth } from "../src/auth.ts";
 import { loadConfig } from "../src/config.ts";
 import { tenantMetrics,recordDownload } from "../src/metrics.ts";
 import {isolatedDatabase} from "./helpers/database.ts";
+import { Operations } from "../src/operations.ts";
 
 const secret = "13".repeat(32);
 async function fixture(run: (db: DB, a: Tenant, b: Tenant) => Promise<void>) {
@@ -43,6 +44,39 @@ async function purchased(db: DB, tenant: Tenant) {
   const key = /DE-[A-Za-z0-9_-]+/.exec(unseal<Message>(email.payload, secret).text)![0];
   return { licensing, billing, license, key };
 }
+
+test("customer emails identify the publisher and plugin without mixing tenants with shared product slugs", async () => fixture(async (db, a, b) => {
+  const config = loadConfig({ APP_SECRET: secret, OPERATOR_TOKEN: "operator-".repeat(5) });
+  for (const tenant of [a, b]) {
+    const purchase = await purchased(db, tenant);
+    await db("products").where({ tenant_id: tenant.id, id: purchase.license.product_id }).update({ name: `${tenant.name} Plugin` });
+    await purchase.licensing.replaceKey(purchase.license.id, purchase.license.customer_id);
+    await new Auth(db, config, tenant).request("same@example.test");
+    // A live customer session makes this recipient eligible for lifecycle notices.
+    await db("sessions").insert({ tenant_id: tenant.id, id: randomUUID(), customer_id: purchase.license.customer_id, expires_at: Date.now() + 86400000 });
+    const operations = new Operations(db, tenant.id);
+    await operations.scanNotifications();
+    assert.equal(await operations.enqueueLifecycleEmails(secret), 1);
+  }
+  for (const tenant of [a, b]) {
+    const foreign = tenant.id === a.id ? b : a;
+    const rows = await db("emails").where({ tenant_id: tenant.id }).whereIn("state", ["pending"]);
+    for (const kind of ["login", "license_key", "lifecycle"]) {
+      const row = rows.find((row) => row.kind === kind)!;
+      assert.ok(row, kind);
+      const message = unseal<Message>(row.payload, secret);
+      assert.ok(message.subject.startsWith(`${tenant.name}: `), message.subject);
+      for (const content of [message.text, message.html!]) {
+        assert.ok(content.includes(tenant.name));
+        if (kind !== "login") {
+          assert.ok(message.subject.includes(`${tenant.name} Plugin`));
+          assert.ok(content.includes(`${tenant.name} Plugin`));
+          assert.ok(!content.includes(`${foreign.name} Plugin`));
+        }
+      }
+    }
+  }
+}));
 
 test("identical provider IDs and emails produce independent seller licenses and seats", async () => fixture(async (db, a, b) => {
   const aa = await purchased(db, a), bb = await purchased(db, b);

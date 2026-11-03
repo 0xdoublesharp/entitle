@@ -208,6 +208,23 @@ export async function sellerRoutes(
         (await new PublisherSandboxes(db, config).describe(tenant.id)) ?? null,
     };
   });
+  app.get("/licenses/:id", async (req) => {
+    const { db, tenant } = context(req);
+    const { id } = z.object({ id: z.string().min(1).max(64) }).parse(req.params);
+    const { after, limit } = z.object({ after: z.string().min(1).max(64).optional(), limit: z.coerce.number().int().min(1).max(500).default(100) }).strict().parse(req.query);
+    const license = await db("licenses")
+      .join("customers", function () { this.on("customers.id", "=", "licenses.customer_id").andOn("customers.tenant_id", "=", "licenses.tenant_id"); })
+      .join("products", function () { this.on("products.id", "=", "licenses.product_id").andOn("products.tenant_id", "=", "licenses.tenant_id"); })
+      .leftJoin("plans", function () { this.on("plans.id", "=", "licenses.plan_id").andOn("plans.tenant_id", "=", "licenses.tenant_id"); })
+      .where({ "licenses.tenant_id": tenant.id, "licenses.id": id })
+      .first("licenses.id", "licenses.customer_id", "licenses.product_id", "licenses.site_allowance", "licenses.paid_through", "licenses.billing_status", "licenses.provenance", "licenses.expires_at", "licenses.internal_note", "licenses.issued_at", "licenses.revoked", "licenses.refund_revoked", "licenses.suspended", {product_name:"products.name",plan_name:"plans.name",customer_email:"customers.email"});
+    check(license, 404, "not_found", "License not found.");
+    const query = db("installations").where({ tenant_id:tenant.id, license_id:id }).orderBy("id").limit(limit+1).select("id","site_url","label","active","exempt");
+    if (after) query.andWhere("id", ">", after);
+    const rows=await query;
+    const page=rows.slice(0,limit);
+    return {license:{...license,plan_name:license.plan_name??"Complimentary",expires_at:license.expires_at===null?null:Number(license.expires_at),paid_through:Number(license.paid_through),revoked:!!license.revoked||!!license.refund_revoked,suspended:!!license.suspended},installations:page.map((item)=>({...item,active:!!item.active,exempt:!!item.exempt})),nextCursor:rows.length>limit?page.at(-1)!.id:null};
+  });
   app.get("/prices", async (req) => {
     const { tenant, stripe, config, reads } = context(req);
     if (config.localBilling)

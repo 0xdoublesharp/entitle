@@ -116,6 +116,8 @@ async function purchase() {
   );
   const message = outbox.message(email);
   const key = /DE-[A-Za-z0-9_-]+/.exec(message.text)![0];
+  assert.ok(message.html?.includes(key), "license email includes the key in HTML");
+  assert.match(message.html ?? "", /email-content/);
   return { license, key };
 }
 test("only confirmed paid grants issue one license and one recoverable key email on retries", async () => {
