@@ -956,7 +956,7 @@ export function mountSellerApp(
                       ).open;
                     },
                   },
-                  [h("summary", "New publisher workspace"), workspaceForm()],
+                  [h("summary", "New workspace"), workspaceForm()],
                 ),
             ],
           );
@@ -2802,35 +2802,55 @@ export function mountSellerApp(
             h("a", { href: "#main", class: "skip-link" }, "Skip to content"),
             appHeader(),
             h("main", { id: "main", class: "page-main seller-main" }, [
-              seller.value &&
-                seller.value.tenants.length > 0 &&
-                workspaceControls(),
-              h("div", { class: "page-heading" }, [
-                h("div", [
-                  h("p", { class: "eyebrow" }, "Publisher workspace"),
-                  h(
-                    "h1",
-                    overview.value
-                      ? sellerPages.find(
-                          (page) => page.id === activePage.value,
-                        )!.label
-                      : recovery.value
-                        ? "Workspace recovery"
-                        : "Your software business",
-                  ),
-                  seller.value && h("p", seller.value.user.email),
-                ]),
-                seller.value &&
-                  btn(
-                    "Sign out",
-                    () =>
-                      void run(async () => {
-                        await platform.post("/auth/logout", {});
-                        clearSession();
-                      }),
-                    busy.value,
-                  ),
-              ]),
+              h(
+                "header",
+                {
+                  class: [
+                    "seller-page-header",
+                    seller.value?.tenants.length
+                      ? hosted.value
+                        ? "seller-header-publisher"
+                        : "seller-header-standalone"
+                      : "seller-header-simple",
+                  ],
+                },
+                [
+                  h("div", { class: "page-heading" }, [
+                    !(seller.value?.tenants.length && hosted.value) &&
+                      h("p", { class: "eyebrow" }, "Publisher workspace"),
+                    h(
+                      "h1",
+                      overview.value
+                        ? sellerPages.find(
+                            (page) => page.id === activePage.value,
+                          )!.label
+                        : recovery.value
+                          ? "Workspace recovery"
+                          : "Your software business",
+                    ),
+                  ]),
+                  seller.value &&
+                    seller.value.tenants.length > 0 &&
+                    workspaceControls(),
+                  seller.value &&
+                    h("div", { class: "seller-account" }, [
+                      h(
+                        "p",
+                        { class: "seller-account-email" },
+                        seller.value.user.email,
+                      ),
+                      btn(
+                        "Sign out",
+                        () =>
+                          void run(async () => {
+                            await platform.post("/auth/logout", {});
+                            clearSession();
+                          }),
+                        busy.value,
+                      ),
+                    ]),
+                ],
+              ),
               overview.value?.sandbox?.isSandbox &&
                 h(
                   "aside",

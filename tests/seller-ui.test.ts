@@ -496,7 +496,7 @@ test("standalone dashboard hides hosted controls and discloses zero application 
   );
   assert.doesNotMatch(
     text(),
-    /Connect Stripe|New publisher workspace|Subscribe to Doublesharp Entitle|Platform trial ends/,
+    /Connect Stripe|New workspace|Subscribe to Doublesharp Entitle|Platform trial ends/,
   );
   assert.match(
     text(),
