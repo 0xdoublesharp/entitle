@@ -23,13 +23,15 @@ export const freeLicenseOffersSchema = z.array(z.object({
   product: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).max(100),
   campaign: z.string().regex(/^[a-zA-Z0-9_-]{1,40}$/),
   siteAllowance: z.number().int().min(1).max(100),
-  expiresAt: z.iso.datetime().transform(value => Date.parse(value)),
+  expiresAt: z.iso.datetime().transform(value => Date.parse(value)).optional(),
+  durationDays: z.number().int().min(1).max(365).optional(),
   origins: z.array(z.url().refine(value => {
     const url = new URL(value);
     return url.origin === value && url.protocol === "https:";
   }, "Use an exact HTTPS origin without a path or credentials.")).min(1).max(10),
   dailyLimit: z.number().int().min(1).max(1000).default(50),
-}).strict()).max(100).refine(offers => new Set(offers.map(offer => `${offer.tenant}/${offer.product}`)).size === offers.length,
+}).strict().refine(offer => (offer.expiresAt !== undefined) !== (offer.durationDays !== undefined),
+  "Choose either expiresAt or durationDays for an offer.")).max(100).refine(offers => new Set(offers.map(offer => `${offer.tenant}/${offer.product}`)).size === offers.length,
   "Only one free offer per tenant/product is allowed.");
 export type FreeLicenseOffer = z.infer<typeof freeLicenseOffersSchema>[number];
 
