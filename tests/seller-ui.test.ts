@@ -496,7 +496,7 @@ test("standalone dashboard hides hosted controls and discloses zero application 
   );
   assert.doesNotMatch(
     text(),
-    /Connect Stripe|New workspace|Subscribe to Doublesharp Entitle|Platform trial ends/,
+    /Connect Stripe|New publisher workspace|Subscribe to Doublesharp Entitle|Platform trial ends/,
   );
   assert.match(
     text(),
@@ -667,10 +667,16 @@ test("public docs own the setup guide and current server limits for either direc
     assert.equal(el("main h1").textContent, "Documentation");
     assert.match(
       el("#getting-started").textContent,
-      /Create your seller workspace/,
+      /Create your publisher workspace/,
     );
-    assert.match(el("#complimentary-licenses").textContent, /Issue complimentary license/);
-    assert.match(el("#complimentary-licenses").textContent, /never automatically charged or enrolled/);
+    assert.match(
+      el("#complimentary-licenses").textContent,
+      /Issue complimentary license/,
+    );
+    assert.match(
+      el("#complimentary-licenses").textContent,
+      /never automatically charged or enrolled/,
+    );
     assert.match(el("#server-limits").textContent, /25 MiB/);
     assert.match(text(), /SQLite/);
     assert.match(text(), /merchant of record/i);
@@ -748,6 +754,114 @@ test("seller overview displays real private metrics with exact separate currenci
       .every((c) => c.path.startsWith("/api/v1/tenants/alpha/seller/")),
   );
 });
+test("publisher workspaces explain their products, sort business names and open the product list", async () => {
+  for (const count of [0, 1, 4]) {
+    await mount("/seller?tenant=alpha", () => {
+      tenants = [
+        { ...tenant, name: "Validated Field" },
+        {
+          ...tenant,
+          id: "b",
+          slug: "remote",
+          name: "Remote Content Shortcode",
+        },
+        {
+          ...tenant,
+          id: "c",
+          slug: "remote-sandbox",
+          name: "Remote Content Shortcode · Sandbox",
+        },
+        {
+          ...tenant,
+          id: "d",
+          slug: "validated-sandbox",
+          name: "Validated Field · Sandbox",
+        },
+      ];
+      getOverview = () => {
+        const data = overview();
+        return {
+          ...data,
+          tenant: { ...tenant, name: "Doublesharp" },
+          products: Array.from({ length: count }, (_, index) => ({
+            ...data.products[0]!,
+            id: `p${index}`,
+            name: `Plugin ${index + 1}`,
+          })),
+        };
+      };
+    });
+    const selector = el<HTMLSelectElement>("#tenant-select");
+    assert.equal(selector.value, "alpha");
+    assert.deepEqual(
+      [...selector.options].map((option) => option.textContent),
+      [
+        "Remote Content Shortcode",
+        "Remote Content Shortcode · Sandbox",
+        "Validated Field",
+        "Validated Field · Sandbox",
+      ],
+    );
+    assert.match(
+      el("#workspace-selector-hint").textContent!,
+      /business or brand/,
+    );
+    const hierarchy = el(".workspace-structure");
+    assert.match(hierarchy.textContent!, /Publisher workspaceDoublesharp/);
+    assert.match(hierarchy.textContent!, /Products · plugins & apps/);
+    assert.match(
+      hierarchy.textContent!,
+      /All products share.*Stripe connection/,
+    );
+    if (count === 4)
+      assert.match(
+        hierarchy.textContent!,
+        /Plugin 1 · Plugin 2 · Plugin 3 · \+1 more/,
+      );
+    const before = calls.length;
+    el<HTMLButtonElement>(".workspace-structure button").click();
+    await flush();
+    assert.equal(el("h1").textContent, "Products");
+    assert.match(
+      el(".product-scope").textContent!,
+      /Plugins and apps published by Doublesharp/,
+    );
+    assert.equal(calls.length, before);
+  }
+});
+
+test("licenses with missing expiration dates remain pending and sort after known dates", async () => {
+  await mount("/seller", () => {
+    getOverview = () => {
+      const data = overview(),
+        base = data.licenses[0]!;
+      return {
+        ...data,
+        licenses: [
+          {
+            ...base,
+            id: "pending-a",
+            provenance: "complimentary" as const,
+            expires_at: null,
+          },
+          { ...base, id: "pending-b", paid_through: null },
+          { ...base, id: "dated", paid_through: 4102444800000 },
+        ],
+      };
+    };
+  });
+  await click("Licenses");
+  await click("Paid through / Expires");
+  const ids = () =>
+    [
+      ...dom.document.querySelectorAll("#licenses-table tr[data-license-id]"),
+    ].map((row) => row.getAttribute("data-license-id"));
+  assert.deepEqual(ids(), ["dated", "pending-a", "pending-b"]);
+  await click("Paid through / Expires");
+  assert.deepEqual(ids(), ["dated", "pending-a", "pending-b"]);
+  await input("#license-access", "pending", "change");
+  assert.equal(ids().length, 2);
+});
 test("authenticated sellers discard emailed sign-in links on arrival and hash changes", async () => {
   await mount("/seller#seller-login=old-secret");
   assert.equal(dom.location.hash, "");
@@ -758,7 +872,10 @@ test("authenticated sellers discard emailed sign-in links on arrival and hash ch
   await flush();
   assert.equal(dom.location.hash, "");
   assert.doesNotMatch(text(), /Confirm seller sign in/);
-  assert.equal(calls.some((c) => c.path.endsWith("/auth/consume")), false);
+  assert.equal(
+    calls.some((c) => c.path.endsWith("/auth/consume")),
+    false,
+  );
   await click("Sign out");
   assert.match(text(), /Sign in to sell/);
   assert.doesNotMatch(text(), /Confirm seller sign in/);
@@ -779,7 +896,10 @@ test("seller sign-in confirmation waits for the initial session lookup", async (
   resolve(denied());
   await flush();
   assert.equal(button("Confirm seller sign in").disabled, false);
-  assert.equal(calls.some((c) => c.path.endsWith("/auth/consume")), false);
+  assert.equal(
+    calls.some((c) => c.path.endsWith("/auth/consume")),
+    false,
+  );
 });
 
 test("seller email token clears before requests and requires explicit confirmation; cancel and hash changes work", async () => {
@@ -1169,7 +1289,7 @@ test("docs limits failures are retryable without hiding the setup guide", async 
   );
   assert.match(text(), /Limits unavailable. Reference: request-ref/);
   assert.equal(el("main h1").textContent, "Documentation");
-  assert.match(text(), /Create your seller workspace/);
+  assert.match(text(), /Create your publisher workspace/);
   routes.delete("GET /api/v1/platform/info");
   await click("Reload server limits");
   assert.match(text(), /25 MiB/);
@@ -1991,6 +2111,127 @@ test("oversized native assets are rejected before reading or sending their bytes
   );
 });
 
+test("license table searches, combines filters, sorts numbers and dates, and resets for another workspace", async () => {
+  await mount("/seller", () => {
+    tenants = [
+      tenant,
+      { ...tenant, id: "tenant-b", slug: "beta", name: "Beta" },
+    ];
+    getOverview = () => {
+      const data = overview();
+      const base = data.licenses[0]!;
+      return {
+        ...data,
+        licenses: [
+          {
+            ...base,
+            id: "a",
+            customer_email: "amy@example.test",
+            site_allowance: 2,
+            paid_through: 4102444800000,
+          },
+          {
+            ...base,
+            id: "b",
+            customer_email: "zoe@example.test",
+            site_allowance: 12,
+            product_id: "p2",
+            product_name: "Other app",
+            provenance: "complimentary" as const,
+            expires_at: 4102531200000,
+            revoked: true,
+          },
+          {
+            ...base,
+            id: "c",
+            customer_email: "bob@example.test",
+            site_allowance: 5,
+            provenance: "complimentary" as const,
+            expires_at: 1,
+          },
+          {
+            ...base,
+            id: "d",
+            customer_email: "sam@example.test",
+            site_allowance: 1,
+            paid_through: null,
+            suspended: true,
+          },
+        ],
+      };
+    };
+  });
+  await click("Licenses");
+  const rows = () =>
+    [
+      ...dom.document.querySelectorAll(
+        "#licenses-table tbody tr[data-license-id]",
+      ),
+    ].map((row) => row.getAttribute("data-license-id"));
+  assert.deepEqual(rows(), ["a", "c", "d", "b"]);
+  await input("#license-search", "  AMY@  ");
+  assert.deepEqual(rows(), ["a"]);
+  await click("Clear filters");
+  await input("#license-type", "complimentary", "change");
+  await input("#license-access", "expired", "change");
+  assert.deepEqual(rows(), ["c"]);
+  await input("#license-product", "p2", "change");
+  assert.deepEqual(rows(), []);
+  assert.match(el("#licenses-table").textContent!, /No licenses match/);
+  await click("Clear filters");
+  await click("Seats");
+  assert.deepEqual(rows(), ["d", "a", "c", "b"]);
+  assert.equal(
+    el('#licenses-table th[aria-sort="ascending"]').textContent,
+    "Seats",
+  );
+  await click("Seats");
+  assert.deepEqual(rows(), ["b", "c", "a", "d"]);
+  await click("Paid through / Expires");
+  assert.deepEqual(rows(), ["c", "a", "b", "d"]);
+  await click("Paid through / Expires");
+  assert.deepEqual(rows(), ["b", "a", "c", "d"]);
+  await click("Product and plan");
+  assert.deepEqual(rows(), ["a", "c", "d", "b"]);
+  el<HTMLButtonElement>("#licenses-table th:nth-child(4) button").click();
+  await flush();
+  assert.deepEqual(rows(), ["a", "d", "b", "c"]);
+  await click("Access");
+  assert.deepEqual(rows(), ["a", "c", "b", "d"]);
+  await click("Customer");
+  await click("Customer");
+  assert.deepEqual(rows(), ["b", "d", "c", "a"]);
+  await input("#license-type", "paid", "change");
+  await input("#license-access", "suspended", "change");
+  assert.deepEqual(rows(), ["d"]);
+  await click("Revoke license");
+  assert.match(el("dialog").textContent!, /sam@example.test/);
+  await click("Cancel");
+  await click("Clear filters");
+  await input("#license-search", "amy");
+  await click("Products");
+  await click("Licenses");
+  assert.deepEqual(rows(), ["a"]);
+  await click("Refresh dashboard");
+  assert.deepEqual(rows(), ["a"]);
+  await input("#tenant-select", "beta", "change");
+  await click("Licenses");
+  assert.equal(el<HTMLInputElement>("#license-search").value, "");
+  assert.equal(rows().length, 4);
+  routes.set("GET /api/v1/tenants/beta/seller/operations", () =>
+    Response.json({
+      summary: {},
+      settings: {},
+      alerts: [],
+      notifications: [],
+      features: { advancedReports: false },
+    }),
+  );
+  await click("Overview");
+  await click("View daily reports");
+  assert.equal(el("h1").textContent, "Operations");
+});
+
 test("seller navigation shows one focused section and keeps creation forms out of the overview", async () => {
   await mount();
   const nav = el('nav[aria-label="Workspace navigation"]');
@@ -2002,7 +2243,12 @@ test("seller navigation shows one focused section and keeps creation forms out o
     el<HTMLDetailsElement>("#workspace-create-disclosure").open,
     false,
   );
-  assert.equal(el<HTMLDetailsElement>("#metrics-details").open, false);
+  assert.equal(el("#metrics-details").tagName, "SECTION");
+  assert.equal(
+    el("#metrics-details").querySelectorAll(".analytics-card").length,
+    4,
+  );
+  assert.equal(el("#metrics-details").querySelectorAll("progress").length, 2);
   for (const [id, label] of [
     ["overview", "Overview"],
     ["products", "Products"],
@@ -2107,10 +2353,7 @@ test("admin storage allowances use readable units without changing exact detaile
       new RegExp(`Storage allowance${label}`),
     );
     await click("Overview");
-    assert.match(
-      el("#metrics-details").textContent!,
-      /Storage limit bytes1073741824/,
-    );
+    assert.match(el("#metrics-details").textContent!, /Storage allowance1 GiB/);
   }
 });
 
@@ -2125,7 +2368,7 @@ test("first-time sellers can create a workspace directly in the onboarding card"
   assert.equal(el("main h1").textContent, "Your software business");
   assert.match(
     el(".seller-content").textContent!,
-    /Create your first workspace/,
+    /Create your publisher workspace/,
   );
   assert.equal(dom.document.querySelector("#tenant-select"), null);
   assert.equal(dom.document.querySelector(".seller-nav"), null);
@@ -2147,6 +2390,51 @@ test("workspace slugs follow the name until edited and normalize manual input", 
   assert.equal(el<HTMLInputElement>("#tenant-slug").value, "");
   await input("#tenant-name", "Another name");
   assert.equal(el<HTMLInputElement>("#tenant-slug").value, "");
+  await input("#tenant-slug", "custom-");
+  el("#tenant-slug").dispatchEvent(new dom.Event("blur") as unknown as Event);
+  await flush();
+  assert.equal(el<HTMLInputElement>("#tenant-slug").value, "custom");
+  Object.defineProperty(el("#tenant-slug"), "selectionStart", {
+    configurable: true,
+    value: null,
+  });
+  await input("#tenant-slug", "Another Workspace");
+  assert.equal(el<HTMLInputElement>("#tenant-slug").value, "another-workspace");
+});
+
+test("new publisher workspace disclosure survives dashboard refresh and can be closed", async () => {
+  await mount();
+  const disclosure = el<HTMLDetailsElement>("#workspace-create-disclosure");
+  disclosure.open = true;
+  disclosure.dispatchEvent(new dom.Event("toggle") as unknown as Event);
+  await input("#tenant-name", "Another publisher");
+  await click("Refresh dashboard");
+  assert.equal(
+    el<HTMLDetailsElement>("#workspace-create-disclosure").open,
+    true,
+  );
+  assert.equal(el<HTMLInputElement>("#tenant-name").value, "Another publisher");
+  disclosure.open = false;
+  disclosure.dispatchEvent(new dom.Event("toggle") as unknown as Event);
+  await flush();
+  assert.equal(
+    el<HTMLDetailsElement>("#workspace-create-disclosure").open,
+    false,
+  );
+  assert.equal(el(".seller-help-link").getAttribute("href"), "/docs#concepts");
+});
+
+test("seller request errors can be dismissed without another request", async () => {
+  await mount("/seller", () =>
+    routes.set("GET /api/v1/tenants/alpha/seller/prices", () =>
+      denied(503, "Price service is temporarily unavailable."),
+    ),
+  );
+  assert.ok(dom.document.querySelector('[role="alert"]'));
+  const before = calls.length;
+  await click("Dismiss");
+  assert.equal(dom.document.querySelector('[role="alert"]'), null);
+  assert.equal(calls.length, before);
 });
 
 test("explicit Stripe action errors explain recovery without retrying the connection", async () => {
@@ -2552,7 +2840,13 @@ test("email change remains usable when session storage cannot save proofs", asyn
   const descriptor = Object.getOwnPropertyDescriptor(dom, "sessionStorage");
   Object.defineProperty(dom, "sessionStorage", {
     configurable: true,
-    value: { getItem: storage.getItem.bind(storage), removeItem: storage.removeItem.bind(storage), setItem: () => { throw Error("Storage disabled"); } },
+    value: {
+      getItem: storage.getItem.bind(storage),
+      removeItem: storage.removeItem.bind(storage),
+      setItem: () => {
+        throw Error("Storage disabled");
+      },
+    },
   });
   try {
     await mount("/seller#account-email-change=request-id&token=current-proof");
@@ -2570,12 +2864,21 @@ test("complimentary issuance rejects fractional seats and past expiration before
   await mount("/seller");
   await click("Licenses");
   await input("#complimentary-email", "pilot@example.test");
-  for (const [allowance, expiry] of [["1.5", "2030-06-01T12:00"], ["100001", "2030-06-01T12:00"], ["1", "2020-01-01T12:00"]]) {
+  for (const [allowance, expiry] of [
+    ["1.5", "2030-06-01T12:00"],
+    ["100001", "2030-06-01T12:00"],
+    ["1", "2020-01-01T12:00"],
+  ]) {
     await input("#complimentary-allowance", allowance!);
     await input("#complimentary-expiry", expiry!);
     await submit("#complimentary-issue");
-    assert.match(text(), /Choose an installation allowance from 1 to 100000 and a future expiration date/);
-    assert.ok(!calls.some((call) => call.path.endsWith("/licenses/complimentary")));
+    assert.match(
+      text(),
+      /Choose an installation allowance from 1 to 100000 and a future expiration date/,
+    );
+    assert.ok(
+      !calls.some((call) => call.path.endsWith("/licenses/complimentary")),
+    );
   }
 });
 
@@ -2588,8 +2891,16 @@ test("email change restores only unexpired proofs belonging to the current selle
   };
   for (const stored of [
     "not-json",
-    JSON.stringify({ sellerId: "seller", expiresAt: Date.now() + 900000, draft: null }),
-    JSON.stringify({ sellerId: "seller", expiresAt: Date.now() + 900000, draft: "invalid" }),
+    JSON.stringify({
+      sellerId: "seller",
+      expiresAt: Date.now() + 900000,
+      draft: null,
+    }),
+    JSON.stringify({
+      sellerId: "seller",
+      expiresAt: Date.now() + 900000,
+      draft: "invalid",
+    }),
     JSON.stringify({ sellerId: "seller", expiresAt: Date.now() - 1, draft }),
     JSON.stringify({
       sellerId: "another-seller",
@@ -2612,12 +2923,23 @@ test("email change restores only unexpired proofs belonging to the current selle
 });
 
 test("queued seller-session retries retain this seller's proofs and clear them after an identity change", async () => {
-  await mount("/seller#account-email-change=request-id&token=current-proof", () => {
-    routes.set("GET /api/v1/platform/me", () => denied(503, "Session unavailable"));
-  });
+  await mount(
+    "/seller#account-email-change=request-id&token=current-proof",
+    () => {
+      routes.set("GET /api/v1/platform/me", () =>
+        denied(503, "Session unavailable"),
+      );
+    },
+  );
   const retry = button("Retry session");
   let sellerId = "seller";
-  routes.set("GET /api/v1/platform/me", () => Response.json({ user: { id: sellerId, email: `${sellerId}@example.test` }, csrfToken: "csrf", tenants }));
+  routes.set("GET /api/v1/platform/me", () =>
+    Response.json({
+      user: { id: sellerId, email: `${sellerId}@example.test` },
+      csrfToken: "csrf",
+      tenants,
+    }),
+  );
   const retrySession = async () => {
     retry.dispatchEvent(new dom.MouseEvent("click", { bubbles: true }));
     await flush();
@@ -2788,6 +3110,24 @@ test("docs explain core account protection, sandbox testing, hosted Pro and sepa
   assert.match(el("#hosted-tiers").textContent, /paid download rights/);
   assert.match(el("#server-limits").textContent, /37 MiB/);
   assert.match(el("#server-limits").textContent, /WordPress/);
+  assert.match(
+    el("#concepts").textContent!,
+    /one Doublesharp workspace can contain Remote Content Shortcode and Validated Field/,
+  );
+  assert.match(el("#dashboard-reports").textContent!, /Clear filters restores/);
+  assert.match(
+    el("#dashboard-reports").textContent!,
+    /successful sends appear under Completed/,
+  );
+  assert.match(el("#dashboard-reports").textContent!, /UTC calendar days/);
+  assert.match(
+    el("#dashboard-reports").textContent!,
+    /Hosted Pro and self-hosted/,
+  );
+  assert.equal(
+    el('a[href="#dashboard-reports"]').textContent,
+    "Dashboard and reports",
+  );
 });
 
 test("a terminal historical platform subscription offers fresh Pro checkout while active billing stays in Portal", async () => {
@@ -2849,7 +3189,7 @@ test("workspace navigation groups new tools and offers a compact mobile page sel
     [...dom.document.querySelectorAll(".seller-nav-group > p")].map(
       (n) => n.textContent,
     ),
-    ["Store", "Integrations", "Workspace"],
+    ["Products & sales", "Integrations", "Administration"],
   );
   const mobile = el<HTMLSelectElement>("#seller-mobile-page");
   assert.equal(mobile.value, "overview");
@@ -3189,6 +3529,155 @@ test("setup wizard guides an empty workspace to the product form without creatin
   assert.equal(el<HTMLInputElement>("#product-name").value, "My draft");
 });
 
+test("setup step navigation explains prerequisites and supports next, previous and exit", async () => {
+  await mount("/seller", () => {
+    getOverview = () => ({
+      ...overview(),
+      products: [],
+      releases: [],
+      licenses: [],
+    });
+  });
+  await click("Getting started");
+  el<HTMLButtonElement>(".setup-steps li:nth-child(2) button").click();
+  await flush();
+  assert.match(el(".setup-prerequisite").textContent!, /Add a product/);
+  assert.equal(button("Publish your first release").disabled, true);
+  button("Publish your first release").dispatchEvent(
+    new dom.MouseEvent("click", { bubbles: true }),
+  );
+  await flush();
+  assert.equal(el("main h1").textContent, "Getting started");
+  await mount();
+  await click("Getting started");
+  el<HTMLButtonElement>(".setup-steps li:first-child button").click();
+  await flush();
+  await click("Next step");
+  assert.equal(el("#setup-task-title").textContent, "Publish a release");
+  await click("Previous step");
+  assert.equal(el("#setup-task-title").textContent, "Add a product");
+  el<HTMLButtonElement>(".setup-steps li:nth-child(3) button").click();
+  await flush();
+  await click("Open client setup");
+  await click("Exit guided setup");
+  assert.equal(dom.document.querySelector(".setup-context"), null);
+  assert.equal(el("main h1").textContent, "Client setup");
+});
+
+test("queued setup navigation cannot steal focus after the seller chooses another page", async () => {
+  await mount();
+  button("Continue setup").click();
+  button("Products").click();
+  await flush();
+  assert.equal(el("main h1").textContent, "Products");
+  assert.notEqual(
+    dom.document.activeElement?.closest("#seller-panel-onboarding")?.id,
+    "seller-panel-onboarding",
+  );
+  await click("Getting started");
+  button("Open client setup").click();
+  button("Licenses").click();
+  await flush();
+  assert.equal(el("main h1").textContent, "Licenses");
+  assert.notEqual(dom.document.activeElement?.id, "config-product");
+  await click("Billing");
+  assert.equal(dom.document.querySelector(".setup-context"), null);
+});
+
+test("guided setup follows product changes in release and license forms", async () => {
+  await mount("/seller", () => {
+    getOverview = () => ({
+      ...overview(),
+      products: [
+        ...overview().products,
+        {
+          ...overview().products[0]!,
+          id: "p2",
+          slug: "second",
+          name: "Second",
+        },
+      ],
+    });
+  });
+  await click("Getting started");
+  el<HTMLButtonElement>(".setup-steps li:nth-child(2) button").click();
+  await flush();
+  await click("Manage releases");
+  await input("#release-product", "p2", "change");
+  await click("Back to setup");
+  assert.equal(el<HTMLSelectElement>("#setup-product").value, "p2");
+  el<HTMLButtonElement>(".setup-steps li:nth-child(4) button").click();
+  await flush();
+  await click("Issue a complimentary license");
+  await input("#complimentary-product", "p1", "change");
+  await click("Back to setup");
+  assert.equal(el<HTMLSelectElement>("#setup-product").value, "p1");
+});
+
+test("setup actions ignore stale clicks while a dashboard refresh is pending", async () => {
+  let finish!: (response: Response) => void;
+  await mount();
+  await click("Getting started");
+  const task = button("Open client setup");
+  await click("Open client setup");
+  const confirm = button("I’ve added the configuration");
+  routes.set(
+    "GET /api/v1/tenants/alpha/seller/overview",
+    () =>
+      new Promise<Response>((resolve) => {
+        finish = resolve;
+      }),
+  );
+  button("Refresh dashboard").click();
+  task.dispatchEvent(new dom.MouseEvent("click", { bubbles: true }));
+  confirm.dispatchEvent(new dom.MouseEvent("click", { bubbles: true }));
+  await flush();
+  finish(Response.json(overview()));
+  await flush();
+  assert.equal(el("main h1").textContent, "Client setup");
+  await click("Getting started");
+  assert.match(
+    el("#seller-panel-onboarding").textContent!,
+    /2 of 4 steps complete/,
+  );
+});
+
+test("setup confirmation stays usable when browser storage is unavailable", async () => {
+  const get = dom.sessionStorage.getItem,
+    set = dom.sessionStorage.setItem;
+  Object.defineProperty(dom.sessionStorage, "getItem", {
+    configurable: true,
+    value: () => {
+      throw Error("Storage unavailable");
+    },
+  });
+  Object.defineProperty(dom.sessionStorage, "setItem", {
+    configurable: true,
+    value: () => {
+      throw Error("Storage unavailable");
+    },
+  });
+  try {
+    await mount();
+    await click("Getting started");
+    await click("Open client setup");
+    await click("I’ve added the configuration");
+    assert.match(
+      el("#seller-panel-onboarding").textContent!,
+      /3 of 4 steps complete/,
+    );
+  } finally {
+    Object.defineProperty(dom.sessionStorage, "getItem", {
+      configurable: true,
+      value: get,
+    });
+    Object.defineProperty(dom.sessionStorage, "setItem", {
+      configurable: true,
+      value: set,
+    });
+  }
+});
+
 test("setup progress uses the chosen product and confirms integration explicitly", async () => {
   await mount("/seller", () => {
     getOverview = () => ({ ...overview(), licenses: [] });
@@ -3361,4 +3850,12 @@ test("guided integration confirmation follows a changed configuration product", 
     el(".setup-step[aria-current='step']").textContent!,
     /Connect your software/,
   );
+  await click("Open client setup");
+  getOverview = overview;
+  await click("Refresh dashboard");
+  const before = calls.length;
+  await input("#config-product", "second", "change");
+  assert.equal(el<HTMLSelectElement>("#config-product").value, "");
+  assert.match(el<HTMLTextAreaElement>("#php-config").value, /your-product/);
+  assert.equal(calls.length, before);
 });

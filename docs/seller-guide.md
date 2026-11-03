@@ -1,7 +1,13 @@
 # Seller guide
 
-Open `/seller` on your deployment. Your workspace owns its products, customers,
-licenses and releases. Buyers use `/t/YOUR_SLUG`. Build pipelines and installed
+Open `/seller` on your deployment. A **publisher workspace** represents your
+business or brand and can contain multiple **products**, one for each plugin or
+app. Each product has its own plans, licenses, releases and client configuration.
+Products share the workspace's Stripe connection, billing, access, API keys and
+storage allowance. Use another workspace when you need those settings and data
+kept separate; a separate workspace for every product is optional.
+
+Buyers use `/t/YOUR_SLUG`. Build pipelines and installed
 clients use `/api/v1/tenants/YOUR_SLUG` with different credentials.
 
 ## Products and plans
@@ -105,6 +111,10 @@ paid entitlement.
 
 ### Diagnose an existing license
 
+Search Licenses by customer email, product, plan or license ID. Combine the
+product, license type and access filters, and select a column heading to sort;
+select it again to reverse the order. Clear filters restores the full list.
+
 Use the license view to distinguish paid-through time, manual revocation,
 refund/dispute restrictions and installation usage. Ask the buyer for a request
 ID and the product/version/target involved, without collecting their license key
@@ -185,10 +195,21 @@ service as merchant of record or move the publisher's tax responsibilities.
 
 ## Read operations and reports
 
-Operations shows failed/pending jobs, oldest queue age, storage used/reserved,
-served bytes, storage reads and billing-capacity warnings. Default alert
-thresholds are one failed job, one hour pending age, 90% storage and a one-hour
-cooldown. The bandwidth alert is disabled until its byte threshold is nonzero.
+The overview displays license, installation, download, release and storage
+metrics, with seat and storage utilization bars. Operations shows completed,
+failed, pending and canceled jobs, oldest pending age, storage used/reserved,
+served bytes, storage reads and billing-capacity warnings. Counts belong to the
+selected workspace; select a sandbox to inspect its activity. Successfully sent
+emails count as completed jobs rather than pending jobs.
+
+Load an activity report for daily job charts and the latest 50 email jobs in
+the period. Charts group jobs by the UTC day they were queued and show their
+current results. Sent means the configured mail transport accepted the message.
+Only retained jobs are counted; email contents and credentials are omitted.
+
+Default alert thresholds are one failed job, one hour pending age, 90% storage
+and a one-hour cooldown. The bandwidth alert is disabled until its byte
+threshold is nonzero.
 
 Lifecycle notices default to seven days before expiry and are configurable.
 They do not extend paid time. Queue/mail delays can defer delivery, so confirm
@@ -196,7 +217,9 @@ access from current license state.
 
 Hosted Pro and standalone can read daily reports for 1-365 days and send
 [signed outgoing events](webhooks.md). Report rows are recorded UTC days; days
-with no records need not appear. Served responses and bytes do not prove a
+with no records need not appear. The dashboard fills missing chart days with
+zero and offers 7-, 30- and 90-day views of downloads, delivered bytes, origin
+reads and average response size. Served responses and bytes do not prove a
 completed installation. Payment amounts are grouped by currency and include
 taxes; they do not subtract Stripe fees or establish seller profit.
 

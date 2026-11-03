@@ -16,6 +16,10 @@ for(const variable of ["TEST_POSTGRES_DATABASE_URL","TEST_MYSQL_DATABASE_URL"] a
     await db("sessions").insert({tenant_id:tenant.id,id:"verified",customer_id:ids.customer,expires_at:now+100000});
     assert.equal(await operations.enqueueLifecycleEmails("42".repeat(32),now),1);
     assert.equal(await operations.enqueueLifecycleEmails("42".repeat(32)),0);
+    const activity=await operations.activity(7);
+    assert.equal(activity.daily.length,7);
+    assert.equal(activity.daily.reduce((sum,day)=>sum+day.emails.total,0),1);
+    assert.equal(activity.emails.length,1);
     let sent=0;const webhooks=new OutboundWebhooks(db,tenant.id,"42".repeat(32),{network:{resolve:async()=>[{address:"8.8.8.8",family:4}],send:async()=>{sent++;return 204;}}});
     await webhooks.createEndpoint({url:"https://example.com/",events:["license.renewed"]});
     const event={id:"renewal",type:"license.renewed",resourceId:ids.license,occurredAt:now};

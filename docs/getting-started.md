@@ -15,7 +15,15 @@ standalone production setup, or the local fixture first.
 Use the deployment origin supplied by your operator. The shared hosted link
 in the source is not a service-availability commitment.
 
-Hosted sellers create a workspace and choose its permanent slug. Complimentary
+Hosted sellers create a **publisher workspace** for their business or brand and
+choose its permanent slug. Add each plugin or app as a **product** inside that
+workspace. A workspace can contain multiple products; they share billing,
+access, API keys and storage, while each product has its own plans, licenses
+and releases. The overview displays this relationship and totals across the
+workspace. See the [seller guide](seller-guide.md) for license search, filters,
+sorting, email history and daily activity reports.
+
+Complimentary
 licensing needs no connected Stripe account; connect Stripe from Billing when
 offering paid plans. Hosted capacity and service limits still apply. Standalone
 owners set `STANDALONE_OWNER_EMAIL` and sign in with

@@ -159,6 +159,11 @@ test("reading operations cannot consume an operational alert before the worker p
 
 test("hosted Pro APIs use fresh paid grants, keep basic operations core, and isolate API scopes", async (t) => {
   const f = await fixture(t, { platformProStripePriceId: "price_monthly" });
+  const activity = await f.request("GET", "/operations/activity?days=7");
+  assert.equal(activity.statusCode, 200, activity.body);
+  assert.equal(activity.json().daily.length, 7);
+  assert.equal((await f.request("GET", "/operations/activity?days=366")).statusCode, 400);
+  assert.equal((await f.request("GET", "/operations/activity", undefined, {})).statusCode, 401);
   assert.equal(
     (await f.request("GET", "/features")).json().features.outboundWebhooks,
     false,
@@ -219,7 +224,9 @@ test("hosted Pro APIs use fresh paid grants, keep basic operations core, and iso
   assert.equal(features.json().features.outboundWebhooks, true);
   const reports = await f.request("GET", "/operations/reports?days=7");
   assert.equal(reports.statusCode, 200, reports.body);
-  assert.deepEqual(reports.json(), { days: 7, rows: [] });
+  assert.equal(reports.json().days, 7);
+  assert.deepEqual(reports.json().rows, []);
+  assert.ok(Number.isSafeInteger(reports.json().generatedAt));
   assert.equal((await f.request("GET", "/operations/reports")).json().days, 30);
   assert.equal(
     (await f.request("GET", "/operations/reports?days=366")).statusCode,

@@ -69,7 +69,7 @@ test("production entry points mount the standalone app and independent static ma
   dom.document.body.innerHTML = '<div id="app"></div>';
   await import("../web/app-entry.ts");
   await flush();
-  assert.match(dom.document.body.textContent, /Seller workspace/);
+  assert.match(dom.document.body.textContent, /Publisher workspace/);
   assert.doesNotMatch(
     dom.document.body.textContent,
     /First-class WordPress support/,

@@ -42,6 +42,7 @@ const groups = [
     label: "Protect and automate",
     links: [
       ["operating-your-business", "Security and operations"],
+      ["dashboard-reports", "Dashboard and reports"],
       ["sandbox", "Sandbox testing"],
       ["webhooks", "Signed webhooks"],
       ["portability", "Exports and transfers"],
@@ -272,7 +273,7 @@ export function publicDocs(
         [
           h("h3", { id: "hosted-setup" }, "Hosted setup"),
           paragraph(
-            "Create your seller workspace. Sign in through the seller dashboard and open the email link in the same browser that requested it. Choose your workspace's permanent slug. You can issue complimentary licenses without connecting Stripe; product and storage allowances still apply. Review platform charges and limits before subscribing to a hosted plan.",
+            "Create your publisher workspace for your business or brand. Sign in through the seller dashboard and open the email link in the same browser that requested it. Choose your workspace's permanent slug, then add each plugin or app as a product inside it. You can issue complimentary licenses without connecting Stripe; product and storage allowances still apply. Review platform charges and limits before subscribing to a hosted plan.",
           ),
           paragraph(
             "For paid sales, connect Stripe from Billing, create annual recurring prices and configure the Customer Portal. On the hosted service, buyers use /app/t/YOUR_WORKSPACE_SLUG and the seller dashboard is /app/seller. Your API base is /api/v1/tenants/YOUR_WORKSPACE_SLUG. Custom app mounts may use a different page prefix.",
@@ -343,12 +344,19 @@ export function publicDocs(
       ),
       section("concepts", "The basics", "How it fits together", [
         paragraph(
-          "A workspace is called a tenant in the API. It keeps one seller’s products, customers and releases together.",
+          "A publisher workspace represents your business or brand, and can contain multiple products. Each plugin or app is a separate product. For example, one Doublesharp workspace can contain Remote Content Shortcode and Validated Field. You don’t need a workspace for every plugin.",
+        ),
+        paragraph(
+          "Products have their own plans, licenses, releases and client configuration. They share the workspace’s Stripe connection, billing, access, API keys and storage allowance. Use separate workspaces when those settings and data need to stay independent. A workspace is called a tenant in the API.",
         ),
         h(
           "dl",
           { class: "docs-glossary" },
           [
+            [
+              "Publisher workspace",
+              "Your business or brand and the shared settings for its products. Choose it from the Publisher workspace selector; the list is alphabetical. Sandbox entries are separate test environments.",
+            ],
             [
               "Product",
               "The plugin or app you sell. Its framework selects the package checks, updater feed and site or device activation.",
@@ -378,6 +386,32 @@ export function publicDocs(
           "Expiration, cancellation and licensing-server outages must not disable functionality your customer has already installed. Use license checks to control access to downloads and updates.",
         ),
       ]),
+      section(
+        "dashboard-reports",
+        "Daily use",
+        "Understand your dashboard and reports",
+        [
+          h("h3", "Workspace overview"),
+          paragraph(
+            "Overview shows the selected publisher workspace and its products. Manage products opens the plugins and apps in that workspace. License, installation, download and release counts cover all its products; seat and storage bars show usage against their allowances. Storage is displayed in B, KiB, MiB or GiB.",
+          ),
+          h("h3", "Find and manage licenses"),
+          paragraph(
+            "In Products & sales → Licenses, search by customer email, product, plan or license ID. Combine product, license type and access filters. Select a column heading to sort, then select it again to reverse the order. Seats sort numerically and expiration dates chronologically; unavailable dates stay at the end. Clear filters restores the full list. Access labels distinguish active, expired, revoked, suspended and pending licenses.",
+          ),
+          h("h3", "Email delivery and background jobs"),
+          paragraph(
+            "Administration → Operations separates completed, failed, pending and canceled jobs. Pending includes running jobs. An empty queue does not mean no emails were sent: successful sends appear under Completed. Counts include retained jobs in the selected workspace; switch to the sandbox workspace to see its test-license emails. Seller sign-in and account-verification emails are platform messages rather than product-workspace email jobs.",
+          ),
+          paragraph(
+            "Load an activity report for 7, 30 or 90 UTC calendar days. Charts group jobs by the day they were queued and show their current results. Recent email history lists the latest 50 jobs in the period with the queued time, email type, result and attempt count. Sent means the configured mail transport accepted the message; it does not confirm inbox delivery. Email contents and credentials are not included.",
+          ),
+          h("h3", "Downloads and performance"),
+          paragraph(
+            "Hosted Pro and self-hosted publishers can load daily download reports for 7, 30 or 90 days. Charts show successful download responses, delivered data, origin storage reads and origin data read. The accompanying table provides daily values; missing chart days display zero. Average response size is delivered bytes divided by successful responses. These measurements describe transfers, including partial responses, rather than completed installations or request latency.",
+          ),
+        ],
+      ),
       section(
         "products-and-plans",
         "Catalog setup",
