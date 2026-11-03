@@ -318,6 +318,7 @@ All paths below are relative to `/api/v1/tenants/:tenant/seller`.
 | GET / PUT | `/commerce/settings`              | Server-controlled automatic tax, tax-ID and address collection                               |
 | PUT       | `/commerce/products/:id/tax-code` | `{taxCode:null\|'txcd_########'}` on the seller's Stripe product         |
 | GET       | `/operations`                     | Basic queue, storage, byte/read counters, persisted alerts and settings                      |
+| GET       | `/operations/activity?days=30`     | Core reporting; 1-365 UTC calendar days of job cohorts and the latest 50 email job results, scoped to the workspace |
 | PUT       | `/operations/settings`            | Bounded threshold, cooldown and lifecycle-notice settings                                    |
 | GET       | `/operations/reports?days=30`     | Hosted Pro or standalone; daily served-response and byte/read aggregates                     |
 | GET       | `/webhooks`                       | Hosted Pro or standalone; endpoints and safe delivery states                                 |

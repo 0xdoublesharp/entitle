@@ -43,7 +43,14 @@ interface Health {
   summary: {
     queues?: Record<
       string,
-      { failed?: number; pending?: number; oldestAgeMs?: number }
+      {
+        failed?: number;
+        pending?: number;
+        completed?: number;
+        total?: number;
+        canceled?: number;
+        oldestAgeMs?: number;
+      }
     >;
     storage?: { usedBytes: number; reservedBytes: number; limitBytes: number };
     bandwidth?: {
@@ -63,6 +70,23 @@ interface Endpoint {
   url: string;
   events: string[];
   active: boolean;
+}
+interface ActivityReport {
+  days: number;
+  generatedAt: number;
+  daily: {
+    day: string;
+    work: { total: number; completed: number };
+    emails: { total: number; completed: number };
+    outbound_deliveries: { total: number; completed: number };
+  }[];
+  emails: {
+    id: string;
+    kind: string;
+    state: string;
+    attempts: number;
+    createdAt: number;
+  }[];
 }
 interface Delivery {
   id: string;
@@ -104,6 +128,75 @@ const numberText = (value: number | undefined) =>
 const bytesText = (value: number) => {
   const index = Math.min(4, Math.floor(Math.log2(Math.max(1, value)) / 10));
   return `${(value / 1024 ** index).toLocaleString("en-US", { maximumFractionDigits: 1 })} ${["B", "KiB", "MiB", "GiB", "TiB"][index]}`;
+};
+const trendChart = (
+  title: string,
+  rows: { day: string; value: number }[],
+  format: (value: number) => string = numberText,
+) => {
+  const width = 640,
+    height = 180,
+    inset = 24;
+  const max = Math.max(1, ...rows.map((row) => row.value));
+  const points = rows
+    .map(
+      (row, index) =>
+        `${inset + (index * (width - inset * 2)) / Math.max(1, rows.length - 1)},${height - inset - (row.value / max) * (height - inset * 2)}`,
+    )
+    .join(" ");
+  return h("figure", { class: "trend-chart" }, [
+    h("figcaption", [
+      h("span", title),
+      h("strong", format(rows.reduce((sum, row) => sum + row.value, 0))),
+    ]),
+    h(
+      "svg",
+      {
+        viewBox: `0 0 ${width} ${height}`,
+        role: "img",
+        "aria-label": `${title}. ${rows.map((row) => `${row.day}: ${format(row.value)}`).join("; ")}`,
+      },
+      [
+        h("title", `${title} by day, UTC`),
+        ...[0, 0.5, 1].map((ratio) =>
+          h("line", {
+            x1: inset,
+            x2: width - inset,
+            y1: inset + ratio * (height - 2 * inset),
+            y2: inset + ratio * (height - 2 * inset),
+            class: "chart-gridline",
+          }),
+        ),
+        h("polygon", {
+          points: `${inset},${height - inset} ${points} ${rows.length > 1 ? width - inset : inset},${height - inset}`,
+          class: "chart-area",
+        }),
+        h("polyline", { points, class: "chart-line" }),
+        ...rows.map((row, index) =>
+          h(
+            "circle",
+            {
+              cx:
+                inset +
+                (index * (width - inset * 2)) / Math.max(1, rows.length - 1),
+              cy: height - inset - (row.value / max) * (height - inset * 2),
+              r: 3,
+              class: "chart-point",
+            },
+            [h("title", `${row.day}: ${format(row.value)}`)],
+          ),
+        ),
+      ],
+    ),
+    h("div", { class: "chart-axis" }, [
+      h("span", rows[0]?.day || ""),
+      h(
+        "span",
+        `Daily · UTC · peak ${format(max === 1 && rows.every((row) => row.value === 0) ? 0 : max)}`,
+      ),
+      h("span", rows.at(-1)?.day || ""),
+    ]),
+  ]);
 };
 const card = (title: string, description: string, children: unknown[]) =>
   h("section", { class: "feature-card" }, [
@@ -260,6 +353,8 @@ export const SellerFeaturePanel = defineComponent({
       } | null>(null);
     const health = ref<Health | null>(null),
       reports = ref<{
+        days?: number;
+        generatedAt?: number;
         rows: {
           day: string;
           responses?: number;
@@ -271,6 +366,9 @@ export const SellerFeaturePanel = defineComponent({
       endpoints = ref<Endpoint[]>([]),
       deliveries = ref<Delivery[]>([]),
       sessions = ref<Session[]>([]);
+    const activity = ref<ActivityReport | null>(null);
+    const activityDays = ref("30");
+    const reportDays = ref("30");
     const retainedExports = ref<ExportHandle[]>([]);
     const proOptions = ref(false);
     const selectedEvents = ref(["license.created"]),
@@ -587,42 +685,68 @@ export const SellerFeaturePanel = defineComponent({
         "Try purchases, licenses and updates in a separate test workspace.",
       ),
       sandbox.value?.isSandbox
-        ? h("div", { class: "notice" }, [
-            h("strong", "TEST WORKSPACE"),
-            h(
-              "p",
-              `Mode: ${sandbox.value.mode}. Parent: ${sandbox.value.parentSlug}`,
-            ),
-            h(
-              "p",
-              `API origin: ${window.location.origin}${props.api.basePath.replace(/\/seller$/, "")}`,
-            ),
-            h(
-              "a",
-              {
-                href: applicationHref(
-                  `/t/${encodeURIComponent(sandbox.value.sandboxSlug)}`,
+        ? h("div", { class: "sandbox-workspace" }, [
+            h("div", { class: "sandbox-workspace-heading" }, [
+              h("div", [
+                h("strong", { class: "sandbox-label" }, "TEST WORKSPACE"),
+                h(
+                  "p",
+                  `Mode: ${sandbox.value.mode}. Parent: ${sandbox.value.parentSlug}`,
                 ),
-              },
-              "Open test buyer page",
-            ),
-            sandbox.value.mode === "fixture" &&
-              form(
-                "sandbox-purchase",
-                "Issue test license",
-                [
-                  select("planId", "Test plan", [
-                    { id: "", name: "Select a plan" },
-                    ...props.products.flatMap((p) => p.plans),
-                  ]),
-                ],
-                async () => {
-                  await mutate("/sandbox/purchase", {
-                    planId: values.value.planId,
-                  });
-                  notice.value =
-                    "Test license queued for your verified seller email.";
+              ]),
+              h(
+                "a",
+                {
+                  class: "button button-secondary button-small",
+                  href: applicationHref(
+                    `/t/${encodeURIComponent(sandbox.value.sandboxSlug)}`,
+                  ),
                 },
+                "Open test buyer page",
+              ),
+            ]),
+            h("details", { class: "sandbox-api-details" }, [
+              h("summary", "API endpoint"),
+              h(
+                "code",
+                `${window.location.origin}${props.api.basePath.replace(/\/seller$/, "")}`,
+              ),
+            ]),
+            sandbox.value.mode === "fixture" &&
+              h(
+                "section",
+                {
+                  class: "sandbox-license",
+                  "aria-labelledby": "sandbox-license-title",
+                },
+                [
+                  h(
+                    "h3",
+                    { id: "sandbox-license-title" },
+                    "Issue a test license",
+                  ),
+                  h(
+                    "p",
+                    "Choose a plan. The license will be emailed to your verified seller address. No payment is collected.",
+                  ),
+                  form(
+                    "sandbox-purchase",
+                    "Issue test license",
+                    [
+                      select("planId", "Test plan", [
+                        { id: "", name: "Select a plan" },
+                        ...props.products.flatMap((p) => p.plans),
+                      ]),
+                    ],
+                    async () => {
+                      await mutate("/sandbox/purchase", {
+                        planId: values.value.planId,
+                      });
+                      notice.value =
+                        "Test license queued for your verified seller email.";
+                    },
+                  ),
+                ],
               ),
           ])
         : sandbox.value
@@ -736,6 +860,36 @@ export const SellerFeaturePanel = defineComponent({
     const operations = () => {
       const data = health.value!,
         summary = data.summary;
+      const reportRows = reports.value?.rows || [];
+      const reportDayCount = reports.value?.days || Number(reportDays.value);
+      const reportEnd = Math.floor(
+        (reports.value?.generatedAt || Date.now()) / 86400000,
+      );
+      const recordedDays = new Map(reportRows.map((row) => [row.day, row]));
+      const chartRows = Array.from({ length: reportDayCount }, (_, index) => {
+        const day = new Date(
+          (reportEnd - reportDayCount + 1 + index) * 86400000,
+        )
+          .toISOString()
+          .slice(0, 10);
+        return (
+          recordedDays.get(day) || {
+            day,
+            responses: 0,
+            servedBytes: 0,
+            storageReads: 0,
+            storageReadBytes: 0,
+          }
+        );
+      });
+      const responseCount = reportRows.reduce(
+        (sum, row) => sum + (row.responses || 0),
+        0,
+      );
+      const deliveredBytes = reportRows.reduce(
+        (sum, row) => sum + row.servedBytes,
+        0,
+      );
       const queueNames: Record<string, string> = {
         work: "Billing & licensing",
         emails: "Email delivery",
@@ -814,16 +968,22 @@ export const SellerFeaturePanel = defineComponent({
         summary.queues &&
           card(
             "Background activity",
-            "Track billing, email and webhook jobs.",
+            "Jobs retained in this workspace. Completed includes successful email sends; pending includes jobs currently running. Sandbox jobs belong to their own workspace.",
             [
               h("div", { class: "table-scroll" }, [
                 h("table", { class: "feature-queues" }, [
                   h("thead", [
                     h(
                       "tr",
-                      ["Queue", "Failed", "Queued", "Oldest"].map((label) =>
-                        h("th", { scope: "col" }, label),
-                      ),
+                      [
+                        "Queue",
+                        "Completed",
+                        "Failed",
+                        "Pending",
+                        "Canceled",
+                        "Total",
+                        "Oldest pending",
+                      ].map((label) => h("th", { scope: "col" }, label)),
                     ),
                   ]),
                   h(
@@ -835,8 +995,11 @@ export const SellerFeaturePanel = defineComponent({
                           { scope: "row" },
                           queueNames[name] || human(name),
                         ),
+                        h("td", numberText(queue.completed)),
                         h("td", numberText(queue.failed)),
                         h("td", numberText(queue.pending)),
+                        h("td", numberText(queue.canceled)),
+                        h("td", numberText(queue.total)),
                         h(
                           "td",
                           queue.oldestAgeMs
@@ -850,6 +1013,175 @@ export const SellerFeaturePanel = defineComponent({
               ]),
             ],
           ),
+        card(
+          "Activity & email history",
+          "Daily job activity and the latest 50 email jobs in the selected period. Dates use UTC; results reflect each job’s current state.",
+          [
+            h("div", { class: "report-toolbar" }, [
+              h("div", { class: "form-field" }, [
+                h("label", { for: "activity-days" }, "Activity period"),
+                h(
+                  "select",
+                  {
+                    id: "activity-days",
+                    value: activityDays.value,
+                    disabled: pending.value,
+                    onChange: (event: Event) => {
+                      activityDays.value = (
+                        event.target as HTMLSelectElement
+                      ).value;
+                      activity.value = null;
+                    },
+                  },
+                  [7, 30, 90].map((days) =>
+                    h("option", { value: String(days) }, `Last ${days} days`),
+                  ),
+                ),
+              ]),
+              button(
+                activity.value
+                  ? "Refresh activity report"
+                  : "Load activity report",
+                () =>
+                  void run(async () => {
+                    activity.value = await props.api.get<ActivityReport>(
+                      `/operations/activity?days=${activityDays.value}`,
+                    );
+                  }),
+                pending.value,
+              ),
+            ]),
+            activity.value &&
+              h("div", { class: "activity-report" }, [
+                h(
+                  "p",
+                  { class: "analytics-footnote" },
+                  `Updated ${new Date(activity.value.generatedAt).toLocaleString()} · ${activity.value.days} UTC calendar days`,
+                ),
+                h("div", { class: "analytics-chart-grid" }, [
+                  trendChart(
+                    "Email jobs queued",
+                    activity.value.daily.map((row) => ({
+                      day: row.day,
+                      value: row.emails.total,
+                    })),
+                  ),
+                  trendChart(
+                    "All background jobs queued",
+                    activity.value.daily.map((row) => ({
+                      day: row.day,
+                      value:
+                        row.emails.total +
+                        row.work.total +
+                        row.outbound_deliveries.total,
+                    })),
+                  ),
+                ]),
+                h(
+                  "p",
+                  { class: "analytics-footnote" },
+                  "Charts group jobs by the day they were queued. Sent means the configured mail transport accepted the message.",
+                ),
+                h("details", { class: "report-data" }, [
+                  h("summary", "View daily activity data"),
+                  h("div", { class: "table-scroll" }, [
+                    h("table", [
+                      h("thead", [
+                        h(
+                          "tr",
+                          [
+                            "Date (UTC)",
+                            "Email jobs",
+                            "Emails sent",
+                            "All jobs",
+                            "Jobs completed",
+                          ].map((label) => h("th", { scope: "col" }, label)),
+                        ),
+                      ]),
+                      h(
+                        "tbody",
+                        activity.value.daily.map((row) =>
+                          h(
+                            "tr",
+                            [
+                              row.day,
+                              row.emails.total,
+                              row.emails.completed,
+                              row.emails.total +
+                                row.work.total +
+                                row.outbound_deliveries.total,
+                              row.emails.completed +
+                                row.work.completed +
+                                row.outbound_deliveries.completed,
+                            ].map((value) => h("td", String(value))),
+                          ),
+                        ),
+                      ),
+                    ]),
+                  ]),
+                ]),
+                h("h4", "Recent email history"),
+                activity.value.emails.length
+                  ? h("div", { class: "table-scroll" }, [
+                      h("table", { class: "email-history" }, [
+                        h("thead", [
+                          h(
+                            "tr",
+                            ["Queued (UTC)", "Email", "Result", "Attempts"].map(
+                              (label) => h("th", { scope: "col" }, label),
+                            ),
+                          ),
+                        ]),
+                        h(
+                          "tbody",
+                          activity.value.emails.map((email) =>
+                            h("tr", { key: email.id }, [
+                              h(
+                                "td",
+                                new Date(email.createdAt)
+                                  .toISOString()
+                                  .replace("T", " ")
+                                  .slice(0, 19),
+                              ),
+                              h(
+                                "td",
+                                human(email.kind).replace(/^./, (value) =>
+                                  value.toUpperCase(),
+                                ),
+                              ),
+                              h(
+                                "td",
+                                h(
+                                  "span",
+                                  {
+                                    class: [
+                                      "license-access-badge",
+                                      email.state === "sent"
+                                        ? "license-access-active"
+                                        : email.state === "failed"
+                                          ? "license-access-revoked"
+                                          : "",
+                                    ],
+                                  },
+                                  human(email.state).replace(/^./, (value) =>
+                                    value.toUpperCase(),
+                                  ),
+                                ),
+                              ),
+                              h("td", String(email.attempts)),
+                            ]),
+                          ),
+                        ),
+                      ]),
+                    ])
+                  : h(
+                      "p",
+                      { class: "feature-empty" },
+                      "No email jobs were queued in this period.",
+                    ),
+              ]),
+          ],
+        ),
         disclosure(
           "health-settings-disclosure",
           "Alert settings",
@@ -892,12 +1224,35 @@ export const SellerFeaturePanel = defineComponent({
           ],
         ),
         card("Daily reports", "See download activity over time.", [
+          (!props.hosted || data.features.advancedReports) &&
+            h("div", { class: "form-field report-period" }, [
+              h("label", { for: "download-report-days" }, "Download period"),
+              h(
+                "select",
+                {
+                  id: "download-report-days",
+                  value: reportDays.value,
+                  disabled: pending.value,
+                  onChange: (event: Event) => {
+                    reportDays.value = (
+                      event.target as HTMLSelectElement
+                    ).value;
+                    reports.value = null;
+                  },
+                },
+                [7, 30, 90].map((days) =>
+                  h("option", { value: String(days) }, `Last ${days} days`),
+                ),
+              ),
+            ]),
           !props.hosted || data.features.advancedReports
             ? button(
                 "Load advanced daily reports",
                 () =>
                   void run(async () => {
-                    reports.value = await props.api.get("/operations/reports");
+                    reports.value = await props.api.get(
+                      `/operations/reports${reportDays.value === "30" ? "" : `?days=${reportDays.value}`}`,
+                    );
                   }),
                 pending.value,
               )
@@ -914,6 +1269,74 @@ export const SellerFeaturePanel = defineComponent({
                 ),
                 proOptions.value && upgrade(),
               ]),
+          reports.value &&
+            reports.value.rows.length > 0 &&
+            h("div", { class: "download-performance" }, [
+              h("div", { class: "analytics-chart-grid" }, [
+                trendChart(
+                  "Successful download responses",
+                  chartRows.map((row) => ({
+                    day: row.day,
+                    value: row.responses ?? 0,
+                  })),
+                ),
+                trendChart(
+                  "Data delivered",
+                  chartRows.map((row) => ({
+                    day: row.day,
+                    value: row.servedBytes,
+                  })),
+                  bytesText,
+                ),
+                trendChart(
+                  "Origin storage reads",
+                  chartRows.map((row) => ({
+                    day: row.day,
+                    value: row.storageReads ?? 0,
+                  })),
+                ),
+                trendChart(
+                  "Origin data read",
+                  chartRows.map((row) => ({
+                    day: row.day,
+                    value: row.storageReadBytes ?? 0,
+                  })),
+                  bytesText,
+                ),
+              ]),
+              h("dl", { class: "feature-stats" }, [
+                h("div", [
+                  h("dt", "Successful responses"),
+                  h("dd", numberText(responseCount)),
+                ]),
+                h("div", [
+                  h("dt", "Average response size"),
+                  h(
+                    "dd",
+                    responseCount
+                      ? bytesText(deliveredBytes / responseCount)
+                      : "—",
+                  ),
+                ]),
+                h("div", [
+                  h("dt", "Storage read operations"),
+                  h(
+                    "dd",
+                    numberText(
+                      reportRows.reduce(
+                        (sum, row) => sum + (row.storageReads || 0),
+                        0,
+                      ),
+                    ),
+                  ),
+                ]),
+              ]),
+              h(
+                "p",
+                { class: "analytics-footnote" },
+                "Download responses and origin reads are measured separately. Bytes describe transferred data, including partial responses.",
+              ),
+            ]),
           reports.value &&
             (reports.value.rows.length
               ? h("div", { class: "table-scroll" }, [

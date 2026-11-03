@@ -84,6 +84,11 @@ export async function operationsRoutes(
     const settings = await s.operations.configure(req.body);
     return { settings };
   });
+  api.get("/operations/activity", { config: apiLimit(20) }, async (req) => {
+    const s = await authorize(req);
+    const { days } = z.object({ days:z.coerce.number().int().min(1).max(365).default(30) }).strict().parse(req.query);
+    return s.operations.activity(days);
+  });
   api.get("/operations/reports", { config: apiLimit(20) }, async (req) => {
     const s = await authorize(req);
     check(
@@ -96,13 +101,15 @@ export async function operationsRoutes(
       .object({ days: z.coerce.number().int().min(1).max(365).default(30) })
       .strict()
       .parse(req.query);
-    const since = new Date(Date.now() - (days - 1) * 86400000)
+    const generatedAt = Date.now();
+    const since = new Date(generatedAt - (days - 1) * 86400000)
       .toISOString()
       .slice(0, 10);
     const rows = await s
       .db("download_metrics")
       .where({ tenant_id: s.tenant.id })
       .andWhere("day", ">=", since)
+      .andWhere("day", "<=", new Date(generatedAt).toISOString().slice(0, 10))
       .groupBy("day")
       .orderBy("day")
       .select("day")
@@ -114,6 +121,7 @@ export async function operationsRoutes(
       });
     return {
       days,
+      generatedAt,
       rows: rows.map((r) => ({
         day: r.day,
         responses: Number(r.responses),

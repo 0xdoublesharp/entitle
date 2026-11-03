@@ -6,6 +6,35 @@ import { Operations } from "../src/operations.ts";
 import { operationsFixture, seedOperationLicense } from "./operations-fixtures.test.ts";
 
 
+test("reporting includes completed jobs and daily email cohorts without mixing workspaces or exposing payloads", async () => operationsFixture(async (db, tenant, other) => {
+  const now = Date.UTC(2026, 10, 3, 12);
+  await seedOperationLicense(db, tenant, now);
+  await seedOperationLicense(db, other, now);
+  await db("emails").insert([
+    { tenant_id: tenant.id, id: "sent", kind: "license_key", payload: "private", state: "sent", created_at: now - 86400000, attempts: 1 },
+    { tenant_id: tenant.id, id: "pending", kind: "lifecycle", payload: "private", state: "pending", created_at: now, attempts: 0 },
+    { tenant_id: tenant.id, id: "failed", kind: "license_key", payload: "private", state: "failed", created_at: now, attempts: 12 },
+    { tenant_id: tenant.id, id: "old", kind: "license_key", payload: "private", state: "sent", created_at: now - 40 * 86400000, attempts: 1 },
+    { tenant_id: other.id, id: "foreign", kind: "license_key", payload: "secret", state: "sent", created_at: now, attempts: 1 },
+  ].map(row => ({ ...row, customer_id: `${row.tenant_id}-customer` })));
+  const operations = new Operations(db, tenant.id);
+  const summary = await operations.summary(now);
+  assert.equal(summary.queues.emails!.completed, 2);
+  assert.equal(summary.queues.emails!.total, 4);
+  assert.equal(summary.queues.emails!.failed, 1);
+  const report = await operations.activity(7, now);
+  assert.equal(report.days, 7);
+  assert.equal(report.daily.length, 7);
+  assert.deepEqual(report.daily.at(-2)!.emails, { total: 1, completed: 1, failed: 0, pending: 0 });
+  assert.deepEqual(report.daily.at(-1)!.emails, { total: 2, completed: 0, failed: 1, pending: 1 });
+  assert.deepEqual(report.emails.map(row => row.id), ["failed", "pending", "sent"]);
+  assert.equal(JSON.stringify(report).includes("private"), false);
+  assert.equal(JSON.stringify(report).includes("foreign"), false);
+  assert.deepEqual((await new Operations(db, other.id).activity(1, now)).daily[0]!.emails, { total: 1, completed: 1, failed: 0, pending: 0 });
+  await assert.rejects(operations.activity(0, now));
+  await assert.rejects(operations.activity(366, now));
+}));
+
 test("migration resumes and preserves counters while refusing rollback", async () => operationsFixture(async db => {
   await up(db); await assert.rejects(down(), /Restore a backup/);
   assert.equal(await db.schema.hasColumn("download_metrics", "served_bytes"), true);

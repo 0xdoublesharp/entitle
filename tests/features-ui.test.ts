@@ -843,6 +843,159 @@ test("an export list resolving after navigation cannot restore a discarded panel
   );
 });
 
+test("activity reports show completed email history and daily charts with selectable ranges", async () => {
+  handler = (path) =>
+    path.includes("/operations/activity")
+      ? {
+          days: 7,
+          generatedAt: Date.UTC(2026, 10, 3),
+          daily: [
+            {
+              day: "2026-11-02",
+              work: { total: 1, completed: 1, pending: 0, failed: 0 },
+              emails: { total: 2, completed: 2, pending: 0, failed: 0 },
+              outbound_deliveries: {
+                total: 0,
+                completed: 0,
+                pending: 0,
+                failed: 0,
+              },
+            },
+            {
+              day: "2026-11-03",
+              work: { total: 0, completed: 0, pending: 0, failed: 0 },
+              emails: { total: 1, completed: 0, pending: 1, failed: 0 },
+              outbound_deliveries: {
+                total: 0,
+                completed: 0,
+                pending: 0,
+                failed: 0,
+              },
+            },
+          ],
+          emails: [
+            {
+              id: "job",
+              kind: "license_key",
+              state: "sent",
+              attempts: 1,
+              createdAt: Date.UTC(2026, 10, 2),
+            },
+          ],
+        }
+      : {
+          summary: {
+            queues: {
+              emails: {
+                completed: 2,
+                total: 3,
+                failed: 0,
+                pending: 1,
+                oldestAgeMs: 1000,
+              },
+            },
+          },
+          settings: {},
+          alerts: [],
+          notifications: [],
+          features: { advancedReports: false },
+        };
+  await mount("operations");
+  assert.match(element(".feature-queues").textContent!, /Completed/);
+  (element("#activity-days") as HTMLSelectElement).value = "7";
+  element("#activity-days").dispatchEvent(
+    new dom.Event("change", { bubbles: true }) as unknown as Event,
+  );
+  await flush();
+  await click("Load activity report");
+  assert.equal(calls.at(-1)?.path, "/seller/operations/activity?days=7");
+  assert.equal(
+    dom.document.querySelectorAll(".activity-report svg[role='img']").length,
+    2,
+  );
+  assert.match(element(".email-history").textContent!, /License key/);
+  assert.match(element(".email-history").textContent!, /Sent/);
+  assert.match(element(".activity-report").textContent!, /UTC/);
+  handler = () => ({
+    days: 7,
+    generatedAt: Date.UTC(2026, 10, 3),
+    daily: [],
+    emails: [
+      {
+        id: "failed",
+        kind: "license_key",
+        state: "failed",
+        attempts: 12,
+        createdAt: Date.UTC(2026, 10, 2),
+      },
+      {
+        id: "waiting",
+        kind: "lifecycle",
+        state: "pending",
+        attempts: 0,
+        createdAt: Date.UTC(2026, 10, 3),
+      },
+    ],
+  });
+  await click("Refresh activity report");
+  assert.match(element(".email-history").textContent!, /Failed/);
+  assert.match(element(".email-history").textContent!, /Pending/);
+  handler = () => ({
+    days: 7,
+    generatedAt: Date.UTC(2026, 10, 3),
+    daily: [],
+    emails: [],
+  });
+  await click("Refresh activity report");
+  assert.match(element(".activity-report").textContent!, /No email jobs/);
+});
+
+test("download trends use the selected UTC period and keep missing days at zero", async () => {
+  handler = (path) =>
+    path.includes("/operations/reports")
+      ? {
+          days: 7,
+          generatedAt: Date.UTC(2026, 10, 3, 12),
+          rows: [
+            {
+              day: "2026-11-02",
+              responses: 2,
+              servedBytes: 2048,
+              storageReads: 1,
+              storageReadBytes: 1024,
+            },
+          ],
+        }
+      : {
+          summary: {},
+          settings: {},
+          alerts: [],
+          notifications: [],
+          features: { advancedReports: true },
+        };
+  await mount("operations");
+  (element("#download-report-days") as HTMLSelectElement).value = "7";
+  element("#download-report-days").dispatchEvent(
+    new dom.Event("change", { bubbles: true }) as unknown as Event,
+  );
+  await flush();
+  await click("Load advanced daily reports");
+  assert.equal(calls.at(-1)?.path, "/seller/operations/reports?days=7");
+  assert.equal(
+    dom.document.querySelectorAll(".download-performance svg").length,
+    4,
+  );
+  assert.match(
+    element(".download-performance").textContent!,
+    /Average response size1 KiB/,
+  );
+  assert.match(
+    element(".download-performance svg").getAttribute("aria-label")!,
+    /2026-11-03: 0/,
+  );
+  assert.match(element(".feature-report-table").textContent!, /2026-11-02/);
+});
+
 test("operations presents readable metrics and keeps configuration collapsed", async () => {
   handler = (path) =>
     path.endsWith("/operations/reports")
@@ -1288,9 +1441,17 @@ test("email change keeps empty draft fields and ignores a second queued use of t
   await mount("security");
   await input("currentToken", "entered-proof");
   assert.equal(emailChangeState.value?.id, "");
-  await mount("security", true, false, undefined, "", { id: "request-id", currentToken: "", newToken: "", pendingTokens: ["current-proof"] });
-  const button = [...dom.document.querySelectorAll("button")].find((node) => node.textContent === "Use link from current mailbox")!;
-  button.click(); button.click();
+  await mount("security", true, false, undefined, "", {
+    id: "request-id",
+    currentToken: "",
+    newToken: "",
+    pendingTokens: ["current-proof"],
+  });
+  const button = [...dom.document.querySelectorAll("button")].find(
+    (node) => node.textContent === "Use link from current mailbox",
+  )!;
+  button.click();
+  button.click();
   await flush();
   assert.equal(emailChangeState.value?.currentToken, "current-proof");
   assert.deepEqual(emailChangeState.value?.pendingTokens, []);

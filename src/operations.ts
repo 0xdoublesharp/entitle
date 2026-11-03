@@ -18,7 +18,7 @@ const settingsSchema = z.object({
 export type OperationSettings = z.infer<typeof settingsSchema>;
 const defaults: OperationSettings = {failureThreshold: 1, pendingAgeMs: 3600000, storageRatio: 0.9, bandwidthBytes: 0, cooldownMs: 3600000, notificationsEnabled: true, warningDays: 7};
 export interface OperationAlert { id: string; kind: string; occurredAt: number; }
-interface QueueHealth { failed: number; pending: number; oldestAgeMs: number; }
+interface QueueHealth { failed: number; pending: number; completed: number; canceled: number; total: number; oldestAgeMs: number; }
 
 export class Operations {
   readonly db: DB;
@@ -43,11 +43,14 @@ export class Operations {
     const queues: Record<string, QueueHealth> = {};
     for (const table of ["work", "emails", "outbound_deliveries"]) {
       const row = await this.db(table).where({tenant_id:this.tenantId}).select(
+        this.db.raw("count(*) as ??", ["total"]),
+        this.db.raw("sum(case when ?? = ? then 1 else 0 end) as ??", ["state","sent","completed"]),
+        this.db.raw("sum(case when ?? = ? then 1 else 0 end) as ??", ["state","canceled","canceled"]),
         this.db.raw("sum(case when ?? = ? then 1 else 0 end) as ??", ["state","failed","failed"]),
         this.db.raw("sum(case when ?? in (?, ?) then 1 else 0 end) as ??", ["state","pending","running","pending"]),
         this.db.raw("min(case when ?? in (?, ?) then ?? else null end) as ??", ["state","pending","running","created_at","oldest"]),
       ).first();
-      queues[table] = {failed:Number(row.failed ?? 0),pending:Number(row.pending ?? 0),oldestAgeMs:row.oldest === null ? 0 : Math.max(0, now-Number(row.oldest))};
+      queues[table] = {failed:Number(row.failed ?? 0),pending:Number(row.pending ?? 0),completed:Number(row.completed ?? 0),canceled:Number(row.canceled ?? 0),total:Number(row.total),oldestAgeMs:row.oldest === null ? 0 : Math.max(0, now-Number(row.oldest))};
     }
     const tenant = await this.db("tenants").where({id:this.tenantId}).first();
     check(tenant,404,"tenant_missing","Tenant not found.");
@@ -59,6 +62,37 @@ export class Operations {
     return {queues,storage:{usedBytes:Number(releases!.bytes ?? 0),reservedBytes:Number(reservations!.bytes ?? 0),limitBytes:Number(tenant.max_storage_bytes)},
       bandwidth:{servedBytes:Number(bandwidth!.served ?? 0),storageReadBytes:Number(bandwidth!.read ?? 0),storageReads:Number(bandwidth!.reads ?? 0)},
       billingCapacityWarning:!tenant.exempt && (tenant.suspended || ["past_due","unpaid","canceled","incomplete_expired"].includes(tenant.billing_status) || (tenant.billing_status === "trial" && Number(tenant.trial_ends_at) <= now)) ? true : false};
+  }
+  async activity(days = 30, now = Date.now()) {
+    z.number().int().min(1).max(365).parse(days);
+    const dayMs = 86400000;
+    const today = Math.floor(now / dayMs);
+    const start = (today - days + 1) * dayMs;
+    const empty = () => ({ total: 0, completed: 0, failed: 0, pending: 0 });
+    const daily = Array.from({length:days}, (_, index) => ({
+      day: new Date(start + index * dayMs).toISOString().slice(0,10),
+      work: empty(), emails: empty(), outbound_deliveries: empty(),
+    }));
+    for (const table of ["work", "emails", "outbound_deliveries"] as const) {
+      const rows = await this.db(table).where({tenant_id:this.tenantId})
+        .whereBetween("created_at", [start, now])
+        .select(this.db.raw("floor(?? / ?) as ??", ["created_at", dayMs, "day_index"]))
+        .select(this.db.raw("count(*) as ??", ["total"]))
+        .select(this.db.raw("sum(case when ?? = ? then 1 else 0 end) as ??", ["state", "sent", "completed"]))
+        .select(this.db.raw("sum(case when ?? = ? then 1 else 0 end) as ??", ["state", "failed", "failed"]))
+        .select(this.db.raw("sum(case when ?? in (?, ?) then 1 else 0 end) as ??", ["state", "pending", "running", "pending"]))
+        .groupBy("day_index");
+      for (const row of rows) daily[Number(row.day_index) - (today - days + 1)]![table] = {
+        total:Number(row.total), completed:Number(row.completed), failed:Number(row.failed), pending:Number(row.pending),
+      };
+    }
+    const emails = await this.db("emails").where({tenant_id:this.tenantId})
+      .whereBetween("created_at", [start, now])
+      .orderBy("created_at", "desc").orderBy("id").limit(50)
+      .select("id", "kind", "state", "attempts", "created_at");
+    return {days, generatedAt:now, daily, emails:emails.map(row => ({
+      id:String(row.id), kind:String(row.kind), state:String(row.state), attempts:Number(row.attempts), createdAt:Number(row.created_at),
+    }))};
   }
   async alerts(now = Date.now()): Promise<OperationAlert[]> {
     const [summary, settings] = await Promise.all([this.summary(now),this.settings()]);
