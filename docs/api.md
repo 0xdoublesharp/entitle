@@ -392,8 +392,11 @@ Operators opt products into automated email signup with `FREE_LICENSE_OFFERS`
 ```
 
 Only one offer is allowed for each tenant/product. The product must be WordPress
-and have a published, non-withdrawn private release. Keep campaign allowance and
-expiry unchanged after issuance. Use a new campaign for an intentional new grant.
+and have a published, non-withdrawn private release. For a rolling grant such as Validated Field Pro, replace `expiresAt` with
+`durationDays: 90` and set `siteAllowance: 2`. Each new signup receives 90 days
+from issuance; repeat requests retain the original expiry. Choose exactly one
+of `expiresAt` and `durationDays` (1–365 days). Keep campaign allowance and
+expiry/duration unchanged after issuance. Use a new campaign for an intentional new grant.
 The publisher's capacity/suspension rules apply; Stripe is not required.
 
 All routes below are under
@@ -401,7 +404,7 @@ All routes below are under
 and return `Cache-Control: no-store`. Only these routes allow cross-origin
 requests; no cookies, buyer session, seller key or credentialed CORS is used.
 
-- `GET /`: public allowance, expiry and installation `licensingApi` address.
+- `GET /`: public allowance, expiry or duration and installation `licensingApi` address.
 - `POST /` with `{email,consent:true}`: automatically creates a complimentary
   license and queues the normal encrypted key email; returns `202 {accepted:true}`.
   It never returns the key or customer/license identity. Normalized email plus

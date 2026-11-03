@@ -52,14 +52,14 @@ export async function freeLicenseRoutes(
     };
     const activeOffer = (req: FastifyRequest) => {
       const offer = offerFor(req);
-      check(offer.expiresAt > Date.now(), 410, "offer_ended", "This free access offer has ended.");
+      check(offer.expiresAt === undefined || offer.expiresAt > Date.now(), 410, "offer_ended", "This free access offer has ended.");
       return offer;
     };
     signup.get("", { config: apiLimit(60) }, async req => {
       const offer = activeOffer(req), product = await productFor(req);
       await releaseFor(req, product.id);
       const { config, tenant } = context(req);
-      return { product: product.name, siteAllowance: offer.siteAllowance, expiresAt: offer.expiresAt,
+      return { product: product.name, siteAllowance: offer.siteAllowance, expiresAt: offer.expiresAt, durationDays: offer.durationDays,
         licensingApi: `${config.origin}/api/v1/tenants/${tenant.slug}` };
     });
     signup.post("", { bodyLimit: 2048, config: apiLimit(5) }, async (req, reply) => {
@@ -75,8 +75,8 @@ export async function freeLicenseRoutes(
       const identity = hash(JSON.stringify([tenant.id, product.id, offer.campaign, email]));
       const requestId = `${identity.slice(0,8)}-${identity.slice(8,12)}-4${identity.slice(13,16)}-8${identity.slice(17,20)}-${identity.slice(20,32)}`;
       await licensing.issueComplimentary({ email, productId: product.id, siteAllowance: offer.siteAllowance,
-        expiresAt: offer.expiresAt, requestId, confirm: true },
-        { type: "public_signup", id: `signup:${hash(JSON.stringify([product.id, offer.campaign])).slice(0,40)}`, dailyLimit: offer.dailyLimit });
+        expiresAt: offer.expiresAt ?? Date.now() + offer.durationDays! * 86400000, requestId, confirm: true },
+        { type: "public_signup", id: `signup:${hash(JSON.stringify([product.id, offer.campaign])).slice(0,40)}`, dailyLimit: offer.dailyLimit, ...(offer.durationDays === undefined ? {} : { durationDays: offer.durationDays }) });
       return reply.code(202).send({ accepted: true });
     });
     signup.post("/unlock", { bodyLimit: 2048, config: apiLimit(10) }, async req => {
@@ -106,7 +106,7 @@ export async function freeLicenseRoutes(
       reserveDownload(req, reply, Number(release.size));
       const bytes = await releases.read(release);
       reply.header("content-type", "application/zip").header("content-length", bytes.length)
-        .header("content-disposition", `attachment; filename="remote-content-shortcode-pro-${release.version}.zip"`)
+        .header("content-disposition", `attachment; filename="${product.slug}-${release.version}.zip"`)
         .header("x-checksum-sha256", release.checksum);
       return sendDownload(req, reply, release.id, bytes);
     });
