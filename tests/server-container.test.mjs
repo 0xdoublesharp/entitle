@@ -101,7 +101,7 @@ test(
         "-tAc",
         "SELECT count(*) FROM knex_migrations",
       );
-    assert.equal(count(), "14");
+    assert.equal(count(), "15");
     const name = `entitle-api-role-${suffix}`;
     docker(
       "run",
@@ -131,7 +131,7 @@ test(
       await new Promise((r) => setTimeout(r, 100));
     }
     assert.deepEqual(identity, { role: "api", slot: "blue" });
-    assert.equal(count(), "14");
+    assert.equal(count(), "15");
     docker("stop", "--time", "20", name);
     assert.equal(
       docker("inspect", "--format", "{{.State.ExitCode}}", name),
@@ -202,6 +202,6 @@ test(
       docker("inspect", "--format", "{{.State.ExitCode}}", worker),
       "0",
     );
-    assert.equal(count(), "14");
+    assert.equal(count(), "15");
   },
 );
