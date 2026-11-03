@@ -4,7 +4,8 @@ Software licensing, subscriptions and private updates for independent publishers
 Use **Entitle** for short. The application serves the API, seller dashboard,
 customer portal and background jobs from one TypeScript deployment.
 
-Sell multiple products with annual plans and site or device allowances. Buyers
+Start an invited pilot with complimentary licenses, expiration dates and site or
+device allowances. Add annual Stripe plans when you are ready to sell. Customers
 receive license keys by email, manage installations and download entitled
 releases. WordPress has first-class support alongside Joomla, Electron, Tauri,
 Sparkle, JetBrains and generic clients. Expiration limits new downloads and
@@ -14,10 +15,10 @@ updates; installed software keeps working.
 
 |                | Hosted publisher                                                       | Self-hosted publisher                                                               |
 | -------------- | ---------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
-| Setup          | Sign in at `/app/seller`, create a workspace and connect Stripe        | Run the application with your database, private S3 storage, SMTP and Stripe account |
+| Setup          | Sign in at `/app/seller` and create a workspace; connect Stripe for paid sales | Run the application with your database, private S3 storage and SMTP; add Stripe for paid sales |
 | Operations     | The service operator runs infrastructure and backups                   | You operate infrastructure, upgrades and backups                                    |
 | Charges        | Operator-configured subscription and application fee, plus Stripe fees | No Entitle platform subscription or application fee; provider costs apply           |
-| Buyer payments | Your Stripe account                                                    | Your Stripe account                                                                 |
+| Paid buyer payments | Your Stripe account                                                    | Your Stripe account                                                                 |
 
 The hosted origin is configured in [src/site.ts](src/site.ts). Use the address
 provided by your operator; the repository itself is not a service availability

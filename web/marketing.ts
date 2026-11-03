@@ -65,7 +65,7 @@ const publicHome = () => [
       h(
         "p",
         { class: "intro" },
-        "Turn your plugin or app into a software business. Connect payments, license access and private updates in one place, so you can get back to building.",
+        "Issue complimentary licenses for invited pilots, then add Stripe when you’re ready to sell. Manage customer access, installation allowances and private updates in one place.",
       ),
       h("div", { class: "button-row hero-actions" }, [
         h(
@@ -81,7 +81,7 @@ const publicHome = () => [
       h(
         "p",
         { class: "hero-note" },
-        "Your products. Your customers. Your next release.",
+        "Start an invited pilot before configuring Stripe.",
       ),
     ]),
     h(
@@ -191,7 +191,7 @@ const publicHome = () => [
         h("h2", { id: "journey-title" }, "One connected customer journey."),
         h(
           "p",
-          "From the first purchase to the next release, give your customers a clear path forward.",
+          "From an invited pilot or a first purchase to the next release, give your customers a clear path forward.",
         ),
       ]),
       h(
@@ -200,13 +200,13 @@ const publicHome = () => [
         [
           [
             "01",
-            "Sell on your terms",
-            "Offer hosted checkout or embed a payment form that fits your storefront. Customer payments go directly to your account.",
+            "Start with your product",
+            "Publish a private release and issue complimentary licenses to invited customers. No Stripe account, price or payment is required.",
           ],
           [
             "02",
-            "Make access automatic",
-            "Confirmed payments create licenses. Renewals and paid plan changes keep entitlement and seat allowances in step.",
+            "Add payments when you’re ready",
+            "Connect Stripe for hosted checkout or an embedded payment form. Confirmed payments create separate paid licenses; pilot customers are never enrolled automatically.",
           ],
           [
             "03",
@@ -253,8 +253,8 @@ const publicHome = () => [
         [
           [
             icons.key,
-            "Licenses that follow payment",
-            "Annual entitlements, site or device allowances, renewals, refunds and disputes. Installed software stays available after a license expires.",
+            "Paid and complimentary licenses",
+            "Set expiration dates and site or device allowances for invited pilots. Paid plans add annual renewals, refunds and dispute handling. Installed software stays available after expiry.",
           ],
           [
             icons.box,
@@ -264,12 +264,12 @@ const publicHome = () => [
           [
             icons.card,
             "Your customers, your payments",
-            "Use your own Stripe account for buyer checkout and billing. Your platform subscription is billed separately.",
+            "Connect your own Stripe account when you’re ready for buyer checkout and billing. Complimentary issuance needs no payment provider. Hosted platform charges are separate.",
           ],
           [
             icons.chart,
             "See what is happening",
-            "See paid licenses, seats, storage and served downloads. Track payments by currency, spot failed work and review daily bandwidth with Hosted Pro.",
+            "See licenses, seats, storage and served downloads. Complimentary licenses are separate from payment revenue. Track payments by currency and review daily bandwidth with Hosted Pro.",
           ],
           [
             icons.layers,
@@ -335,7 +335,7 @@ const publicHome = () => [
         ),
         h(
           "p",
-          "Expired subscriptions stop access to new downloads and updates. They never remotely disable installed functionality. Server outages should not get in the way of using software your customers already installed.",
+          "License expiration stops new activations, downloads and updates. It never remotely disables installed functionality. Paid and complimentary customers keep using the software they already installed, including during server outages.",
         ),
       ]),
       h("div", { class: "confidence-details" }, [
@@ -430,7 +430,7 @@ const publicHome = () => [
           h("h3", "Hosted service"),
           h(
             "p",
-            "Create a publisher workspace and connect payments. The service operator runs the app, private storage and backups.",
+            "Create a publisher workspace for your products and invited pilots. Connect payments when you’re ready to sell. The service operator runs the app, private storage and backups.",
           ),
           h("ul", [
             h(
@@ -508,6 +508,12 @@ const publicHome = () => [
         ),
       ]),
       ...[
+        [
+          "Can I run a pilot before setting up Stripe?",
+          "Yes. Create a product without a paid plan, publish its release and issue a complimentary license with an installation allowance and expiration. The customer receives a normal key by email and uses the same activation and updater flow. No payment or subscription is created; workspace limits still apply.",
+          "/docs#complimentary-licenses",
+          "Set up an invited pilot",
+        ],
         [
           "Can I keep my own website and checkout design?",
           "Yes. Use hosted checkout or embed a payment form styled to fit your storefront. Entitle controls prices and paid access on the server.",

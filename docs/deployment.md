@@ -15,9 +15,11 @@ Run the server and a static web runtime behind HTTPS. The server runs the API an
 
 As a hosted seller, you do not deploy this application or provide database,
 storage, SMTP or server credentials. Sign in at `/app/seller`, open the emailed
-link in the same browser, create a workspace, and connect your Stripe account
-from Billing. Create annual recurring Stripe prices and configure its Customer
-Portal, then add products, publish releases and copy the generated client setup.
+link in the same browser and create a workspace. For an invited pilot, add a
+product without a paid plan, publish its release and issue complimentary licenses
+from Licenses. Connect your Stripe account from Billing when you are ready to
+sell; create annual recurring prices and configure its Customer Portal before
+adding paid plans. Copy the generated client setup for your product.
 Buyers use `/app/t/YOUR_SLUG`; integrations use `/api/v1/tenants/YOUR_SLUG`.
 Create scoped API keys for your own automation, never for distributed clients.
 

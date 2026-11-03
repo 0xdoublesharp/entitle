@@ -31,6 +31,7 @@ const groups = [
   {
     label: "Sell and support",
     links: [
+      ["complimentary-licenses", "Complimentary licenses"],
       ["checkout", "Checkout integration"],
       ["billing", "Billing and access"],
       ["customer-accounts", "Customer accounts"],
@@ -176,7 +177,7 @@ export function publicDocs(
         h("div", [
           h("h2", `New to ${site.name}?`),
           paragraph(
-            "Choose who runs the service, then bring a product build and an annual recurring price from your Stripe account.",
+            "Choose who runs the service, bring a product build and start with a complimentary pilot or a paid plan. Stripe is needed only for paid billing.",
           ),
           h(
             "a",
@@ -193,7 +194,7 @@ export function publicDocs(
             [
               "#getting-started",
               "Publish and sell",
-              "Create a product, connect payments and deliver your first paid update.",
+              "Create a product, issue a pilot license or connect payments, and deliver an update.",
             ],
             [
               "#client-integration",
@@ -230,7 +231,7 @@ export function publicDocs(
             ],
             [
               "Publisher workspace",
-              "Create your workspace and connect your own Stripe account. Each publisher's customers and releases are isolated.",
+              "Create your workspace for complimentary licensing; connect your own Stripe account for paid sales. Each publisher's customers and releases are isolated.",
               "One publisher, multiple products and the existing primary workspace. Only the configured owner email can sign in as seller.",
             ],
             [
@@ -261,7 +262,7 @@ export function publicDocs(
         ]),
         note(
           "Using your own Stripe account",
-          "In both versions, you sell to your customers through your own Stripe account. The platform is not a merchant of record. Your product prices are separate from any hosted platform charges.",
+          "When offering paid plans, you sell through your own Stripe account. The platform is not a merchant of record. Product prices are separate from hosted platform charges; complimentary issuance needs no payment provider.",
         ),
       ]),
       section(
@@ -271,10 +272,10 @@ export function publicDocs(
         [
           h("h3", { id: "hosted-setup" }, "Hosted setup"),
           paragraph(
-            "Create your seller workspace and connect Stripe. Sign in through /seller and open the email link in the same browser that requested it. Create a workspace, choose its permanent slug, then connect your Stripe account from Billing. Review the platform subscription, application fee and product/storage allowances before subscribing.",
+            "Create your seller workspace. Sign in through the seller dashboard and open the email link in the same browser that requested it. Choose your workspace's permanent slug. You can issue complimentary licenses without connecting Stripe; product and storage allowances still apply. Review platform charges and limits before subscribing to a hosted plan.",
           ),
           paragraph(
-            "Create annual recurring prices and configure the Customer Portal in your connected Stripe account. Your buyer page is /t/YOUR_WORKSPACE_SLUG and your API base is /api/v1/tenants/YOUR_WORKSPACE_SLUG.",
+            "For paid sales, connect Stripe from Billing, create annual recurring prices and configure the Customer Portal. On the hosted service, buyers use /app/t/YOUR_WORKSPACE_SLUG and the seller dashboard is /app/seller. Your API base is /api/v1/tenants/YOUR_WORKSPACE_SLUG. Custom app mounts may use a different page prefix.",
           ),
           h("h3", { id: "self-hosted-setup" }, "Self-hosted standalone setup"),
           paragraph(
@@ -285,7 +286,7 @@ export function publicDocs(
             "DEPLOYMENT_MODE=standalone\nSTANDALONE_OWNER_EMAIL=owner@example.com\nPUBLIC_ORIGIN=https://licenses.example.com",
           ),
           paragraph(
-            "Configure your matching Stripe secret and publishable keys on the server and register /api/v1/stripe/merchant-webhook with STRIPE_WEBHOOK_SECRET. Supply independent application secrets, private storage, email and the remaining production settings from the source package's .env.example and docs/deployment.md. Create annual recurring prices and configure your Stripe Customer Portal.",
+            "Supply independent application secrets, private storage, email and the remaining production settings from .env.example and docs/deployment.md. For a complimentary pilot, use LOCAL_BILLING=false and omit all primary Stripe, Connect and platform price settings. When enabling paid sales, supply the complete mode-specific Stripe configuration, register /api/v1/stripe/merchant-webhook, create annual recurring prices and configure your Stripe Customer Portal.",
           ),
           paragraph(
             "Sign in at /seller with STANDALONE_OWNER_EMAIL. Email verification gives the owner access to the existing primary workspace. Buyers use /t/primary and client APIs use /api/v1/tenants/primary. No workspace creation, Connect onboarding, platform subscription or application fee is required. Product, storage and upload limits still apply.",
@@ -300,16 +301,16 @@ export function publicDocs(
             { class: "docs-steps" },
             [
               [
-                "Add your product and an annual plan.",
-                "In Products, choose the framework that matches your software. Select an annual recurring Stripe price and set the number of sites or devices per license. WordPress needs the plugin's directory/main-file.php identity. Joomla and JetBrains need their extension or plugin identity too.",
+                "Add your product; a paid plan is optional.",
+                "In Products, choose the framework that matches your software. Leave Include annual paid plan unchecked for complimentary licensing. To sell, select an annual recurring Stripe price and its installation allowance. WordPress needs the plugin's directory/main-file.php identity. Joomla and JetBrains need their extension or plugin identity too.",
               ],
               [
                 "Publish your first release and configure the client.",
                 "In Releases, choose your product, enter a version such as 1.0.0, add release notes and upload the package. Desktop apps need an asset for each supported target. In Client setup, select the product and copy its workspace-specific configuration into your client integration.",
               ],
               [
-                "Test a purchase, activation and update.",
-                "Visit your workspace's customer page. After a confirmed payment, the customer receives a license key. Activate a site or device, publish a newer version and check the native updater. In local billing mode, use the labeled purchase fixture instead of a real payment. Create scoped API keys for CI publication; keep them out of your client software.",
+                "Issue a license, then test activation and an update.",
+                "Issue a complimentary license from Licenses, or complete a paid checkout after configuring Stripe. The customer receives a normal license key by email. Activate a site or device, publish a newer version and check the native updater. Keep local purchase fixtures confined to disposable development or an isolated sandbox. Create scoped API keys for CI publication; keep them out of client software.",
               ],
             ].map(([title, description]) =>
               h("li", [h("h4", title), paragraph(description!)]),
@@ -323,7 +324,7 @@ export function publicDocs(
           h("ul", { class: "docs-checklist" }, [
             h(
               "li",
-              "Verify a paid or sandbox purchase creates one license and delivers its key email.",
+              "Verify complimentary issuance or a paid purchase creates one license and delivers its key email. For disposable testing, use a sandbox.",
             ),
             h(
               "li",
@@ -358,7 +359,7 @@ export function publicDocs(
             ],
             [
               "License",
-              "A customer’s access to one product, with a paid-through date and an installation allowance. Entitlement means that the license currently permits downloads and updates.",
+              "A customer’s access to one product, with paid or complimentary entitlement and an installation allowance. Complimentary licenses use an explicit expiration date. Current entitlement permits new activations, downloads and updates.",
             ],
             [
               "Installation",
@@ -380,10 +381,10 @@ export function publicDocs(
       section(
         "products-and-plans",
         "Catalog setup",
-        "Products, prices and paid seats",
+        "Products, optional paid plans and installations",
         [
           paragraph(
-            "A product slug appears in activation requests and update feeds. Choose it alongside the framework identity before distributing your client. A plan maps one annual recurring Stripe price to the number of installations a license permits.",
+            "A product slug appears in activation requests and update feeds. Choose it alongside the framework identity before distributing your client. Products need no paid plan for complimentary licensing; leave Include annual paid plan unchecked, or use plans:[] in the API. A paid plan maps one annual recurring Stripe price to an installation allowance.",
           ),
           code(
             "JSON / Generic device product",
@@ -632,7 +633,7 @@ export function publicDocs(
           ),
           note(
             "A cached offer still needs current access",
-            "Every package request checks token, product, paid rights and withdrawal. Native ranges verify the complete object on a cold cache, then serve the requested bytes. Preserve the installed version and credentials during network errors; retry with bounded backoff.",
+            "Every package request checks token, product, current paid or complimentary entitlement and withdrawal. Native ranges verify the complete object on a cold cache, then serve the requested bytes. Preserve the installed version and credentials during network errors; retry with bounded backoff.",
           ),
         ],
       ),
@@ -673,6 +674,54 @@ export function publicDocs(
         ),
       ]),
       section(
+        "complimentary-licenses",
+        "Invited pilots",
+        "Run a pilot without Stripe",
+        [
+          paragraph(
+            "Complimentary licenses are real licenses with an expiration date and installation allowance. They need no Stripe account, price, checkout or payment. They use the same activation, seat enforcement, protected downloads and native updater APIs as paid licenses; existing WordPress clients need no changes.",
+          ),
+          h("ol", { class: "docs-steps" }, [
+            h(
+              "li",
+              "Create a product in Products with Include annual paid plan unchecked, then publish its private release and configure the client.",
+            ),
+            h(
+              "li",
+              "Open Licenses → Issue complimentary license. Enter the customer email, product, installation allowance and future expiration date and time. An internal note is optional; it is private to the seller.",
+            ),
+            h(
+              "li",
+              "Review the confirmation and issue the license. Entitle creates or reuses the customer in this workspace and queues the normal license-key email. The date and time shown in the form use your browser’s local time zone.",
+            ),
+            h(
+              "li",
+              "Ask the invited customer to activate with the emailed key and verify their normal download and update flow. Seller revocation/restoration and customer key replacement remain available.",
+            ),
+          ]),
+          note(
+            "No automatic billing",
+            "Complimentary licenses create no invoice, subscription or revenue. Pilot customers are never automatically charged or enrolled, including after Stripe is configured. A later paid purchase uses normal checkout and creates separate paid entitlement. Hosted workspace capacity and service limits still apply.",
+          ),
+          paragraph(
+            "Expiration stops new activations, downloads and updates; installed plugin features continue working. Restoration does not extend expiration. Key replacement invalidates the old key and activation tokens and queues a replacement email. The license is labelled Complimentary in seller and customer views.",
+          ),
+          code(
+            "HTTP / seller issuance · requires licenses:write",
+            `POST ${base}/seller/licenses/complimentary\nAuthorization: Bearer SELLER_API_KEY\nContent-Type: application/json\n\n{\n  "email": "pilot@example.com",\n  "productId": "PRODUCT_ID",\n  "siteAllowance": 2,\n  "expiresAt": 1893456000000,\n  "note": "Invited pilot",\n  "requestId": "bc2ac459-fd7b-4f49-a6f6-f52b57c35c0b",\n  "confirm": true\n}`,
+          ),
+          paragraph(
+            "expiresAt is a future Unix millisecond timestamp, siteAllowance is 1–100000 and the optional note is at most 2000 characters. Browser issuance requires the owner’s session, Origin and CSRF token. The response is {id,customerId,emailQueued:true}; it never returns the raw key. Queuing is distinct from successful SMTP delivery.",
+          ),
+          paragraph(
+            "Retry an uncertain submission with the same requestId and identical details. The committed result is reused without another license or email job. Different details with that UUID return 409 idempotency_conflict. Use a new UUID for a new intended license. SMTP delivery retains the existing at-least-once transport behavior.",
+          ),
+          paragraph(
+            "Integrations should read entitled from the customer license. Complimentary records expose provenance=complimentary and expires_at; paid_through remains 0 and there is no plan or subscription. Activation/status paidThrough remains the access deadline for client compatibility. Honor billingAvailable before offering checkout or billing. Seller credentials and internal notes never belong in a customer-facing bundle.",
+          ),
+        ],
+      ),
+      section(
         "checkout",
         "Your storefront",
         "Integrate checkout without exposing secrets",
@@ -700,6 +749,9 @@ export function publicDocs(
         ],
       ),
       section("billing", "Paid rights", "Billing and access", [
+        paragraph(
+          "Complimentary access is covered in Complimentary licenses. Paid checkout and billing remain unavailable until their required Stripe configuration exists; complimentary issuance never creates a subscription.",
+        ),
         paragraph(
           `In both versions, your Stripe account collects customer payments. ${site.name} is not a merchant of record. Hosted service charges are separate from the price your buyers pay for licenses.`,
         ),
@@ -756,7 +808,7 @@ export function publicDocs(
         "Help customers manage their licenses",
         [
           paragraph(
-            "Direct buyers to /t/YOUR_WORKSPACE_SLUG. A buyer email link is bound to that browser and workspace. Their account lists their own licenses, paid allowances, installations and available releases, and opens the merchant's Stripe Customer Portal.",
+            "Direct buyers to their workspace customer page, /app/t/YOUR_WORKSPACE_SLUG on the hosted service. A buyer email link is bound to that browser and workspace. Their account lists their own licenses, installation allowances, installations and available releases. Complimentary licenses show their expiration; Stripe billing is offered only when available for that customer.",
           ),
           table(
             "Buyer actions",
@@ -1004,8 +1056,12 @@ export function publicDocs(
         paragraph(
           "Build the API and Vue interfaces independently with pnpm build:server and pnpm build:web. The API runs database-backed jobs; a separate web runtime serves immutable frontend releases and proxies API requests. Static content changes can publish without rebuilding either runtime image. Run behind HTTPS with a persistent SQLite database or configured PostgreSQL/MySQL, private S3-compatible storage and SMTP. Redis is optional. The source package contains deploy/compose.yaml, .env.example and the full deployment/configuration guides.",
         ),
+        note(
+          "Production without Stripe",
+          "For complimentary licensing, keep LOCAL_BILLING=false and omit all primary Stripe, Connect and platform price values. HTTPS, application secrets, private storage, SMTP and owner/proxy settings remain required. Partial primary Stripe configuration is refused in production. Paid operations return 503 billing_unavailable until configured; separate sandbox test credentials do not enable primary billing.",
+        ),
         table(
-          "Required production settings",
+          "Production settings and optional paid billing",
           ["Area", "Configure"],
           [
             [
@@ -1026,11 +1082,11 @@ export function publicDocs(
             ],
             [
               "Standalone",
-              "STANDALONE_OWNER_EMAIL, matching merchant Stripe keys/mode and STRIPE_WEBHOOK_SECRET.",
+              "STANDALONE_OWNER_EMAIL. Stripe settings are optional for complimentary licensing; enabling paid sales requires matching merchant keys/mode and STRIPE_WEBHOOK_SECRET.",
             ],
             [
               "Hosted",
-              "Connect OAuth/client configuration, separate Connect signing secret and configured platform subscription prices.",
+              "For paid billing: complete primary Stripe, Connect OAuth/client configuration, separate Connect signing secret and configured platform subscription prices. Omit these together for a complimentary-only deployment.",
             ],
           ],
         ),
@@ -1249,7 +1305,7 @@ export function publicDocs(
             ["releases:write", "Publish and withdraw releases/assets."],
             [
               "licenses:write",
-              "Set or clear seller revocation; local purchase fixtures when enabled.",
+              "Issue complimentary licenses, set or clear seller revocation; local purchase fixtures when enabled.",
             ],
             [
               "billing:reconcile",

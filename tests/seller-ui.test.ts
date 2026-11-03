@@ -667,8 +667,10 @@ test("public docs own the setup guide and current server limits for either direc
     assert.equal(el("main h1").textContent, "Documentation");
     assert.match(
       el("#getting-started").textContent,
-      /Create your seller workspace and connect Stripe/,
+      /Create your seller workspace/,
     );
+    assert.match(el("#complimentary-licenses").textContent, /Issue complimentary license/);
+    assert.match(el("#complimentary-licenses").textContent, /never automatically charged or enrolled/);
     assert.match(el("#server-limits").textContent, /25 MiB/);
     assert.match(text(), /SQLite/);
     assert.match(text(), /merchant of record/i);
@@ -825,6 +827,7 @@ test("seller creates a tenant and selects only a membership returned by the serv
   await input("#tenant-name", "Alpha plugins");
   await input("#tenant-slug", "alpha");
   await submit("#tenant-create");
+  assert.equal(el("main h1").textContent, "Getting started");
   assert.equal(
     el<HTMLDetailsElement>("#workspace-create-disclosure").open,
     false,
@@ -1114,7 +1117,11 @@ test("request errors retain references, retry works, and session expiry clears o
       denied(503, "Dashboard unavailable."),
     );
   });
-  assert.match(text(), /Dashboard unavailable. Reference: request-ref/);
+  assert.match(el('[role="alert"]').textContent!, /Dashboard unavailable/);
+  assert.match(
+    el('[role="alert"] details').textContent!,
+    /Reference: request-ref/,
+  );
   routes.delete("GET /api/v1/tenants/alpha/seller/overview");
   await click("Refresh dashboard");
   assert.match(text(), /buyer@example.test/);
@@ -1162,7 +1169,7 @@ test("docs limits failures are retryable without hiding the setup guide", async 
   );
   assert.match(text(), /Limits unavailable. Reference: request-ref/);
   assert.equal(el("main h1").textContent, "Documentation");
-  assert.match(text(), /Create your seller workspace and connect Stripe/);
+  assert.match(text(), /Create your seller workspace/);
   routes.delete("GET /api/v1/platform/info");
   await click("Reload server limits");
   assert.match(text(), /25 MiB/);
@@ -1987,7 +1994,7 @@ test("oversized native assets are rejected before reading or sending their bytes
 test("seller navigation shows one focused section and keeps creation forms out of the overview", async () => {
   await mount();
   const nav = el('nav[aria-label="Workspace navigation"]');
-  assert.equal(nav.querySelectorAll("button").length, 13);
+  assert.equal(nav.querySelectorAll("button").length, 14);
   assert.equal(el<HTMLElement>("#seller-panel-overview").hidden, false);
   assert.equal(el<HTMLElement>("#seller-panel-products").hidden, true);
   assert.equal(el(".overview-summary").querySelectorAll(".metric").length, 4);
@@ -2107,14 +2114,14 @@ test("admin storage allowances use readable units without changing exact detaile
   }
 });
 
-test("first-time sellers see an open workspace form and a useful onboarding state", async () => {
+test("first-time sellers can create a workspace directly in the onboarding card", async () => {
   await mount("/seller", () => {
     tenants = [];
   });
-  assert.equal(
-    el<HTMLDetailsElement>("#workspace-create-disclosure").open,
-    true,
-  );
+  const setup = el(".seller-content .seller-panel");
+  assert.ok(setup.querySelector("#tenant-create"));
+  assert.equal(setup.querySelector("details"), null);
+  assert.equal(dom.document.querySelector(".seller-sidebar"), null);
   assert.equal(el("main h1").textContent, "Your software business");
   assert.match(
     el(".seller-content").textContent!,
@@ -2122,6 +2129,56 @@ test("first-time sellers see an open workspace form and a useful onboarding stat
   );
   assert.equal(dom.document.querySelector("#tenant-select"), null);
   assert.equal(dom.document.querySelector(".seller-nav"), null);
+});
+
+test("workspace slugs follow the name until edited and normalize manual input", async () => {
+  await mount("/seller", () => {
+    tenants = [];
+  });
+  await input("#tenant-name", "Validated Field");
+  assert.equal(el<HTMLInputElement>("#tenant-slug").value, "validated-field");
+  await input("#tenant-name", "Café & Field 2");
+  assert.equal(el<HTMLInputElement>("#tenant-slug").value, "cafe-field-2");
+  await input("#tenant-slug", "Custom Slug_42!/@");
+  assert.equal(el<HTMLInputElement>("#tenant-slug").value, "custom-slug-42");
+  await input("#tenant-name", "Renamed workspace");
+  assert.equal(el<HTMLInputElement>("#tenant-slug").value, "custom-slug-42");
+  await input("#tenant-slug", "");
+  assert.equal(el<HTMLInputElement>("#tenant-slug").value, "");
+  await input("#tenant-name", "Another name");
+  assert.equal(el<HTMLInputElement>("#tenant-slug").value, "");
+});
+
+test("explicit Stripe action errors explain recovery without retrying the connection", async () => {
+  await mount("/seller", () => {
+    routes.set("POST /api/v1/tenants/alpha/seller/stripe/connect", () =>
+      Response.json(
+        {
+          error: {
+            code: "stripe_not_connected",
+            message: "Connect a Stripe account first.",
+            requestId: "stripe-reference",
+          },
+        },
+        { status: 409 },
+      ),
+    );
+  });
+  await click("Connect Stripe");
+  const alert = el('[role="alert"]');
+  assert.match(alert.textContent!, /Stripe connection needed/);
+  assert.match(alert.textContent!, /complimentary licenses/);
+  assert.match(
+    alert.querySelector("details")!.textContent!,
+    /stripe-reference/,
+  );
+  await click("Open Billing");
+  assert.equal(el("main h1").textContent, "Billing");
+  assert.equal(el<HTMLElement>("#seller-panel-billing").hidden, false);
+  assert.equal(
+    calls.filter((call) => call.path.endsWith("/stripe/connect")).length,
+    1,
+  );
 });
 
 test("refresh headings describe loading then return to the retained section", async () => {
@@ -3097,4 +3154,211 @@ test("marketing documentation is static and points account actions to the config
   } finally {
     meta.remove();
   }
+});
+
+test("setup wizard guides an empty workspace to the product form without creating data", async () => {
+  await mount("/seller", () => {
+    getOverview = () => ({
+      ...overview(),
+      products: [],
+      releases: [],
+      licenses: [],
+    });
+  });
+  await click("Start setup");
+  assert.equal(el("main h1").textContent, "Getting started");
+  assert.match(
+    el("#seller-panel-onboarding").textContent!,
+    /0 of 4 steps complete/,
+  );
+  assert.match(
+    el(".setup-step[aria-current='step']").textContent!,
+    /Add a product/,
+  );
+  await click("Add your first product");
+  assert.equal(el("main h1").textContent, "Products");
+  assert.equal(el<HTMLDetailsElement>("#product-create-disclosure").open, true);
+  assert.equal(dom.document.activeElement?.id, "product-name");
+  assert.equal(
+    calls.some((call) => call.init.method === "POST"),
+    false,
+  );
+  await input("#product-name", "My draft");
+  await click("Back to setup");
+  await click("Add your first product");
+  assert.equal(el<HTMLInputElement>("#product-name").value, "My draft");
+});
+
+test("setup progress uses the chosen product and confirms integration explicitly", async () => {
+  await mount("/seller", () => {
+    getOverview = () => ({ ...overview(), licenses: [] });
+  });
+  await click("Getting started");
+  assert.match(
+    el("#seller-panel-onboarding").textContent!,
+    /2 of 4 steps complete/,
+  );
+  assert.match(
+    el(".setup-step[aria-current='step']").textContent!,
+    /Connect your software/,
+  );
+  await click("Open client setup");
+  assert.equal(el("main h1").textContent, "Client setup");
+  assert.equal(el<HTMLSelectElement>("#config-product").value, "plugin");
+  await click("I’ve added the configuration");
+  assert.equal(el("main h1").textContent, "Getting started");
+  assert.match(
+    el("#seller-panel-onboarding").textContent!,
+    /3 of 4 steps complete/,
+  );
+  await click("Issue a complimentary license");
+  assert.equal(
+    el<HTMLDetailsElement>("#complimentary-issue-disclosure").open,
+    true,
+  );
+  assert.equal(el<HTMLSelectElement>("#complimentary-product").value, "p1");
+  assert.equal(
+    calls.some((call) => call.init.method === "POST"),
+    false,
+  );
+  await mount("/seller", () => {
+    getOverview = () => ({ ...overview(), licenses: [] });
+  });
+  await click("Getting started");
+  assert.match(
+    el("#seller-panel-onboarding").textContent!,
+    /3 of 4 steps complete/,
+  );
+});
+
+test("setup does not count another product's release or an expired or revoked license", async () => {
+  await mount("/seller", () => {
+    getOverview = () => ({
+      ...overview(),
+      products: [
+        ...overview().products,
+        {
+          ...overview().products[0]!,
+          id: "p2",
+          slug: "second",
+          name: "Second product",
+        },
+      ],
+      licenses: [{ ...overview().licenses[0]!, paid_through: Date.now() - 1 }],
+    });
+  });
+  await click("Getting started");
+  await input("#setup-product", "p2", "change");
+  assert.match(
+    el("#seller-panel-onboarding").textContent!,
+    /1 of 4 steps complete/,
+  );
+  assert.match(
+    el(".setup-step[aria-current='step']").textContent!,
+    /Publish a release/,
+  );
+  await click("Publish your first release");
+  assert.equal(el<HTMLSelectElement>("#release-product").value, "p2");
+  assert.equal(el<HTMLDetailsElement>("#release-upload-disclosure").open, true);
+  await click("Back to setup");
+  await input("#setup-product", "p1", "change");
+  assert.match(
+    el("#seller-panel-onboarding").textContent!,
+    /2 of 4 steps complete/,
+  );
+});
+
+test("Stripe remains optional in setup and Billing navigation never starts OAuth", async () => {
+  await mount("/seller", () => {
+    getOverview = () => ({ ...overview(), billingAvailable: false });
+  });
+  await click("Getting started");
+  assert.match(
+    el("#seller-panel-onboarding").textContent!,
+    /Optional.*paid plans/,
+  );
+  assert.equal(dom.document.querySelectorAll(".setup-steps > li").length, 4);
+  await click("Explore Billing");
+  assert.equal(el("main h1").textContent, "Billing");
+  assert.equal(
+    calls.some((call) => call.init.method === "POST"),
+    false,
+  );
+});
+
+test("setup confirmation stays with its product and workspace, and completed setup can be reviewed", async () => {
+  const beta = { ...tenant, id: "tenant-b", slug: "beta", name: "Beta" };
+  const data = () => ({
+    ...overview(),
+    licenses: [{ ...overview().licenses[0]!, paid_through: 4102444800000 }],
+  });
+  await mount("/seller", () => {
+    getOverview = data;
+    tenants = [tenant, beta];
+    routes.set("GET /api/v1/tenants/beta/seller/overview", () =>
+      Response.json({ ...data(), tenant: beta }),
+    );
+  });
+  await click("Getting started");
+  await click("Open client setup");
+  await click("I’ve added the configuration");
+  assert.match(
+    el("#seller-panel-onboarding").textContent!,
+    /4 of 4 steps complete/,
+  );
+  assert.match(
+    el("#seller-panel-onboarding").textContent!,
+    /Your setup checklist is complete/,
+  );
+  await click("Overview");
+  await click("Review setup");
+  assert.equal(el("main h1").textContent, "Getting started");
+  await click("Manage products");
+  assert.equal(el("main h1").textContent, "Products");
+  assert.equal(
+    el<HTMLDetailsElement>("#product-create-disclosure").open,
+    false,
+  );
+  await input("#tenant-select", "beta", "change");
+  await click("Getting started");
+  assert.match(
+    el("#seller-panel-onboarding").textContent!,
+    /3 of 4 steps complete/,
+  );
+  assert.match(
+    el(".setup-step[aria-current='step']").textContent!,
+    /Connect your software/,
+  );
+});
+
+test("guided integration confirmation follows a changed configuration product", async () => {
+  await mount("/seller", () => {
+    getOverview = () => ({
+      ...overview(),
+      licenses: [],
+      products: [
+        ...overview().products,
+        {
+          ...overview().products[0]!,
+          id: "p2",
+          slug: "second",
+          name: "Second product",
+        },
+      ],
+    });
+  });
+  await click("Getting started");
+  await click("Open client setup");
+  await input("#config-product", "second", "change");
+  await click("I’ve added the configuration");
+  assert.equal(el<HTMLSelectElement>("#setup-product").value, "p2");
+  assert.match(
+    el("#seller-panel-onboarding").textContent!,
+    /2 of 4 steps complete/,
+  );
+  await input("#setup-product", "p1", "change");
+  assert.match(
+    el(".setup-step[aria-current='step']").textContent!,
+    /Connect your software/,
+  );
 });

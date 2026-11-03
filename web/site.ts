@@ -2,6 +2,7 @@ import {
   createApp,
   defineComponent,
   h,
+  nextTick,
   onMounted,
   onUnmounted,
   ref,
@@ -58,6 +59,7 @@ interface Overview {
   products: SellerProduct[];
   licenses: {
     id: string;
+    product_id: string;
     product_name: string;
     customer_email: string;
     plan_name: string;
@@ -128,6 +130,7 @@ const emailChangeDraft = (value: unknown): value is EmailChangeDraft => {
 
 const sellerPages = [
   { id: "overview", label: "Overview" },
+  { id: "onboarding", label: "Getting started" },
   { id: "products", label: "Products" },
   { id: "releases", label: "Releases" },
   { id: "licenses", label: "Licenses" },
@@ -191,6 +194,16 @@ const readableBytes = (bytes: number) => {
 };
 const btn = (label: string, action: () => void, disabled = false) =>
   h("button", { type: "button", onClick: action, disabled }, label);
+const workspaceSlug = (value: string) =>
+  value
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[\s_]+/g, "-")
+    .replace(/[^a-z0-9-]/g, "")
+    .replace(/-+/g, "-")
+    .replace(/^-/, "")
+    .slice(0, 63);
 const section = (title: string, children: unknown[]) =>
   h("section", { class: "panel seller-panel" }, [
     h("h2", title),
@@ -291,6 +304,26 @@ export function mountSellerApp(
           notice = ref(""),
           token = ref<string | null>(null),
           secret = ref("");
+        const setupProduct = ref("");
+        const setupStep = ref<string | null>(null);
+        const guidedSetup = ref(false);
+        const integrationConfirmations = ref<Record<string, boolean>>({});
+        const slugEdited = ref(false);
+        const workspaceCreateOpen = ref(false);
+        const errorReference = ref<string>();
+        const stripeConnectionNeeded = ref(false);
+        const reportError = (failure: unknown) => {
+          error.value =
+            failure instanceof ApiError
+              ? failure.message
+              : errorMessage(failure);
+          errorReference.value =
+            failure instanceof ApiError ? failure.requestId : undefined;
+          stripeConnectionNeeded.value =
+            failure instanceof ApiError &&
+            (failure.code === "stripe_not_connected" ||
+              failure.message === "Connect a Stripe account first.");
+        };
         const maxUpload = ref(26214400),
           maxNativeUpload = ref(104857600),
           file = ref<File | null>(null),
@@ -422,6 +455,10 @@ export function mountSellerApp(
         };
         const clearSession = () => {
           activePage.value = "overview";
+          guidedSetup.value = false;
+          setupProduct.value = "";
+          setupStep.value = null;
+          integrationConfirmations.value = {};
           seller.value = null;
           platform.csrfToken = "";
           accountProof.value = "";
@@ -438,6 +475,10 @@ export function mountSellerApp(
           fields.value["key-verification-token"] = "";
           fields.value["release-verification-token"] = "";
           selected.value = "";
+          fields.value["tenant-name"] = "";
+          fields.value["tenant-slug"] = "";
+          slugEdited.value = false;
+          workspaceCreateOpen.value = false;
           clearComplimentary();
           complimentaryWorkspace = "";
         };
@@ -445,11 +486,13 @@ export function mountSellerApp(
           if (busy.value) return;
           busy.value = true;
           error.value = "";
+          errorReference.value = undefined;
+          stripeConnectionNeeded.value = false;
           notice.value = "";
           try {
             await action();
           } catch (failure) {
-            error.value = errorMessage(failure);
+            reportError(failure);
             if (expire && failure instanceof ApiError && failure.status === 401)
               clearSession();
           } finally {
@@ -458,6 +501,9 @@ export function mountSellerApp(
         };
         const dashboard = async () => {
           if (complimentaryWorkspace !== selected.value) {
+            guidedSetup.value = false;
+            setupProduct.value = "";
+            setupStep.value = null;
             clearComplimentary();
             complimentaryWorkspace = selected.value;
           }
@@ -477,7 +523,7 @@ export function mountSellerApp(
               api.get<Overview>("/overview"),
               api
                 .get<{ prices: Price[]; localMode: boolean }>("/prices")
-                .then((data) => ({ ...data, warning: "" }))
+                .then((data) => ({ ...data, warning: undefined }))
                 .catch((failure: unknown) => {
                   if (
                     failure instanceof ApiError &&
@@ -491,14 +537,14 @@ export function mountSellerApp(
                       failure instanceof ApiError &&
                       failure.status === 409 &&
                       failure.code === "stripe_not_connected"
-                        ? ""
-                        : errorMessage(failure),
+                        ? undefined
+                        : failure,
                   };
                 }),
               api.get<{ keys: Key[] }>("/keys"),
             ]);
             if (priceData.warning && data.billingAvailable !== false)
-              error.value = priceData.warning;
+              reportError(priceData.warning);
             overview.value = data;
             prices.value = priceData.prices;
             localMode.value = priceData.localMode;
@@ -640,14 +686,50 @@ export function mountSellerApp(
               min: type === "number" ? 1 : undefined,
               max: id === "complimentary-allowance" ? 100000 : undefined,
               maxlength:
-                id === "complimentary-note"
-                  ? 2000
-                  : id === "complimentary-email"
-                    ? 254
-                    : undefined,
+                id === "tenant-slug"
+                  ? 63
+                  : id === "tenant-name"
+                    ? 200
+                    : id === "complimentary-note"
+                      ? 2000
+                      : id === "complimentary-email"
+                        ? 254
+                        : undefined,
+              pattern:
+                id === "tenant-slug"
+                  ? "[a-z0-9]([a-z0-9\\-]{0,61}[a-z0-9])?"
+                  : undefined,
+              "aria-describedby":
+                id === "tenant-slug" ? "tenant-slug-hint" : undefined,
+              autocapitalize: id === "tenant-slug" ? "none" : undefined,
+              spellcheck: id === "tenant-slug" ? false : undefined,
               onInput: (event: Event) => {
-                fields.value[id] = (event.target as HTMLInputElement).value;
+                const input = event.target as HTMLInputElement;
+                if (id === "tenant-slug") {
+                  slugEdited.value = true;
+                  const position = input.selectionStart;
+                  const value = workspaceSlug(input.value);
+                  const caret =
+                    position === null
+                      ? value.length
+                      : workspaceSlug(input.value.slice(0, position)).length;
+                  input.value = value;
+                  input.setSelectionRange(caret, caret);
+                  fields.value[id] = value;
+                } else {
+                  fields.value[id] = input.value;
+                  if (id === "tenant-name" && !slugEdited.value)
+                    fields.value["tenant-slug"] = workspaceSlug(
+                      input.value,
+                    ).replace(/-$/, "");
+                }
               },
+              onBlur:
+                id === "tenant-slug"
+                  ? () => {
+                      fields.value[id] = fields.value[id]!.replace(/-$/, "");
+                    }
+                  : undefined,
             }),
           ]);
         const select = (
@@ -662,9 +744,31 @@ export function mountSellerApp(
               {
                 id,
                 required: true,
-                value: fields.value[id],
+                value:
+                  id === "setup-product"
+                    ? setupCurrentProduct()?.id || ""
+                    : fields.value[id],
                 onChange: (event: Event) => {
-                  fields.value[id] = (event.target as HTMLSelectElement).value;
+                  if (id === "setup-product") {
+                    setupProduct.value = (
+                      event.target as HTMLSelectElement
+                    ).value;
+                    setupStep.value = null;
+                  } else
+                    fields.value[id] = (
+                      event.target as HTMLSelectElement
+                    ).value;
+                  if (guidedSetup.value && id === "config-product") {
+                    setupProduct.value =
+                      overview.value!.products.find(
+                        (product) => product.slug === fields.value[id],
+                      )?.id || "";
+                  }
+                  if (
+                    guidedSetup.value &&
+                    ["release-product", "complimentary-product"].includes(id)
+                  )
+                    setupProduct.value = fields.value[id]!;
                   if (id === "release-product") {
                     const product = overview.value!.products.find(
                       (p) => p.id === fields.value[id],
@@ -725,6 +829,89 @@ export function mountSellerApp(
               ])
             : node;
         };
+        const workspaceForm = () =>
+          form(
+            "tenant-create",
+            async () => {
+              const result = await platform.post<{ tenant: Tenant }>(
+                "/tenants",
+                {
+                  slug: fields.value["tenant-slug"]!.replace(/-$/, ""),
+                  name: fields.value["tenant-name"],
+                },
+              );
+              seller.value!.tenants.push(result.tenant);
+              activePage.value = "overview";
+              selected.value = result.tenant.slug;
+              fields.value["tenant-name"] = "";
+              fields.value["tenant-slug"] = "";
+              slugEdited.value = false;
+              workspaceCreateOpen.value = false;
+              await dashboard();
+              if (overview.value) activePage.value = "onboarding";
+            },
+            [
+              field("tenant-name", "Workspace name"),
+              h("div", { class: "workspace-slug-field" }, [
+                field("tenant-slug", "Workspace slug"),
+                h(
+                  "p",
+                  { id: "tenant-slug-hint", class: "field-hint" },
+                  "Your workspace’s unique address. Use lowercase letters, numbers and hyphens, up to 63 characters. You can edit the suggested slug.",
+                ),
+              ]),
+            ],
+            "Create workspace",
+          );
+        const workspaceControls = () =>
+          h(
+            "section",
+            { class: "workspace-toolbar", "aria-label": "Workspace controls" },
+            [
+              h("div", { class: "workspace-toolbar-row" }, [
+                hosted.value &&
+                  h("div", { class: "workspace-selector" }, [
+                    h("label", { for: "tenant-select" }, "Selected workspace"),
+                    h(
+                      "select",
+                      {
+                        id: "tenant-select",
+                        disabled: busy.value,
+                        value: selected.value,
+                        onChange: (event: Event) => {
+                          activePage.value = "overview";
+                          accountProof.value = "";
+                          panelProof.value = null;
+                          selected.value = (
+                            event.target as HTMLSelectElement
+                          ).value;
+                          void run(dashboard);
+                        },
+                      },
+                      seller.value!.tenants.map((item) =>
+                        h("option", { value: item.slug }, item.name),
+                      ),
+                    ),
+                  ]),
+                btn("Refresh dashboard", () => void run(dashboard), busy.value),
+              ]),
+              hosted.value &&
+                h(
+                  "details",
+                  {
+                    id: "workspace-create-disclosure",
+                    class: "workspace-create",
+                    open: workspaceCreateOpen.value,
+                    onToggle: (event: Event) => {
+                      workspaceCreateOpen.value = (
+                        event.target as HTMLDetailsElement
+                      ).open;
+                    },
+                  },
+                  [h("summary", "New workspace"), workspaceForm()],
+                ),
+            ],
+          );
         const redirect = async (api: ApiClient, path: string) => {
           const result = await api.post<{ url: string }>(path, {});
           window.location.assign(result.url);
@@ -906,10 +1093,378 @@ export function mountSellerApp(
             },
             [section(title, children)],
           );
+        const setupCurrentProduct = () =>
+          overview.value?.products.find(
+            (product) => product.id === setupProduct.value,
+          ) || overview.value?.products[0];
+        const integrationKey = () => {
+          const product = setupCurrentProduct();
+          return product && seller.value && overview.value
+            ? `entitle:setup:v1:${seller.value.user.id}:${overview.value.tenant.id}:${product.id}`
+            : "";
+        };
+        const integrationConfirmed = () => {
+          const key = integrationKey();
+          if (!key) return false;
+          if (integrationConfirmations.value[key]) return true;
+          try {
+            return window.sessionStorage.getItem(key) === "confirmed";
+          } catch {
+            return false;
+          }
+        };
+        const setupSteps = () => {
+          const data = overview.value!;
+          const product = setupCurrentProduct();
+          return [
+            {
+              id: "products",
+              title: "Add a product",
+              location: "Store → Products",
+              description:
+                "Name your software and choose its framework. Start with complimentary licensing; you can add paid plans later.",
+              action: "Add your first product",
+              complete: !!product,
+              form: "product-create",
+            },
+            {
+              id: "releases",
+              title: "Publish a release",
+              location: "Store → Releases",
+              description:
+                "Upload a versioned package or release asset for your product. Publication requires a fresh emailed verification link, so keep your inbox handy.",
+              action: "Publish your first release",
+              complete:
+                !!product &&
+                data.releases.some(
+                  (release) =>
+                    release.product_id === product.id && !release.withdrawn,
+                ),
+              form: "release-upload",
+            },
+            {
+              id: "setup",
+              title: "Connect your software",
+              location: "Integrations → Client setup",
+              description:
+                "Copy your product’s configuration into your plugin or app, then confirm you’ve added it. Keep tenant API keys out of software distributed to customers. This checklist does not verify an installation.",
+              action: "Open client setup",
+              complete: integrationConfirmed(),
+              form: "",
+            },
+            {
+              id: "licenses",
+              title: "Issue a license",
+              location: "Store → Licenses",
+              description:
+                "Issue a complimentary license to yourself or an invited pilot. Choose an expiry and installation allowance, then use the emailed key in your software. No payment or subscription is created.",
+              action: "Issue a complimentary license",
+              complete:
+                !!product &&
+                data.licenses.some(
+                  (license) =>
+                    license.product_id === product.id &&
+                    !license.revoked &&
+                    !license.suspended &&
+                    (license.provenance === "complimentary"
+                      ? (license.expires_at ?? 0) > Date.now()
+                      : (license.paid_through ?? 0) > Date.now()),
+                ),
+              form: "complimentary-issue",
+            },
+          ] as const;
+        };
+        const openSetup = () => {
+          setupStep.value = null;
+          guidedSetup.value = false;
+          activePage.value = "onboarding";
+          const workspace = selected.value;
+          void nextTick(() => {
+            if (
+              activePage.value !== "onboarding" ||
+              selected.value !== workspace
+            )
+              return;
+            const panel = document.getElementById("seller-panel-onboarding");
+            const heading = panel?.querySelector<HTMLElement>("h2");
+            if (heading) {
+              heading.tabIndex = -1;
+              heading.focus({ preventScroll: true });
+            }
+            panel?.scrollIntoView?.({ block: "start" });
+          });
+        };
+        const openSetupTask = (step: ReturnType<typeof setupSteps>[number]) => {
+          const product = setupCurrentProduct();
+          if (busy.value || (!product && step.id !== "products")) return;
+          guidedSetup.value = true;
+          setupStep.value = step.id;
+          activePage.value = step.id;
+          if (
+            product &&
+            step.id === "releases" &&
+            fields.value["release-product"] !== product.id
+          ) {
+            file.value = null;
+            fields.value["release-signature"] = "";
+            fields.value["release-min-system-version"] = "";
+            fields.value["release-product"] = product.id;
+            fields.value["release-target"] =
+              frameworkInfo[frameworkOf(product)].targets[0] || "";
+          }
+          if (product && step.id === "setup")
+            fields.value["config-product"] = product.slug;
+          if (product && step.id === "licenses")
+            fields.value["complimentary-product"] = product.id;
+          const workspace = selected.value;
+          void nextTick(() => {
+            if (selected.value !== workspace || activePage.value !== step.id)
+              return;
+            const panel = document.getElementById(`seller-panel-${step.id}`);
+            if (step.complete && step.form) {
+              const heading = panel?.querySelector<HTMLElement>("h2");
+              if (heading) {
+                heading.tabIndex = -1;
+                heading.focus();
+              }
+              return;
+            }
+            const disclosure = panel?.querySelector<HTMLDetailsElement>(
+              `#${step.form}-disclosure`,
+            );
+            if (disclosure) disclosure.open = true;
+            panel
+              ?.querySelector<HTMLElement>(
+                step.form
+                  ? `#${step.form} input, #${step.form} select`
+                  : "#config-product",
+              )
+              ?.focus();
+          });
+        };
+        const confirmIntegration = () => {
+          const key = integrationKey();
+          if (!key || busy.value) return;
+          integrationConfirmations.value = {
+            ...integrationConfirmations.value,
+            [key]: true,
+          };
+          try {
+            window.sessionStorage.setItem(key, "confirmed");
+          } catch {
+            /* Current-page progress still works when storage is unavailable. */
+          }
+          openSetup();
+        };
+        const renderSetupWizard = () => {
+          const steps = setupSteps();
+          const completed = steps.filter((step) => step.complete).length;
+          const current =
+            steps.find((step) => step.id === setupStep.value) ||
+            steps.find((step) => !step.complete) ||
+            steps[0];
+          const index = steps.indexOf(current);
+          const product = setupCurrentProduct();
+          return h("div", { class: "setup-wizard" }, [
+            h("div", { class: "setup-intro" }, [
+              completed === steps.length &&
+                h("h3", "Your setup checklist is complete"),
+              h(
+                "p",
+                "Set up your first product, publish a release, and invite a customer. You can return to these steps anytime.",
+              ),
+              h(
+                "p",
+                { class: "setup-progress", role: "status" },
+                `${completed} of ${steps.length} steps complete`,
+              ),
+              h("progress", {
+                value: completed,
+                max: steps.length,
+                "aria-label": "Workspace setup progress",
+              }),
+            ]),
+            overview.value!.products.length > 1 &&
+              h("div", { class: "setup-product-picker" }, [
+                select(
+                  "setup-product",
+                  "Set up a product",
+                  overview.value!.products.map((item) => ({
+                    value: item.id,
+                    label: item.name,
+                  })),
+                ),
+              ]),
+            h("div", { class: "setup-layout" }, [
+              h(
+                "section",
+                { class: "setup-task", "aria-labelledby": "setup-task-title" },
+                [
+                  h(
+                    "p",
+                    { class: "eyebrow" },
+                    `Step ${index + 1} of ${steps.length}`,
+                  ),
+                  h("h3", { id: "setup-task-title" }, current.title),
+                  h("p", current.description),
+                  h("p", { class: "setup-location" }, [
+                    h("span", "Find it anytime"),
+                    h("strong", current.location),
+                  ]),
+                  product &&
+                    h(
+                      "p",
+                      { class: "small muted" },
+                      `Setting up ${product.name}`,
+                    ),
+                  !product &&
+                    current.id !== "products" &&
+                    h(
+                      "p",
+                      { class: "setup-prerequisite" },
+                      "Add a product before continuing with this step.",
+                    ),
+                  h("div", { class: "button-row" }, [
+                    btn(
+                      current.complete && current.id !== "setup"
+                        ? `Manage ${sellerPages.find((page) => page.id === current.id)!.label.toLowerCase()}`
+                        : current.action,
+                      () => openSetupTask(current),
+                      busy.value || (!product && current.id !== "products"),
+                    ),
+                    index > 0 &&
+                      btn(
+                        "Previous step",
+                        () => {
+                          setupStep.value = steps[index - 1]!.id;
+                        },
+                        busy.value,
+                      ),
+                    current.complete &&
+                      index < steps.length - 1 &&
+                      btn(
+                        "Next step",
+                        () => {
+                          setupStep.value = steps[index + 1]!.id;
+                        },
+                        busy.value,
+                      ),
+                  ]),
+                ],
+              ),
+              h(
+                "ol",
+                { class: "setup-steps", "aria-label": "Setup steps" },
+                steps.map((step, stepIndex) =>
+                  h("li", [
+                    h(
+                      "button",
+                      {
+                        type: "button",
+                        class: ["setup-step", step.complete && "is-complete"],
+                        "aria-current":
+                          current.id === step.id ? "step" : undefined,
+                        disabled: busy.value,
+                        onClick: () => {
+                          setupStep.value = step.id;
+                        },
+                      },
+                      [
+                        h(
+                          "span",
+                          { class: "setup-step-number", "aria-hidden": "true" },
+                          step.complete ? "✓" : String(stepIndex + 1),
+                        ),
+                        h("span", [
+                          h("strong", step.title),
+                          h(
+                            "span",
+                            { class: "setup-step-status" },
+                            step.complete
+                              ? step.id === "setup"
+                                ? "Confirmed by you"
+                                : "Complete"
+                              : "To do",
+                          ),
+                        ]),
+                      ],
+                    ),
+                  ]),
+                ),
+              ),
+            ]),
+            h("aside", { class: "setup-optional" }, [
+              h("div", [
+                h("h3", "Optional: offer paid plans"),
+                h(
+                  "p",
+                  "Stripe is not required for this checklist or complimentary licenses. When you’re ready to charge customers, connect Stripe and configure paid plans in Billing.",
+                ),
+              ]),
+              btn(
+                "Explore Billing",
+                () => {
+                  guidedSetup.value = false;
+                  activePage.value = "billing";
+                },
+                busy.value,
+              ),
+            ]),
+          ]);
+        };
+        const renderSetupContext = () => {
+          if (
+            !guidedSetup.value ||
+            !overview.value ||
+            ["overview", "onboarding"].includes(activePage.value)
+          )
+            return null;
+          const steps = setupSteps();
+          const step = steps.find((item) => item.id === activePage.value);
+          if (!step) return null;
+          return h(
+            "aside",
+            { class: "setup-context", "aria-label": "Guided setup" },
+            [
+              h("div", [
+                h(
+                  "p",
+                  { class: "eyebrow" },
+                  `Setup · Step ${steps.indexOf(step) + 1} of ${steps.length}`,
+                ),
+                h("h2", step.title),
+                h(
+                  "p",
+                  step.complete
+                    ? "This step is complete. Return to the checklist for your next step."
+                    : step.description,
+                ),
+              ]),
+              h("div", { class: "button-row" }, [
+                step.id === "setup" &&
+                  !step.complete &&
+                  btn(
+                    "I’ve added the configuration",
+                    confirmIntegration,
+                    busy.value,
+                  ),
+                btn("Back to setup", openSetup, busy.value),
+                btn(
+                  "Exit guided setup",
+                  () => {
+                    guidedSetup.value = false;
+                  },
+                  busy.value,
+                ),
+              ]),
+            ],
+          );
+        };
         const renderDashboard = () => {
           const data = overview.value!,
             m = data.metrics;
           return [
+            panel("onboarding", "Your setup checklist", [renderSetupWizard()]),
             panel("billing", "Workspace status", [
               h("div", { class: "billing-layout" }, [
                 h("section", { class: "feature-card" }, [
@@ -1025,6 +1580,39 @@ export function mountSellerApp(
                 "Open buyer page",
               ),
             ]),
+            activePage.value === "overview" &&
+              h(
+                "section",
+                {
+                  class: "panel setup-overview",
+                  "aria-labelledby": "setup-overview-title",
+                },
+                [
+                  h("div", [
+                    h("p", { class: "eyebrow" }, "Getting started"),
+                    h(
+                      "h2",
+                      { id: "setup-overview-title" },
+                      setupSteps().every((step) => step.complete)
+                        ? "Your workspace is set up"
+                        : "Let’s get your software ready",
+                    ),
+                    h(
+                      "p",
+                      "A guided checklist for your first product, release, integration and license. Stripe is optional.",
+                    ),
+                  ]),
+                  btn(
+                    setupSteps().every((step) => step.complete)
+                      ? "Review setup"
+                      : setupSteps().some((step) => step.complete)
+                        ? "Continue setup"
+                        : "Start setup",
+                    openSetup,
+                    busy.value,
+                  ),
+                ],
+              ),
             panel("overview", "Your workspace in numbers", [
               h(
                 "p",
@@ -1810,11 +2398,18 @@ export function mountSellerApp(
             ]),
           ];
         };
+        const layoutClass = () =>
+          seller.value?.tenants.length
+            ? "seller-layout"
+            : "seller-layout seller-onboarding";
         return () =>
           h("div", { class: "app seller-app" }, [
             h("a", { href: "#main", class: "skip-link" }, "Skip to content"),
             appHeader(),
             h("main", { id: "main", class: "page-main seller-main" }, [
+              seller.value &&
+                seller.value.tenants.length > 0 &&
+                workspaceControls(),
               h("div", { class: "page-heading" }, [
                 h("div", [
                   h("p", { class: "eyebrow" }, "Seller workspace"),
@@ -1863,7 +2458,48 @@ export function mountSellerApp(
                   ),
                 ]),
               error.value &&
-                h("p", { role: "alert", class: "error-banner" }, error.value),
+                h(
+                  "div",
+                  {
+                    role: "alert",
+                    class: [
+                      "seller-alert",
+                      stripeConnectionNeeded.value && "seller-alert-warning",
+                    ],
+                  },
+                  [
+                    h("div", { class: "seller-alert-copy" }, [
+                      h(
+                        "h2",
+                        stripeConnectionNeeded.value
+                          ? "Stripe connection needed"
+                          : "We couldn’t complete that request",
+                      ),
+                      h("p", error.value),
+                      stripeConnectionNeeded.value &&
+                        h(
+                          "p",
+                          "Open Billing to connect Stripe and load paid plans. You can keep setting up products and issuing complimentary licenses in the meantime.",
+                        ),
+                      errorReference.value &&
+                        h("details", { class: "seller-alert-details" }, [
+                          h("summary", "Support details"),
+                          h("p", `Reference: ${errorReference.value}`),
+                        ]),
+                    ]),
+                    h("div", { class: "button-row" }, [
+                      stripeConnectionNeeded.value &&
+                        overview.value &&
+                        btn("Open Billing", () => {
+                          activePage.value = "billing";
+                          error.value = "";
+                        }),
+                      btn("Dismiss", () => {
+                        error.value = "";
+                      }),
+                    ]),
+                  ],
+                ),
               notice.value &&
                 h("p", { role: "status", class: "notice" }, notice.value),
               busy.value && h("p", { role: "status" }, "Working…"),
@@ -1875,24 +2511,26 @@ export function mountSellerApp(
                     "p",
                     "Use your emailed link to sign in. The link is single-use.",
                   ),
-                  btn(
-                    "Confirm seller sign in",
-                    () =>
-                      void run(async () => {
-                        await platform.post(
-                          "/auth/consume",
-                          { token: token.value },
-                          false,
-                        );
-                        token.value = null;
-                        clearSession();
-                        await session();
-                      }, false),
-                    busy.value || !token.value,
-                  ),
-                  btn("Cancel sign in", () => {
-                    token.value = null;
-                  }),
+                  h("div", { class: "button-row" }, [
+                    btn(
+                      "Confirm seller sign in",
+                      () =>
+                        void run(async () => {
+                          await platform.post(
+                            "/auth/consume",
+                            { token: token.value },
+                            false,
+                          );
+                          token.value = null;
+                          clearSession();
+                          await session();
+                        }, false),
+                      busy.value || !token.value,
+                    ),
+                    btn("Cancel sign in", () => {
+                      token.value = null;
+                    }),
+                  ]),
                 ]),
               loading.value
                 ? h("p", { role: "status" }, "Loading seller session…")
@@ -1946,194 +2584,138 @@ export function mountSellerApp(
                           busy.value,
                         ),
                     ])
-                  : h("div", { class: "seller-layout" }, [
-                      h(
-                        "aside",
-                        {
-                          class: "seller-sidebar",
-                          "aria-label": "Workspace controls",
-                        },
-                        [
-                          h("div", { class: "workspace-switcher" }, [
-                            hosted.value &&
-                              seller.value.tenants.length > 0 &&
+                  : h("div", { class: layoutClass() }, [
+                      seller.value.tenants.length > 0 &&
+                        h(
+                          "aside",
+                          {
+                            class: "seller-sidebar",
+                            "aria-label": "Workspace navigation",
+                          },
+                          [
+                            overview.value &&
                               h(
-                                "label",
-                                { for: "tenant-select" },
-                                "Selected workspace",
-                              ),
-                            hosted.value &&
-                              seller.value.tenants.length > 0 &&
-                              h(
-                                "select",
+                                "nav",
                                 {
-                                  id: "tenant-select",
-                                  disabled: busy.value,
-                                  value: selected.value,
-                                  onChange: (event: Event) => {
-                                    activePage.value = "overview";
-                                    accountProof.value = "";
-                                    panelProof.value = null;
-                                    selected.value = (
-                                      event.target as HTMLSelectElement
-                                    ).value;
-                                    void run(dashboard);
-                                  },
-                                },
-                                seller.value.tenants.map((item) =>
-                                  h("option", { value: item.slug }, item.name),
-                                ),
-                              ),
-                            seller.value.tenants.length > 0 &&
-                              btn(
-                                "Refresh dashboard",
-                                () => void run(dashboard),
-                                busy.value,
-                              ),
-                            hosted.value &&
-                              h(
-                                "details",
-                                {
-                                  id: "workspace-create-disclosure",
-                                  class: "workspace-create",
-                                  open: seller.value.tenants.length === 0,
+                                  "aria-label": "Workspace navigation",
+                                  class: "seller-nav",
                                 },
                                 [
-                                  h("summary", "New workspace"),
-                                  form(
-                                    "tenant-create",
-                                    async () => {
-                                      const result = await platform.post<{
-                                        tenant: Tenant;
-                                      }>("/tenants", {
-                                        slug: fields.value["tenant-slug"],
-                                        name: fields.value["tenant-name"],
-                                      });
-                                      seller.value!.tenants.push(result.tenant);
-                                      activePage.value = "overview";
-                                      selected.value = result.tenant.slug;
-                                      await dashboard();
+                                  h(
+                                    "label",
+                                    {
+                                      class: "seller-mobile-nav",
+                                      for: "seller-mobile-page",
                                     },
                                     [
-                                      field("tenant-name", "Workspace name"),
-                                      field("tenant-slug", "Workspace slug"),
-                                    ],
-                                    "Create workspace",
-                                  ),
-                                ],
-                              ),
-                          ]),
-                          overview.value &&
-                            h(
-                              "nav",
-                              {
-                                "aria-label": "Workspace navigation",
-                                class: "seller-nav",
-                              },
-                              [
-                                h(
-                                  "label",
-                                  {
-                                    class: "seller-mobile-nav",
-                                    for: "seller-mobile-page",
-                                  },
-                                  [
-                                    "Go to",
-                                    h(
-                                      "select",
-                                      {
-                                        id: "seller-mobile-page",
-                                        value: activePage.value,
-                                        disabled: busy.value,
-                                        onChange: (event: Event) => {
-                                          activePage.value = (
-                                            event.target as HTMLSelectElement
-                                          ).value as SellerPage;
-                                        },
-                                      },
-                                      sellerPages.map((page) =>
-                                        h(
-                                          "option",
-                                          { value: page.id },
-                                          page.label,
-                                        ),
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                                h("div", { class: "seller-desktop-nav" }, [
-                                  ...sellerPages
-                                    .filter((page) => page.id === "overview")
-                                    .map((page) =>
+                                      "Go to",
                                       h(
-                                        "button",
+                                        "select",
                                         {
-                                          id: `seller-nav-${page.id}`,
-                                          type: "button",
-                                          class: "seller-nav-link",
-                                          "aria-controls": `seller-panel-${page.id}`,
-                                          "aria-current":
-                                            activePage.value === page.id
-                                              ? "page"
-                                              : undefined,
+                                          id: "seller-mobile-page",
+                                          value: activePage.value,
                                           disabled: busy.value,
-                                          onClick: () => {
-                                            activePage.value = page.id;
+                                          onChange: (event: Event) => {
+                                            activePage.value = (
+                                              event.target as HTMLSelectElement
+                                            ).value as SellerPage;
                                           },
                                         },
-                                        page.label,
-                                      ),
-                                    ),
-                                  ...sellerPageGroups.map((group) =>
-                                    h("div", { class: "seller-nav-group" }, [
-                                      h("p", group.label),
-                                      ...sellerPages
-                                        .filter((page) =>
-                                          group.pages.includes(page.id),
-                                        )
-                                        .map((page) =>
+                                        sellerPages.map((page) =>
                                           h(
-                                            "button",
-                                            {
-                                              id: `seller-nav-${page.id}`,
-                                              type: "button",
-                                              class: "seller-nav-link",
-                                              "aria-controls": `seller-panel-${page.id}`,
-                                              "aria-current":
-                                                activePage.value === page.id
-                                                  ? "page"
-                                                  : undefined,
-                                              disabled: busy.value,
-                                              onClick: () => {
-                                                activePage.value = page.id;
-                                              },
-                                            },
+                                            "option",
+                                            { value: page.id },
                                             page.label,
                                           ),
                                         ),
-                                    ]),
+                                      ),
+                                    ],
                                   ),
-                                ]),
-                              ],
-                            ),
-                        ],
-                      ),
+                                  h("div", { class: "seller-desktop-nav" }, [
+                                    ...sellerPages
+                                      .filter((page) =>
+                                        ["overview", "onboarding"].includes(
+                                          page.id,
+                                        ),
+                                      )
+                                      .map((page) =>
+                                        h(
+                                          "button",
+                                          {
+                                            id: `seller-nav-${page.id}`,
+                                            type: "button",
+                                            class: "seller-nav-link",
+                                            "aria-controls": `seller-panel-${page.id}`,
+                                            "aria-current":
+                                              activePage.value === page.id
+                                                ? "page"
+                                                : undefined,
+                                            disabled: busy.value,
+                                            onClick: () => {
+                                              activePage.value = page.id;
+                                            },
+                                          },
+                                          page.label,
+                                        ),
+                                      ),
+                                    ...sellerPageGroups.map((group) =>
+                                      h("div", { class: "seller-nav-group" }, [
+                                        h("p", group.label),
+                                        ...sellerPages
+                                          .filter((page) =>
+                                            group.pages.includes(page.id),
+                                          )
+                                          .map((page) =>
+                                            h(
+                                              "button",
+                                              {
+                                                id: `seller-nav-${page.id}`,
+                                                type: "button",
+                                                class: "seller-nav-link",
+                                                "aria-controls": `seller-panel-${page.id}`,
+                                                "aria-current":
+                                                  activePage.value === page.id
+                                                    ? "page"
+                                                    : undefined,
+                                                disabled: busy.value,
+                                                onClick: () => {
+                                                  activePage.value = page.id;
+                                                },
+                                              },
+                                              page.label,
+                                            ),
+                                          ),
+                                      ]),
+                                    ),
+                                  ]),
+                                ],
+                              ),
+                          ],
+                        ),
                       h("div", { class: "seller-content" }, [
+                        renderSetupContext(),
                         seller.value.tenants.length === 0 &&
                           section("Create your first workspace", [
                             h(
                               "p",
-                              "Use the workspace form to get started. Then connect Stripe, add your products and publish releases.",
+                              "Use the form below to get started. Add a product, publish a release and issue complimentary licenses for an invited pilot. Connect Stripe when you’re ready to offer paid plans.",
                             ),
+                            hosted.value && workspaceForm(),
                           ]),
                         recovery.value && renderRecovery(),
                         (recovery.value || seller.value.tenants.length === 0) &&
-                          btn(
-                            "Account security",
-                            () => {
-                              activePage.value = "security";
-                            },
-                            busy.value,
+                          h(
+                            "div",
+                            { class: "button-row seller-account-actions" },
+                            [
+                              btn(
+                                "Account security",
+                                () => {
+                                  activePage.value = "security";
+                                },
+                                busy.value,
+                              ),
+                            ],
                           ),
                         accountProof.value &&
                           h("div", { class: "panel verification-proof" }, [

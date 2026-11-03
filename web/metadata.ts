@@ -12,7 +12,7 @@ export const pageMetadata = {
   docs: {
     title: `Documentation · ${site.name}`,
     description:
-      "Set up software licensing, Stripe subscriptions and private updates with Entitle. Guides for WordPress, Joomla, desktop apps and custom integrations.",
+      "Set up complimentary licenses, paid plans and private updates with Entitle. Start an invited pilot before Stripe; integrate WordPress, desktop apps and custom clients.",
     path: "/docs",
     imageAlt:
       "Doublesharp Entitle documentation. From your first license to your next release.",
