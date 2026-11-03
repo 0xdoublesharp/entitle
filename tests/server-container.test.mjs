@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, chmod, rm } from "node:fs/promises";
+import { mkdtemp, chmod, rm, readdir } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 
@@ -9,6 +9,8 @@ test(
   { skip: !process.env.SERVER_CONTAINER_IMAGE, timeout: 180000 },
   async (t) => {
     const image = process.env.SERVER_CONTAINER_IMAGE;
+    const expectedMigrations = (await readdir(new URL("../src/migrations/", import.meta.url)))
+      .filter(name => /^\d{3}_.+\.ts$/.test(name)).length;
     const suffix = `${process.pid}-${Date.now()}`,
       network = `entitle-roles-${suffix}`,
       postgres = `entitle-pg-${suffix}`;
@@ -101,7 +103,7 @@ test(
         "-tAc",
         "SELECT count(*) FROM knex_migrations",
       );
-    assert.equal(count(), "15");
+    assert.equal(count(), String(expectedMigrations));
     const name = `entitle-api-role-${suffix}`;
     docker(
       "run",
@@ -131,7 +133,7 @@ test(
       await new Promise((r) => setTimeout(r, 100));
     }
     assert.deepEqual(identity, { role: "api", slot: "blue" });
-    assert.equal(count(), "15");
+    assert.equal(count(), String(expectedMigrations));
     docker("stop", "--time", "20", name);
     assert.equal(
       docker("inspect", "--format", "{{.State.ExitCode}}", name),
@@ -162,7 +164,7 @@ test(
     );
     assert.notEqual(failed.status, 0);
     assert.match(failed.stderr, /migration|schema/i);
-    assert.equal(count(), "15");
+    assert.equal(count(), String(expectedMigrations + 1));
     docker(
       "exec",
       postgres,
@@ -202,6 +204,6 @@ test(
       docker("inspect", "--format", "{{.State.ExitCode}}", worker),
       "0",
     );
-    assert.equal(count(), "15");
+    assert.equal(count(), String(expectedMigrations));
   },
 );
