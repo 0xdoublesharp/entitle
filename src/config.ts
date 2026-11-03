@@ -18,7 +18,23 @@ export function serverIdentity(config: {
   return { role, slot };
 }
 
+export const freeLicenseOffersSchema = z.array(z.object({
+  tenant: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).max(100),
+  product: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).max(100),
+  campaign: z.string().regex(/^[a-zA-Z0-9_-]{1,40}$/),
+  siteAllowance: z.number().int().min(1).max(100),
+  expiresAt: z.iso.datetime().transform(value => Date.parse(value)),
+  origins: z.array(z.url().refine(value => {
+    const url = new URL(value);
+    return url.origin === value && url.protocol === "https:";
+  }, "Use an exact HTTPS origin without a path or credentials.")).min(1).max(10),
+  dailyLimit: z.number().int().min(1).max(1000).default(50),
+}).strict()).max(100).refine(offers => new Set(offers.map(offer => `${offer.tenant}/${offer.product}`)).size === offers.length,
+  "Only one free offer per tenant/product is allowed.");
+export type FreeLicenseOffer = z.infer<typeof freeLicenseOffersSchema>[number];
+
 export interface Config {
+  freeLicenseOffers?: FreeLicenseOffer[];
   serverRole?: ServerRole;
   deploymentSlot?: DeploymentSlot;
   deploymentMode: "standalone" | "hosted";
@@ -413,6 +429,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       );
   }
   return {
+    freeLicenseOffers: freeLicenseOffersSchema.parse(JSON.parse(env.FREE_LICENSE_OFFERS ?? "[]")),
     serverRole,
     ...(deploymentSlot === undefined ? {} : { deploymentSlot }),
     ...(platformProStripePriceId ? { platformProStripePriceId } : {}),

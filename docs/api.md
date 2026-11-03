@@ -381,3 +381,42 @@ create reconciliation jobs or restore customer identity. Missing canonical
 customer attribution is retryable. Operator `closure-inspect` and blocked approval
 list the exact record IDs by table needed for reviewed reconciliation; neither
 returns decrypted provider payloads. See [operator maintenance](operator-maintenance.md).
+
+### Public free-license signup
+
+Operators opt products into automated email signup with `FREE_LICENSE_OFFERS`
+(default `[]`). Offers use exact HTTPS origins and server-owned terms:
+
+```json
+[{"tenant":"YOUR-SLUG","product":"remote-content-shortcode-pro","campaign":"feedback-2026","siteAllowance":1,"expiresAt":"2027-02-01T00:00:00.000Z","origins":["https://remote-content-shortcode.doublesharp.com"],"dailyLimit":50}]
+```
+
+Only one offer is allowed for each tenant/product. The product must be WordPress
+and have a published, non-withdrawn private release. Keep campaign allowance and
+expiry unchanged after issuance. Use a new campaign for an intentional new grant.
+The publisher's capacity/suspension rules apply; Stripe is not required.
+
+All routes below are under
+`/api/v1/tenants/:tenant/free-license/:product`. They require an allowed `Origin`
+and return `Cache-Control: no-store`. Only these routes allow cross-origin
+requests; no cookies, buyer session, seller key or credentialed CORS is used.
+
+- `GET /`: public allowance, expiry and installation `licensingApi` address.
+- `POST /` with `{email,consent:true}`: automatically creates a complimentary
+  license and queues the normal encrypted key email; returns `202 {accepted:true}`.
+  It never returns the key or customer/license identity. Normalized email plus
+  campaign deduplicates concurrent retries across processes, without reissuing
+  mail, extending expiry or restoring revoked/replaced keys.
+- `POST /unlock` with `{key}`: validates tenant, product and current entitlement
+  and returns `{token,version,expiresAt,licensingApi}`. The encrypted ticket
+  expires in five minutes and is bound to the license, current key hash and
+  release. No installation seat is consumed.
+- `POST /download` with `{token}`: returns private ZIP bytes after rechecking
+  entitlement, key replacement, ticket expiry and release publication/withdrawal.
+  Keep the ticket in memory and out of URLs or browser storage.
+
+New requests stop after the offer expires. Existing entitled keys may still
+unlock/download while the offer remains configured. Per-IP request limits and
+an atomic UTC daily issuance limit bound signup volume. Duplicate requests do
+not consume another issuance; SMTP delivery remains an outbox operation. The
+normal activation/update endpoints accept the emailed key unchanged.

@@ -144,6 +144,7 @@ src/email.ts
 src/errors.ts
 src/framework-api.ts
 src/frameworks.ts
+src/free-license-api.ts
 src/http-timeout.ts
 src/licensing.ts
 src/maintenance-cli.ts
@@ -238,6 +239,7 @@ tests/features-ui.test.ts
 tests/framework-api.test.ts
 tests/framework-backup-integration.test.ts
 tests/framework-publication.test.ts
+tests/free-license-signup.test.ts
 tests/framework-schema.test.ts
 tests/frontend-entrypoints.test.ts
 tests/frontend-release.test.mjs

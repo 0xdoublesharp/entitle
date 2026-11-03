@@ -97,7 +97,7 @@ export class Licenses {
   }
   async issueComplimentary(
     input: z.infer<typeof complimentaryInput>,
-    actor: { type: "seller" | "api_key"; id: string },
+    actor: { type: "seller" | "api_key" | "public_signup"; id: string; dailyLimit?: number },
   ) {
     const request = complimentaryInput.parse(input);
     const requestHash = hash(JSON.stringify([request.email, request.productId, request.siteAllowance, request.expiresAt, request.note || null]));
@@ -110,6 +110,12 @@ export class Licenses {
       if (existing) {
         check(existing.complimentary_request_hash === requestHash, 409, "idempotency_conflict", "This request ID was already used with different license details.");
         return { id: existing.id, customerId: existing.customer_id, emailQueued: true };
+      }
+      if (actor.dailyLimit !== undefined) {
+        const day = Math.floor(this.now() / 86400000) * 86400000;
+        const count = await tx("licenses").where({ tenant_id: this.tenant.id, issued_by: actor.id })
+          .andWhere("issued_at", ">=", day).andWhere("issued_at", "<", day + 86400000).count({ total: "id" }).first();
+        check(Number(count!.total) < actor.dailyLimit, 429, "signup_limit", "Free license requests are busy. Please try again tomorrow.");
       }
       check(request.expiresAt > this.now(), 400, "invalid_expiration", "Choose a future expiration date.");
       const product = await tx("products").where({ tenant_id: this.tenant.id, id: request.productId }).first();
