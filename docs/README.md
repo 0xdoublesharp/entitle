@@ -20,7 +20,7 @@ The public `/docs` guide is available without an account on a running deployment
 - [Framework support](platform-support.md): supported adapters and exact package
   requirements, with links to examples.
 - [WordPress](wordpress.md): plugin setup, update hooks and local qualification.
-- [API](api.md), [CLI](cli.md) and [outgoing webhooks](webhooks.md): protocol and
+- [API](api.md), [CLI](cli.md), [MCP](mcp.md) and [outgoing webhooks](webhooks.md): protocol and
   automation reference.
 
 ## Operate a deployment

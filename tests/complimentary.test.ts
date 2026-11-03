@@ -92,6 +92,22 @@ test("complimentary issuance atomically creates real entitlement, customer, one 
   assert.equal(f.sent.filter(m => m.text.includes(key)).length, 1);
 });
 
+test("complimentary license detail and retained Stripe customers remain readable with billing disabled", async t => {
+  const f = await fixture(t);
+  const { license } = await f.issue();
+  const detail = await f.app.inject({ url: `${base}/seller/licenses/${license.id}`, headers: f.headers });
+  assert.equal(detail.statusCode, 200, detail.body);
+  assert.equal(detail.json().license.plan_name, "Complimentary");
+  assert.equal(detail.json().license.expires_at, f.input.expiresAt);
+  await f.db("licenses").where({ id: license.id }).update({ refund_revoked: 1 });
+  const revoked = await f.app.inject({ url: `${base}/seller/licenses/${license.id}`, headers: f.headers });
+  assert.equal(revoked.json().license.revoked, true);
+  await f.db("customers").where({ id: license.customer_id }).update({ stripe_id: "cus_retained" });
+  const account = await f.app.inject({ url: `${base}/me`, headers: await f.buyer(license.customer_id) });
+  assert.equal(account.statusCode, 200, account.body);
+  assert.equal(account.json().billingAvailable, false);
+});
+
 test("complimentary retry identity survives concurrency, expiry and key replacement; conflicting reuse fails", async t => {
   const f = await fixture(t);
   const responses = await Promise.all([1, 2, 3].map(() => f.post("/seller/licenses/complimentary", f.input)));

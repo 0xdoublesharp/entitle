@@ -57,6 +57,7 @@ export class Auth {
           c.email,
           appUrl(this.config, `/t/${this.tenant.slug}#login=${token}`),
           "customer",
+          this.tenant.name,
         ),
         this.tenant.id,
       );

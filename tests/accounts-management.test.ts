@@ -22,6 +22,7 @@ import { PlatformAuth } from "../src/platform-auth.ts";
 import { Auth } from "../src/auth.ts";
 import { csrf, hash, seal, unseal } from "../src/crypto.ts";
 import type { Message } from "../src/email.ts";
+import { Window } from "happy-dom";
 import {
   AccountManagement,
   CustomerAccounts,
@@ -314,6 +315,41 @@ test("verification and grants bind browser, purpose, expiry and single use", asy
       .statusCode,
     400,
   );
+});
+
+test("account emails include branded actions with the original browser-bound links", async (t) => {
+  const f = await fixture(t);
+  assert.equal((await f.post("/verification/request", { purpose: "api_keys" })).statusCode, 200);
+  assert.equal((await f.post("/email-change/request", { email: "new@example.test" })).statusCode, 200);
+  for (const [kind, to, expiry, label, fragment] of [
+    ["account_verification", "owner@example.test", "10 minutes", "Confirm account action", "account-verification="],
+    ["account_email_current", "owner@example.test", "15 minutes", "Approve email change", "account-email-change="],
+    ["account_email_new", "new@example.test", "15 minutes", "Verify email address", "account-email-change="],
+  ]) {
+    const message = await f.message(kind!, to);
+    assert.ok(message.html, `${kind} should include HTML`);
+    const window = new Window();
+    try {
+      window.document.write(message.html);
+      const document = window.document;
+      assert.ok(document.querySelector(".email-content"));
+      assert.ok(document.body.textContent.includes(expiry!));
+      assert.match(document.body.textContent, /same signed-in browser/);
+      assert.ok(document.body.textContent.includes(to!));
+      const links = [...document.querySelectorAll("a")];
+      assert.equal(links.length, 2);
+      assert.equal(links[0]!.textContent, label);
+      for (const link of links) {
+        const href = link.getAttribute("href")!;
+        assert.ok(href.includes(fragment!));
+        assert.ok(message.text.includes(href));
+      }
+      assert.equal(links[0]!.getAttribute("href"), links[1]!.getAttribute("href"));
+      assert.doesNotMatch(document.body.textContent, /api_keys/);
+    } finally {
+      await window.happyDOM.close();
+    }
+  }
 });
 
 test("a failed sensitive action rolls its grant back, a successful one consumes it", async (t) => {

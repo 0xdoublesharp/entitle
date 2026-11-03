@@ -65,7 +65,7 @@ The [documentation index](docs/README.md) provides guides by task.
 | ------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
 | Manage products, customers and releases     | [Seller guide](docs/seller-guide.md)                                                                            |
 | Add licensing and updates to an application | [Client integration](docs/client-integration.md) and [framework support](docs/platform-support.md)              |
-| Automate integrations                       | [API](docs/api.md), [CLI](docs/cli.md) and [webhooks](docs/webhooks.md)                                         |
+| Automate integrations                       | [API](docs/api.md), [CLI](docs/cli.md), [MCP](docs/mcp.md) and [webhooks](docs/webhooks.md)                    |
 | Operate a server                            | [Deployment](docs/deployment.md), [configuration](docs/configuration.md) and [backup](docs/backup.md)           |
 | Move a publisher or handle privacy requests | [Portability](docs/portability.md) and [operator maintenance](docs/operator-maintenance.md)                     |
 | Develop or investigate a failure            | [Architecture](docs/architecture.md), [testing](docs/testing.md) and [troubleshooting](docs/troubleshooting.md) |

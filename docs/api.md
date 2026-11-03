@@ -194,6 +194,7 @@ Prefix `/api/v1/tenants/:tenant/seller`. Interactive owners use seller sessions 
 | Method | Route                       | Scope / behavior                                                                                              |
 | ------ | --------------------------- | ------------------------------------------------------------------------------------------------------------- |
 | GET    | /overview                   | read; tenant, products/plans, safe licenses/releases and measured metrics                                     |
+| GET    | /licenses/:id               | read; one tenant license and safe installation records, `limit` 1–500 (default 100), optional `after` cursor; returns `nextCursor` |
 | GET    | /prices                     | read; active annual connected-account prices; local fixtures clearly labeled                                  |
 | POST   | /products                   | catalog:write; `{slug,name,framework?,frameworkConfig?,pluginBasename?,plans:[{name,siteAllowance,priceId}]}` |
 | POST   | /releases/:product/:version | releases:write; WordPress raw ZIP and base64url JSON `X-Release-Metadata`                                     |

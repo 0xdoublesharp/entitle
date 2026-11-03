@@ -104,6 +104,14 @@ async function seedPaid(db: DB) {
   });
 }
 
+test("complimentary migration rejects a preexisting nonunique request index", async () => fixture(async (db) => {
+  await migrate(db);
+  await db.raw("DROP INDEX licenses_complimentary_request_unique");
+  await db.raw("CREATE INDEX licenses_complimentary_request_unique ON licenses(tenant_id, complimentary_request_id)");
+  const { up } = await import("../src/migrations/014_complimentary_licenses.ts");
+  await assert.rejects(up(db), /Complimentary issuance request constraint mismatch/);
+}));
+
 test("complimentary migration preserves paid licenses and dependent rows, accepts provider-free licenses and enforces workspace request uniqueness", async () =>
   fixture(async (db) => {
     await seedPaid(db);

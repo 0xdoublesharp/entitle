@@ -243,6 +243,13 @@ test("complimentary customer licenses show expiry without offering unavailable b
   assert.doesNotMatch(text(), /Manage billing/);
   assert.match(text(), /Paid checkout is unavailable/);
 });
+
+test("a complimentary license with an unavailable expiry displays no invented paid-through date", async () => {
+  await mount((fixture) => { fixture.currentAccount = account([license({ provenance: "complimentary", expires_at: null, paid_through: 0 })]); });
+  await flush();
+  assert.match(text(), /Expires/);
+  assert.doesNotMatch(text(), /Paid through/);
+});
 test("Vue mounts and exposes genuine account and catalog loading states", async () => {
   const me = deferred<Response>();
   const catalog = deferred<Response>();

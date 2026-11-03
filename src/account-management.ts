@@ -1,5 +1,6 @@
 import { appUrl } from "../packages/shared/app-path.ts";
-import { site } from "./site.ts";
+import { accountVerificationEmail, emailChangeEmail } from "./transactional-email.ts";
+import type { Message } from "./email.ts";
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
@@ -172,7 +173,7 @@ export class AccountManagement {
       return { ok: true };
     });
   }
-  private async send(tx: Tx, kind: string, to: string, text: string) {
+  private async send(tx: Tx, kind: string, message: Omit<Message, "messageId">) {
     const id = randomUUID();
     await tx("platform_emails").insert({
       id,
@@ -180,9 +181,7 @@ export class AccountManagement {
       created_at: Date.now(),
       payload: seal(
         {
-          to,
-          subject: `Confirm your ${site.name} account action`,
-          text,
+          ...message,
           messageId: `<${id}@entitle>`,
         },
         this.auth.config.secret,
@@ -213,8 +212,7 @@ export class AccountManagement {
       await this.send(
         tx,
         "account_verification",
-        s.user.email,
-        `Confirm ${purpose} in the same signed-in browser: ${appUrl(this.auth.config, `/seller#account-verification=${token}`)}\nThis single-use verification expires in 10 minutes. Ignore it if you did not request it.`,
+        accountVerificationEmail(s.user.email, appUrl(this.auth.config, `/seller#account-verification=${token}`), purpose),
       );
       await audit(tx, s.user.id, "seller.verification.requested", null, {
         purpose,
@@ -450,14 +448,12 @@ export class AccountManagement {
       await this.send(
         tx,
         "account_email_current",
-        s.user.email,
-        `Approve changing your account email to ${address} in the same signed-in browser: ${appUrl(this.auth.config, `/seller#account-email-change=${id}&token=${currentToken}`)}\nBoth addresses must approve within 15 minutes. Ignore this email to keep your current address.`,
+        emailChangeEmail(s.user.email, appUrl(this.auth.config, `/seller#account-email-change=${id}&token=${currentToken}`), address, true),
       );
       await this.send(
         tx,
         "account_email_new",
-        address,
-        `Verify your new ${site.name} email address in the same signed-in browser: ${appUrl(this.auth.config, `/seller#account-email-change=${id}&token=${newToken}`)}\nBoth addresses must approve within 15 minutes.`,
+        emailChangeEmail(address, appUrl(this.auth.config, `/seller#account-email-change=${id}&token=${newToken}`), address, false),
       );
       await audit(tx, s.user.id, "seller.email_change.requested");
       return { id, expiresIn: 900 };

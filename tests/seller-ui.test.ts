@@ -2547,6 +2547,38 @@ test("email change deduplicates links and resets proofs for a different request"
   await click("Sign out");
   assert.equal(dom.sessionStorage.length, 0);
 });
+test("email change remains usable when session storage cannot save proofs", async () => {
+  const storage = dom.sessionStorage;
+  const descriptor = Object.getOwnPropertyDescriptor(dom, "sessionStorage");
+  Object.defineProperty(dom, "sessionStorage", {
+    configurable: true,
+    value: { getItem: storage.getItem.bind(storage), removeItem: storage.removeItem.bind(storage), setItem: () => { throw Error("Storage disabled"); } },
+  });
+  try {
+    await mount("/seller#account-email-change=request-id&token=current-proof");
+    await click("Account security");
+    await click("Use link from current mailbox");
+    assert.equal(el<HTMLInputElement>("#changeId").value, "request-id");
+    assert.equal(el<HTMLInputElement>("#currentToken").value, "current-proof");
+  } finally {
+    if (descriptor) Object.defineProperty(dom, "sessionStorage", descriptor);
+    else Reflect.deleteProperty(dom, "sessionStorage");
+  }
+});
+
+test("complimentary issuance rejects fractional seats and past expiration before confirmation", async () => {
+  await mount("/seller");
+  await click("Licenses");
+  await input("#complimentary-email", "pilot@example.test");
+  for (const [allowance, expiry] of [["1.5", "2030-06-01T12:00"], ["100001", "2030-06-01T12:00"], ["1", "2020-01-01T12:00"]]) {
+    await input("#complimentary-allowance", allowance!);
+    await input("#complimentary-expiry", expiry!);
+    await submit("#complimentary-issue");
+    assert.match(text(), /Choose an installation allowance from 1 to 100000 and a future expiration date/);
+    assert.ok(!calls.some((call) => call.path.endsWith("/licenses/complimentary")));
+  }
+});
+
 test("email change restores only unexpired proofs belonging to the current seller", async () => {
   const draft = {
     id: "request-id",
@@ -2556,6 +2588,8 @@ test("email change restores only unexpired proofs belonging to the current selle
   };
   for (const stored of [
     "not-json",
+    JSON.stringify({ sellerId: "seller", expiresAt: Date.now() + 900000, draft: null }),
+    JSON.stringify({ sellerId: "seller", expiresAt: Date.now() + 900000, draft: "invalid" }),
     JSON.stringify({ sellerId: "seller", expiresAt: Date.now() - 1, draft }),
     JSON.stringify({
       sellerId: "another-seller",
@@ -2575,6 +2609,29 @@ test("email change restores only unexpired proofs belonging to the current selle
     assert.equal(el<HTMLInputElement>("#currentToken").value, "");
     assert.equal(dom.sessionStorage.length, 0);
   }
+});
+
+test("queued seller-session retries retain this seller's proofs and clear them after an identity change", async () => {
+  await mount("/seller#account-email-change=request-id&token=current-proof", () => {
+    routes.set("GET /api/v1/platform/me", () => denied(503, "Session unavailable"));
+  });
+  const retry = button("Retry session");
+  let sellerId = "seller";
+  routes.set("GET /api/v1/platform/me", () => Response.json({ user: { id: sellerId, email: `${sellerId}@example.test` }, csrfToken: "csrf", tenants }));
+  const retrySession = async () => {
+    retry.dispatchEvent(new dom.MouseEvent("click", { bubbles: true }));
+    await flush();
+  };
+  await retrySession();
+  assert.equal(el<HTMLInputElement>("#changeId").value, "request-id");
+  await retrySession();
+  assert.equal(el<HTMLInputElement>("#changeId").value, "request-id");
+  sellerId = "another-seller";
+  await retrySession();
+  assert.match(text(), /another-seller@example.test/);
+  assert.equal(dom.sessionStorage.length, 0);
+  await click("Account security");
+  assert.equal(el<HTMLInputElement>("#changeId").value, "");
 });
 test("security survives restricted workspace access and revoking the current session clears the seller", async () => {
   await mount("/seller", () => {
