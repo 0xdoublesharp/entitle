@@ -1,3 +1,4 @@
+import { freeLicenseRoutes } from "./free-license-api.ts";
 import type { ReadCache } from "./read-cache.ts";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
@@ -46,6 +47,7 @@ export async function buyerRoutes(
     size: number,
   ) => void,
 ) {
+  await freeLicenseRoutes(api, context, successfulDownload, reserveDownload);
   api.get("/catalog", async (req) => {
     const { db, tenant, config } = context(req);
     const products = await db("products")
