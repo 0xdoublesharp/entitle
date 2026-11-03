@@ -284,6 +284,167 @@ async function mount(path = "/seller", configure?: () => void) {
 beforeEach(() => dom.sessionStorage.clear());
 afterEach(() => app?.unmount());
 after(() => dom.happyDOM.close());
+test("workspace manager archives, restores and removes an empty workspace with fresh confirmation", async () => {
+  await mount("/seller", () => {
+    tenants = [
+      { ...tenant },
+      {
+        ...tenant,
+        id: "old",
+        slug: "old",
+        name: "Old workspace",
+        archived_at: 1,
+      },
+    ];
+    routes.set("POST /api/v1/platform/tenants/tenant-a/archive", () => {
+      tenants = tenants.map((item) =>
+        item.id === tenant.id ? { ...item, archived_at: 2 } : item,
+      );
+      return Response.json({ tenant: tenants[0] });
+    });
+    routes.set("POST /api/v1/platform/tenants/tenant-a/restore", () => {
+      tenants = tenants.map((item) =>
+        item.id === tenant.id ? { ...item, archived_at: null } : item,
+      );
+      return Response.json({ tenant: tenants[0] });
+    });
+    routes.set("GET /api/v1/platform/tenants/tenant-a/removal", () =>
+      Response.json({ removable: true, blockers: [] }),
+    );
+    routes.set("POST /api/v1/platform/tenants/tenant-a/remove", () => {
+      tenants = tenants.filter((item) => item.id !== tenant.id);
+      return Response.json({ ok: true });
+    });
+  });
+  assert.equal(el<HTMLSelectElement>("#tenant-select").options.length, 1);
+  await click("Workspaces");
+  assert.match(text(), /Archiving keeps licenses, updates and billing running/);
+  await click("Archive workspace");
+  await click("Confirm archive");
+  await input("#workspace-view", "archived", "change");
+  assert.match(el("#seller-panel-workspaces").textContent!, /Old workspace/);
+  const restore = [
+    ...dom.document.querySelectorAll("#seller-panel-workspaces button"),
+  ].find((button) => button.textContent === "Restore workspace")!;
+  (restore as unknown as HTMLButtonElement).click();
+  await flush();
+  await input("#workspace-view", "active", "change");
+  await click("Check removal");
+  await input("#workspace-remove-slug", tenant.slug);
+  await click("Email removal verification");
+  await input("#workspace-remove-token", "email-proof");
+  await submit("#workspace-remove-form");
+  await click("Permanently remove workspace");
+  const removed = calls.find((call) => call.path.endsWith("/tenant-a/remove"))!;
+  assert.deepEqual(removed.body, { slug: tenant.slug });
+  assert.match(text(), /Workspace removed/);
+});
+test("archived workspace and sandbox views explain retained history and preserve access", async () => {
+  await mount("/seller", () => {
+    tenants = [
+      { ...tenant, archived_at: 1 },
+      {
+        ...tenant,
+        id: "child",
+        slug: "child",
+        name: "Sandbox",
+        sandbox_parent_slug: "alpha",
+        parent_archived_at: 1,
+      },
+      {
+        ...tenant,
+        id: "primary",
+        slug: "primary",
+        name: "Primary",
+        archived_at: 1,
+      },
+    ];
+    routes.set("GET /api/v1/platform/tenants/tenant-a/removal", () =>
+      Response.json({
+        removable: false,
+        blockers: ["Customer and billing history"],
+      }),
+    );
+  });
+  assert.match(
+    el<HTMLSelectElement>("#tenant-select").selectedOptions[0]!.textContent!,
+    /Archived/,
+  );
+  await click("Manage workspaces");
+  assert.match(text(), /No active workspaces/);
+  await input("#workspace-view", "archived", "change");
+  assert.match(text(), /Test workspace for alpha/);
+  assert.match(text(), /Restore the publisher/);
+  await click("Check removal");
+  assert.match(text(), /Customer and billing history/);
+  assert.equal(dom.document.querySelector("#workspace-remove-form"), null);
+  await click("Open workspace");
+  assert.equal(el("h1").textContent, "Overview");
+  assert.ok(calls.some((call) => call.path.endsWith("/alpha/seller/overview")));
+});
+test("workspace removal accepts its emailed fragment and leaves an empty account usable", async () => {
+  await mount("/seller#account-verification=email-removal-proof", () => {
+    routes.set("GET /api/v1/platform/tenants/tenant-a/removal", () =>
+      Response.json({ removable: true, blockers: [] }),
+    );
+    routes.set("POST /api/v1/platform/tenants/tenant-a/remove", () => {
+      tenants = [];
+      return Response.json({ ok: true });
+    });
+  });
+  await click("Workspaces");
+  await click("Check removal");
+  await input(
+    'select[aria-label="Verification purpose"]',
+    "workspace_remove",
+    "change",
+  );
+  await click("Continue with verification link");
+  assert.equal(
+    el<HTMLInputElement>("#workspace-remove-token").value,
+    "email-removal-proof",
+  );
+  await input("#workspace-remove-slug", "alpha");
+  await submit("#workspace-remove-form");
+  await click("Permanently remove workspace");
+  assert.match(text(), /Workspace removed/);
+  assert.match(text(), /Create your publisher workspace/);
+  await click("Manage workspaces");
+  await input("#workspace-view", "archived", "change");
+  assert.match(text(), /No archived workspaces/);
+});
+test("the workspace manager picks another active workspace and rejects inventory from another account", async () => {
+  await mount("/seller", () => {
+    tenants = [
+      { ...tenant },
+      { ...tenant, id: "second", slug: "second", name: "Second" },
+    ];
+    routes.set("POST /api/v1/platform/tenants/tenant-a/archive", () => {
+      tenants = tenants.map((item) =>
+        item.id === tenant.id ? { ...item, archived_at: 1 } : item,
+      );
+      return Response.json({ ok: true });
+    });
+  });
+  await click("Workspaces");
+  await click("Archive workspace");
+  await click("Confirm archive");
+  assert.equal(el<HTMLSelectElement>("#tenant-select").value, "second");
+  await input("#workspace-view", "archived", "change");
+  routes.set("POST /api/v1/platform/tenants/tenant-a/restore", () =>
+    Response.json({ ok: true }),
+  );
+  routes.set("GET /api/v1/platform/me", () =>
+    Response.json({
+      user: { id: "foreign", email: "foreign@example.test" },
+      tenants: [],
+      csrfToken: "other",
+    }),
+  );
+  await click("Restore workspace");
+  assert.match(text(), /seller@example.test/);
+  assert.doesNotMatch(text(), /foreign@example.test/);
+});
 test("complimentary issuance confirms the frozen request and reuses its ID after an ambiguous failure", async () => {
   let attempts = 0;
   await mount("/seller", () => {
@@ -2235,7 +2396,7 @@ test("license table searches, combines filters, sorts numbers and dates, and res
 test("seller navigation shows one focused section and keeps creation forms out of the overview", async () => {
   await mount();
   const nav = el('nav[aria-label="Workspace navigation"]');
-  assert.equal(nav.querySelectorAll("button").length, 14);
+  assert.equal(nav.querySelectorAll("button").length, 15);
   assert.equal(el<HTMLElement>("#seller-panel-overview").hidden, false);
   assert.equal(el<HTMLElement>("#seller-panel-products").hidden, true);
   assert.equal(el(".overview-summary").querySelectorAll(".metric").length, 4);

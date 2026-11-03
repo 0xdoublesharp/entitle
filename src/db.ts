@@ -47,6 +47,7 @@ const migrationNames = [
   "012_business_events",
   "013_platform_price_history",
   "014_complimentary_licenses",
+  "015_workspace_archive",
 ] as const;
 
 // Knex's migration listing can create its metadata tables. Serving roles only
@@ -101,7 +102,9 @@ export async function migrate(db: DB) {
                                 ? import("./migrations/012_business_events.ts")
                                 : m === "013_platform_price_history"
                                   ? import("./migrations/013_platform_price_history.ts")
-                                  : import("./migrations/014_complimentary_licenses.ts"),
+                                  : m === "014_complimentary_licenses"
+                                    ? import("./migrations/014_complimentary_licenses.ts")
+                                    : import("./migrations/015_workspace_archive.ts"),
     },
   });
 }
@@ -162,6 +165,7 @@ export async function reset(db: DB) {
       automatic_tax: 0,
       collect_tax_id: 0,
       collect_billing_address: 0,
+      archived_at: null,
       slug: "primary",
       name: "Primary",
       stripe_account_id: null,

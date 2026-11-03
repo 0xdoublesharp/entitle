@@ -293,9 +293,23 @@ expiring token. POST `/verification/consume` accepts `{purpose,token}` and retur
 `{verification,expiresIn}`. The returned proof lasts five minutes and can be used
 once for that purpose and session. Send it in `X-Account-Verification` when
 creating/revoking API keys (`api_keys`), publishing releases from the browser
-(`release_publish`), or creating a workspace export (`tenant_transfer`). CI
+(`release_publish`), creating a workspace export (`tenant_transfer`), or permanently
+removing an empty workspace (`workspace_remove`). CI
 publication remains authenticated by a scoped API key. A failed action requires
 a new proof. Never save proofs in browser storage or URLs.
+
+Hosted workspace lifecycle routes use `/api/v1/platform/tenants/:id`, where `id`
+is the workspace UUID from `/platform/me`. All require an interactive owner
+session; API keys cannot manage workspace lifecycle. POST `/archive` and
+`/restore` accept `{}` and return `{tenant}`. GET `/removal` returns
+`{removable,blockers}`. POST `/remove` accepts `{slug}` and consumes fresh
+`workspace_remove` proof from `X-Account-Verification`; it rechecks retained
+history under a database lock and returns `{ok:true}` only after removal.
+Archiving changes visibility, preserving membership and business access.
+`/platform/me` includes `archived_at`, `parent_archived_at` and
+`sandbox_parent_slug`; a sandbox is hidden when either archive timestamp is set.
+Removal refuses the primary workspace and workspaces with history or a linked
+sandbox. Security audit records survive empty-workspace removal.
 
 POST `/recovery-codes` accepts `{verification}` for purpose `recovery_codes` and
 returns replacement one-use recovery codes once. Store them offline. Signed-out

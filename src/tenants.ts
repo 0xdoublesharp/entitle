@@ -33,6 +33,53 @@ const reservedSlugs = new Set([
   "entitle",
 ]);
 
+// All durable business records block removal. Configuration and unused keys can
+// be discarded, but exports and other retained audit history cannot.
+const historyTables = [
+  "products",
+  "plans",
+  "customers",
+  "licenses",
+  "grants",
+  "installations",
+  "releases",
+  "release_assets",
+  "billing_events",
+  "work",
+  "emails",
+  "login_tokens",
+  "sessions",
+  "download_metrics",
+  "invoice_metrics",
+  "upload_reservations",
+  "platform_grants",
+  "platform_checkouts",
+  "oauth_states",
+  "platform_price_history",
+  "business_events",
+  "outbound_endpoints",
+  "outbound_events",
+  "outbound_deliveries",
+  "operation_notifications",
+  "account_closures",
+  "account_privacy_receipts",
+];
+const baselineAlertIds = [
+  "queue_failed",
+  "queue_stalled",
+  "storage_capacity",
+  "bandwidth",
+  "billing_capacity",
+];
+const disposableAuditActions = [
+  "tenant.created",
+  "membership.created",
+  "tenant.archived",
+  "tenant.restored",
+  "api_key.created",
+  "api_key.revoked",
+];
+
 export type TenantOperation = "capacity" | "buyer" | "recovery" | "reconcile";
 export function tenantAvailable(
   tenant: Tenant,
@@ -96,12 +143,175 @@ export class Tenants {
   async list(userId: string): Promise<Tenant[]> {
     return this.db<Tenant>("tenants")
       .join("seller_memberships", "seller_memberships.tenant_id", "tenants.id")
+      .leftJoin(
+        "publisher_sandboxes",
+        "publisher_sandboxes.sandbox_tenant_id",
+        "tenants.id",
+      )
+      .leftJoin(
+        "tenants as parent",
+        "parent.id",
+        "publisher_sandboxes.parent_tenant_id",
+      )
       .where({
         "seller_memberships.user_id": userId,
         "seller_memberships.role": "owner",
       })
-      .select("tenants.*")
+      .select(
+        "tenants.*",
+        "parent.archived_at as parent_archived_at",
+        "parent.slug as sandbox_parent_slug",
+      )
       .orderBy("tenants.created_at");
+  }
+  private async lifecycleTenant(tx: Tx, seller: SellerSession, id: string) {
+    check(
+      this.config.deploymentMode === "hosted",
+      404,
+      "not_found",
+      "Workspace management is unavailable in standalone mode.",
+    );
+    await lock(tx, "schema");
+    await lock(tx, "auth");
+    for (const name of ["schema", "billing", "work", "email", "auth"])
+      await tx("locks")
+        .where({ id: `${id}:${name}` })
+        .increment("version", 1);
+    // Obtain the parent row's write lock before any consistent read. FK inserts
+    // cannot race the empty check, including under MySQL repeatable-read.
+    const changed = await tx("tenants")
+      .where({ id })
+      .update({ archived_at: tx.ref("archived_at") });
+    check(changed, 404, "tenant_not_found", "Workspace was not found.");
+    await this.owner(tx, seller, id);
+    check(
+      id !== "primary",
+      409,
+      "primary_workspace",
+      "The primary workspace cannot be archived or removed.",
+    );
+    return (await tx<Tenant>("tenants").where({ id }).first())!;
+  }
+  async archive(seller: SellerSession, id: string, archived: boolean) {
+    return this.db.transaction(async (tx) => {
+      const tenant = await this.lifecycleTenant(tx, seller, id);
+      if (archived ? tenant.archived_at == null : tenant.archived_at != null) {
+        tenant.archived_at = archived ? Date.now() : null;
+        await tx("tenants")
+          .where({ id })
+          .update({ archived_at: tenant.archived_at });
+        await this.audit(
+          tx,
+          seller,
+          id,
+          archived ? "tenant.archived" : "tenant.restored",
+        );
+      }
+      return tenant;
+    });
+  }
+  private async removalBlockers(tx: Tx, tenant: Tenant) {
+    const blockers: string[] = [];
+    if (
+      tenant.stripe_account_id ||
+      tenant.platform_customer_id ||
+      tenant.platform_subscription_id ||
+      tenant.paid_through > 0 ||
+      Number(tenant.pro_paid_through) > 0
+    )
+      blockers.push("Connected payment accounts or billing history");
+    if (
+      await tx("publisher_sandboxes")
+        .where({ parent_tenant_id: tenant.id })
+        .first()
+    )
+      blockers.push("Linked sandbox workspace");
+    for (const table of historyTables)
+      if (await tx(table).where({ tenant_id: tenant.id }).first())
+        blockers.push(table.replaceAll("_", " "));
+    if (
+      await tx("operation_alerts")
+        .where({ tenant_id: tenant.id })
+        .where((query) =>
+          query
+            .whereNotIn("id", baselineAlertIds)
+            .orWhereNot("active", 0)
+            .orWhereNot("last_sent_at", 0),
+        )
+        .first()
+    )
+      blockers.push("Operational alert history");
+    if (
+      await tx("tenant_api_keys")
+        .where({ tenant_id: tenant.id })
+        .whereNotNull("last_used_at")
+        .first()
+    )
+      blockers.push("API key usage history");
+    if (
+      await tx("audit_events")
+        .where({ tenant_id: tenant.id })
+        .whereNotIn("action", disposableAuditActions)
+        .first()
+    )
+      blockers.push("Retained workspace activity or exports");
+    return blockers;
+  }
+  async removal(seller: SellerSession, id: string) {
+    return this.db.transaction(async (tx) => {
+      const tenant = await this.lifecycleTenant(tx, seller, id);
+      const blockers = await this.removalBlockers(tx, tenant);
+      return { removable: blockers.length === 0, blockers };
+    });
+  }
+  async remove(seller: SellerSession, id: string, slug: string) {
+    await this.db.transaction(async (tx) => {
+      const tenant = await this.lifecycleTenant(tx, seller, id);
+      check(
+        slug === tenant.slug,
+        400,
+        "workspace_confirmation",
+        "Type the workspace address exactly to confirm removal.",
+      );
+      check(
+        (await this.removalBlockers(tx, tenant)).length === 0,
+        409,
+        "workspace_has_history",
+        "This workspace has retained history or linked services. Archive it instead.",
+      );
+      // Preserve security auditing without retaining a foreign key to the empty
+      // namespace. Removal revokes unused keys and never deletes a seller account.
+      await this.audit(tx, seller, id, "tenant.removed", {
+        workspace_id: id,
+        slug,
+      });
+      await tx("audit_events")
+        .where({ tenant_id: id })
+        .update({ tenant_id: null });
+      for (const table of [
+        "tenant_api_keys",
+        "operation_settings",
+        "seller_memberships",
+      ])
+        await tx(table).where({ tenant_id: id }).delete();
+      await tx("publisher_sandboxes").where({ sandbox_tenant_id: id }).delete();
+      // Routine health scans create these rows before a workspace has activity.
+      // Only never-triggered baselines are disposable; forwarding and real alert
+      // history were checked above while holding this workspace's work lock.
+      await tx("operation_alerts")
+        .where({ tenant_id: id, active: 0, last_sent_at: 0 })
+        .whereIn("id", baselineAlertIds)
+        .delete();
+      await tx("locks")
+        .whereIn(
+          "id",
+          ["auth", "billing", "email", "schema", "work"].map(
+            (name) => `${id}:${name}`,
+          ),
+        )
+        .delete();
+      await tx("tenants").where({ id }).delete();
+    });
   }
   async create(
     seller: SellerSession,

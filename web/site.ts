@@ -15,7 +15,8 @@ import {
   setupConfiguration,
 } from "./frameworks.ts";
 import type { Framework, FrameworkProduct, ReleaseAsset } from "./api.ts";
-import type { Tenant } from "../packages/shared/tenant.ts";
+import { type Tenant, workspaceArchived } from "../packages/shared/tenant.ts";
+import { WorkspaceManager } from "./workspaces.ts";
 import { site } from "../packages/shared/site.ts";
 import { SellerFeaturePanel, verifiedRequest } from "./features.ts";
 import type { EmailChangeDraft } from "./features.ts";
@@ -143,6 +144,7 @@ const sellerPages = [
   { id: "webhooks", label: "Webhooks" },
   { id: "security", label: "Account security" },
   { id: "export", label: "Export" },
+  { id: "workspaces", label: "Workspaces" },
 ] as const;
 const sellerPageGroups = [
   {
@@ -150,7 +152,10 @@ const sellerPageGroups = [
     pages: ["products", "releases", "licenses", "billing", "commerce"],
   },
   { label: "Integrations", pages: ["setup", "keys", "webhooks", "sandbox"] },
-  { label: "Administration", pages: ["operations", "security", "export"] },
+  {
+    label: "Administration",
+    pages: ["operations", "security", "export", "workspaces"],
+  },
 ];
 type SellerPage = (typeof sellerPages)[number]["id"];
 
@@ -486,6 +491,7 @@ export function mountSellerApp(
           secret.value = "";
           fields.value["key-verification-token"] = "";
           fields.value["release-verification-token"] = "";
+          fields.value["workspace-verification-token"] = "";
           selected.value = "";
           fields.value["tenant-name"] = "";
           fields.value["tenant-slug"] = "";
@@ -531,6 +537,7 @@ export function mountSellerApp(
           secret.value = "";
           fields.value["key-verification-token"] = "";
           fields.value["release-verification-token"] = "";
+          fields.value["workspace-verification-token"] = "";
           if (!seller.value || !selected.value) return;
           const api = tenantApi();
           try {
@@ -616,9 +623,32 @@ export function mountSellerApp(
           );
           selected.value =
             value.tenants.find((item) => item.slug === requested)?.slug ||
+            value.tenants.find((item) => !workspaceArchived(item))?.slug ||
             value.tenants[0]?.slug ||
             "";
           await dashboard();
+        };
+        const refreshWorkspaces = async (message: string) => {
+          const ownerId = seller.value!.user.id;
+          const value = await platform.get<Seller>("/me");
+          if (
+            !seller.value ||
+            seller.value.user.id !== ownerId ||
+            value.user.id !== ownerId
+          )
+            return;
+          seller.value.tenants = value.tenants;
+          const current = value.tenants.find(
+            (item) => item.slug === selected.value,
+          );
+          if (!current || workspaceArchived(current))
+            selected.value =
+              value.tenants.find((item) => !workspaceArchived(item))?.slug ||
+              current?.slug ||
+              value.tenants[0]?.slug ||
+              "";
+          await dashboard();
+          notice.value = message;
         };
         const readToken = () => {
           const fragment = new URLSearchParams(window.location.hash.slice(1));
@@ -931,13 +961,22 @@ export function mountSellerApp(
                         },
                       },
                       seller
-                        .value!.tenants.toSorted((a, b) =>
+                        .value!.tenants.filter(
+                          (item) =>
+                            !workspaceArchived(item) ||
+                            item.slug === selected.value,
+                        )
+                        .toSorted((a, b) =>
                           a.name.localeCompare(b.name, undefined, {
                             sensitivity: "base",
                           }),
                         )
                         .map((item) =>
-                          h("option", { value: item.slug }, item.name),
+                          h(
+                            "option",
+                            { value: item.slug },
+                            `${item.name}${workspaceArchived(item) ? " · Archived" : ""}`,
+                          ),
                         ),
                     ),
                   ]),
@@ -2815,20 +2854,29 @@ export function mountSellerApp(
                   ],
                 },
                 [
-                  h("div", { class: "page-heading" }, [
-                    !(seller.value?.tenants.length && hosted.value) &&
-                      h("p", { class: "eyebrow" }, "Publisher workspace"),
-                    h(
-                      "h1",
-                      overview.value
-                        ? sellerPages.find(
-                            (page) => page.id === activePage.value,
-                          )!.label
-                        : recovery.value
-                          ? "Workspace recovery"
-                          : "Your software business",
-                    ),
-                  ]),
+                  h(
+                    "div",
+                    {
+                      class: [
+                        "page-heading",
+                        seller.value?.tenants.length && "sr-only",
+                      ],
+                    },
+                    [
+                      !(seller.value?.tenants.length && hosted.value) &&
+                        h("p", { class: "eyebrow" }, "Publisher workspace"),
+                      h(
+                        "h1",
+                        overview.value
+                          ? sellerPages.find(
+                              (page) => page.id === activePage.value,
+                            )!.label
+                          : recovery.value
+                            ? "Workspace recovery"
+                            : "Your software business",
+                      ),
+                    ],
+                  ),
                   seller.value &&
                     seller.value.tenants.length > 0 &&
                     workspaceControls(),
@@ -2851,6 +2899,24 @@ export function mountSellerApp(
                     ]),
                 ],
               ),
+              seller.value?.tenants.some(
+                (item) =>
+                  item.slug === selected.value && workspaceArchived(item),
+              ) &&
+                h("aside", { class: "workspace-archive-notice" }, [
+                  h("strong", "Archived workspace"),
+                  h(
+                    "p",
+                    "Existing licenses, updates and billing remain active. Restore this workspace from Workspaces.",
+                  ),
+                  btn(
+                    "Manage workspaces",
+                    () => {
+                      activePage.value = "workspaces";
+                    },
+                    busy.value,
+                  ),
+                ]),
               overview.value?.sandbox?.isSandbox &&
                 h(
                   "aside",
@@ -3046,13 +3112,19 @@ export function mountSellerApp(
                                             ).value as SellerPage;
                                           },
                                         },
-                                        sellerPages.map((page) =>
-                                          h(
-                                            "option",
-                                            { value: page.id },
-                                            page.label,
+                                        sellerPages
+                                          .filter(
+                                            (page) =>
+                                              hosted.value ||
+                                              page.id !== "workspaces",
+                                          )
+                                          .map((page) =>
+                                            h(
+                                              "option",
+                                              { value: page.id },
+                                              page.label,
+                                            ),
                                           ),
-                                        ),
                                       ),
                                     ],
                                   ),
@@ -3087,8 +3159,11 @@ export function mountSellerApp(
                                       h("div", { class: "seller-nav-group" }, [
                                         h("p", group.label),
                                         ...sellerPages
-                                          .filter((page) =>
-                                            group.pages.includes(page.id),
+                                          .filter(
+                                            (page) =>
+                                              group.pages.includes(page.id) &&
+                                              (hosted.value ||
+                                                page.id !== "workspaces"),
                                           )
                                           .map((page) =>
                                             h(
@@ -3143,6 +3218,14 @@ export function mountSellerApp(
                             "div",
                             { class: "button-row seller-account-actions" },
                             [
+                              hosted.value &&
+                                btn(
+                                  "Manage workspaces",
+                                  () => {
+                                    activePage.value = "workspaces";
+                                  },
+                                  busy.value,
+                                ),
                               btn(
                                 "Account security",
                                 () => {
@@ -3190,6 +3273,11 @@ export function mountSellerApp(
                                   { value: "tenant_transfer" },
                                   "Tenant export",
                                 ),
+                                h(
+                                  "option",
+                                  { value: "workspace_remove" },
+                                  "Workspace removal",
+                                ),
                               ],
                             ),
                             btn(
@@ -3199,6 +3287,12 @@ export function mountSellerApp(
                                   fields.value["key-verification-token"] =
                                     accountProof.value;
                                   activePage.value = "keys";
+                                } else if (
+                                  proofPurpose.value === "workspace_remove"
+                                ) {
+                                  fields.value["workspace-verification-token"] =
+                                    accountProof.value;
+                                  activePage.value = "workspaces";
                                 } else if (
                                   proofPurpose.value === "release_publish"
                                 ) {
@@ -3224,6 +3318,52 @@ export function mountSellerApp(
                             ),
                           ]),
                         overview.value && renderDashboard(),
+                        hosted.value &&
+                          activePage.value === "workspaces" &&
+                          h(
+                            "div",
+                            {
+                              id: "seller-panel-workspaces",
+                              class: "seller-view",
+                              role: "region",
+                              "aria-label": "Workspaces",
+                            },
+                            [
+                              h(WorkspaceManager, {
+                                tenants: seller.value.tenants,
+                                platform,
+                                busy: busy.value,
+                                initialToken:
+                                  fields.value[
+                                    "workspace-verification-token"
+                                  ] || "",
+                                execute: (action: () => Promise<void>) => {
+                                  void run(action);
+                                },
+                                confirm: (
+                                  title: string,
+                                  label: string,
+                                  action: () => Promise<void>,
+                                ) => {
+                                  confirmation.value = {
+                                    title,
+                                    label,
+                                    run: action,
+                                  };
+                                },
+                                refresh: refreshWorkspaces,
+                                onOpened: (slug: string) => {
+                                  selected.value = slug;
+                                  activePage.value = "overview";
+                                  void run(dashboard);
+                                },
+                                onTokenUsed: () => {
+                                  fields.value["workspace-verification-token"] =
+                                    "";
+                                },
+                              }),
+                            ],
+                          ),
                         seller.value &&
                           [
                             "commerce",

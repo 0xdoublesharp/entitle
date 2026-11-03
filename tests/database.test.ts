@@ -24,9 +24,7 @@ test("database URLs select the actual dialect, and generated SQL uses that engin
   }
 });
 test("SQLite migration preserves constraints and reruns without deleting records; destructive rollback is refused", async () => {
-  const root = await mkdtemp(
-    "/Volumes/Scratch/entitle/tmp/migrations-",
-  );
+  const root = await mkdtemp("/Volumes/Scratch/entitle/tmp/migrations-");
   const db = createDb(`sqlite:${root}/database.sqlite`);
   try {
     await migrate(db);
@@ -61,6 +59,7 @@ test("SQLite migration preserves constraints and reruns without deleting records
       "012_business_events",
       "013_platform_price_history",
       "014_complimentary_licenses",
+      "015_workspace_archive",
     ]);
     await assert.rejects(
       db("plans").insert({
@@ -201,6 +200,7 @@ test(
         { name: "012_business_events" },
         { name: "013_platform_price_history" },
         { name: "014_complimentary_licenses" },
+        { name: "015_workspace_archive" },
       ]);
     } finally {
       try {
@@ -214,9 +214,7 @@ test(
 );
 
 test("migration002 upgrades existing products without changing original migration data", async () => {
-  const root = await mkdtemp(
-    "/Volumes/Scratch/entitle/tmp/migration-upgrade-",
-  );
+  const root = await mkdtemp("/Volumes/Scratch/entitle/tmp/migration-upgrade-");
   const db = createDb(`sqlite:${root}/db`);
   try {
     await db.migrate.latest({
@@ -247,6 +245,7 @@ test("migration002 upgrades existing products without changing original migratio
       "012_business_events",
       "013_platform_price_history",
       "014_complimentary_licenses",
+      "015_workspace_archive",
     ]);
     assert.equal(
       (await db("products").where({ id: "legacy" }).first()).plugin_basename,

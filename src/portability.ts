@@ -852,6 +852,15 @@ export class Portability {
             await lock(tx, name, tenantId);
           const tenant = await tx("tenants").where({ id: tenantId }).first();
           check(tenant, 404, "tenant_not_found", "Tenant not found.");
+          await tx("audit_events").insert({
+            id: randomUUID(),
+            tenant_id: tenantId,
+            actor_type: "system",
+            actor_id: null,
+            action: "tenant.export.requested",
+            details: "{}",
+            created_at: Date.now(),
+          });
           // Refuse partly reconciled requests before decrypting state or reading
           // artifacts. Finalize must never restore a binding already redacted.
           const pendingReceipt = await tx("account_closures as closure")

@@ -79,6 +79,7 @@ test("transactional emails escape content and retain links, key and account info
         "billing",
         "api_keys",
         "tenant_transfer",
+        "workspace_remove",
         "release_publish",
       ] as const
     ).map((purpose) => accountVerificationEmail(to, url, purpose)),
