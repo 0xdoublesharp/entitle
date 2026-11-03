@@ -424,6 +424,15 @@ traffic. Never run down migrations as part of automated rollback. Startup
 migration-name checks supplement the deployment fingerprint; they do not prove
 that old code can use a changed schema.
 
+Migration015 adds nullable `tenants.archived_at` for workspace management. It
+preserves all existing workspace data, paid rights and subscriptions, and can
+resume after its single DDL statement commits. This still changes the release
+fingerprint: use the stopped-writer maintenance procedure above, then qualify
+and record the new immutable API/worker/frontend release. Do not relax the
+automatic migration guard or restart a previous API image against the upgraded
+migration history. Workspace removal is an owner action for empty workspaces;
+the upgrade itself archives or removes no workspaces.
+
 CI runs three independent test shards and constructs a per-run candidate image
 concurrently. Only successful checks may publish reusable input tags and the
 immutable release artifact. Frontend files still publish atomically without

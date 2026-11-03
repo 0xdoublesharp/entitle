@@ -13,6 +13,7 @@ const purposeLabels: Record<SensitivePurpose, string> = {
   billing: "billing changes",
   api_keys: "API key management",
   tenant_transfer: "workspace transfer",
+  workspace_remove: "permanent workspace removal",
   release_publish: "release publication",
 };
 

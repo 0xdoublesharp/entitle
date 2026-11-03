@@ -163,6 +163,7 @@ src/migrations/011_sandboxes.ts
 src/migrations/012_business_events.ts
 src/migrations/013_platform_price_history.ts
 src/migrations/014_complimentary_licenses.ts
+src/migrations/015_workspace_archive.ts
 src/operations-api.ts
 src/operations.ts
 src/operator.ts
@@ -301,6 +302,7 @@ tests/ui.test.ts
 tests/update-adapters.test.ts
 tests/webhook-delivery.test.ts
 tests/zip-security.test.ts
+tests/workspace-lifecycle.test.ts
 tsconfig.json
 web/api.test.ts
 web/api.ts
@@ -332,4 +334,5 @@ web/public/social/home.svg
 web/public/social/seller.png
 web/public/social/seller.svg
 web/site.ts
+web/workspaces.ts
 web/style.css

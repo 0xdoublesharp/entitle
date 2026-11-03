@@ -10,6 +10,29 @@ kept separate; a separate workspace for every product is optional.
 Buyers use `/t/YOUR_SLUG`. Build pipelines and installed
 clients use `/api/v1/tenants/YOUR_SLUG` with different credentials.
 
+## Archive, restore or remove a workspace
+
+In hosted deployments, open **Administration → Workspaces**. Archive a retired
+workspace to hide it from the active selector. Choose **Archived workspaces**
+to open or restore it. Archiving a publisher also hides its sandbox from the
+active list; restoring the publisher does not restore a sandbox you archived
+separately. Existing licenses, updates, downloads, billing and subscriptions
+continue. Archived workspaces retain their data and count toward your account
+limit. Cancel subscriptions separately in Billing when appropriate.
+
+Use **Check removal** for an empty workspace. Removal is permanent and requires
+its exact address plus fresh email verification in the requesting browser. It
+deletes the empty workspace, settings, membership and unused API keys, frees an
+account slot and makes the address available again. Security audit records are
+retained. Customers, products, licenses, releases, payments, used keys, exports,
+linked services and other business history block removal; archive instead. An
+empty sandbox can be removed first, but removing a publisher never deletes a
+linked sandbox. The primary workspace cannot be archived or removed.
+
+These actions manage publisher workspaces. They do not erase personal data.
+Customer account closure and retained financial/security records follow the
+separate privacy and retention process.
+
 ## Products and plans
 
 Choose the framework before creating a license or publishing a release. The

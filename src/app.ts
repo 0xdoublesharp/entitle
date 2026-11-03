@@ -861,6 +861,35 @@ export async function buildApp(
           ),
         };
       });
+      const workspaceId = (req: FastifyRequest) =>
+        z.object({ id: z.string().min(1).max(64) }).parse(req.params).id;
+      for (const action of ["archive", "restore"] as const)
+        api.post(`/tenants/:id/${action}`, async (req) => {
+          empty.parse(req.body);
+          return {
+            tenant: await tenants.archive(
+              await platformAuth.seller(req, true),
+              workspaceId(req),
+              action === "archive",
+            ),
+          };
+        });
+      api.get("/tenants/:id/removal", async (req) =>
+        tenants.removal(
+          await platformAuth.seller(req, false),
+          workspaceId(req),
+        ),
+      );
+      api.post("/tenants/:id/remove", async (req) => {
+        const seller = await platformAuth.seller(req, true);
+        const { slug } = z
+          .object({ slug: z.string().min(1).max(63) })
+          .strict()
+          .parse(req.body);
+        await accounts.requireStepUp(req, "workspace_remove");
+        await tenants.remove(seller, workspaceId(req), slug);
+        return { ok: true };
+      });
       api.get("/stripe/callback", async (req, reply) => {
         check(hosted, 404, "not_found", "Route not found.");
         const q = z

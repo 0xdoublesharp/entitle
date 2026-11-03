@@ -1478,9 +1478,13 @@ td button {
   grid-template-columns: minmax(0, 1fr) auto;
   grid-template-areas: "heading account";
 }
+.seller-header-publisher {
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
+  grid-template-areas: "selector refresh create account";
+}
 .seller-header-standalone {
-  grid-template-columns: minmax(0, 1fr) auto auto;
-  grid-template-areas: "heading refresh account";
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas: "refresh account";
 }
 .seller-app .seller-page-header .page-heading {
   grid-area: heading;
@@ -1521,10 +1525,6 @@ td button {
   text-align: right;
 }
 @media (max-width: 1100px) {
-  .seller-header-publisher {
-    grid-template-columns: minmax(0, 1fr) auto auto;
-    grid-template-areas: "heading heading account" "selector refresh create";
-  }
   .workspace-toolbar > .workspace-create[open] {
     grid-row: auto;
   }
@@ -1535,11 +1535,17 @@ td button {
     grid-template-columns: minmax(0, 1fr) auto;
   }
   .seller-header-publisher {
-    grid-template-areas: "heading account" "selector selector" "refresh create";
+    grid-template-areas: "selector selector" "refresh create" "account account";
     gap: 12px;
   }
   .seller-header-standalone {
-    grid-template-areas: "heading account" "refresh refresh";
+    grid-template-areas: "refresh account";
+  }
+  .seller-header-publisher .seller-account {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
   }
   .seller-page-header .seller-account-email {
     max-width: 22ch;
@@ -3567,5 +3573,71 @@ td button {
   }
   .seller-panel .setup-steps {
     grid-template-columns: minmax(0, 1fr);
+  }
+}
+.workspace-manager .feature-section-heading {
+  align-items: start;
+  gap: 1.5rem;
+}
+.workspace-view-label {
+  display: grid;
+  gap: 0.4rem;
+  min-width: 12rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+.workspace-records {
+  display: grid;
+  gap: 0.75rem;
+  margin-top: 1.5rem;
+}
+.workspace-record {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1.25rem;
+  border: 1px solid var(--line);
+  border-radius: 0.75rem;
+  background: #fff;
+}
+.workspace-record h3 {
+  margin: 0 0 0.35rem;
+}
+.workspace-record code {
+  overflow-wrap: anywhere;
+}
+.workspace-record p {
+  max-width: 42rem;
+  margin-bottom: 0;
+}
+.workspace-removal {
+  margin-top: 1.5rem;
+  padding: 1.25rem;
+  border: 1px solid #d9b8a8;
+  border-radius: 0.75rem;
+  background: #fffaf7;
+}
+.workspace-archive-notice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem 1.25rem;
+  padding: 1rem 1.25rem;
+  margin-block: 1rem;
+  border: 1px solid var(--line);
+  border-radius: 0.75rem;
+}
+.workspace-archive-notice p {
+  flex: 1;
+  margin: 0;
+}
+@media (max-width: 640px) {
+  .workspace-manager .feature-section-heading,
+  .workspace-record {
+    display: grid;
+  }
+  .workspace-record .button-row {
+    justify-content: start;
   }
 }

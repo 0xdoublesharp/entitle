@@ -349,6 +349,11 @@ export function publicDocs(
         paragraph(
           "Products have their own plans, licenses, releases and client configuration. They share the workspace’s Stripe connection, billing, access, API keys and storage allowance. Use separate workspaces when those settings and data need to stay independent. A workspace is called a tenant in the API.",
         ),
+        h("h3", "Archive, restore or remove a workspace"),
+        paragraph("In hosted deployments, open Administration → Workspaces. Archive hides a workspace from the active selector and preserves its history. Choose Archived workspaces to open or restore it. Its licenses, updates, downloads and subscriptions continue; archiving does not cancel billing or free an account slot."),
+        paragraph("Archiving a publisher also hides its sandbox. Restore the publisher first; a sandbox archived separately stays archived until you restore it too. The primary workspace cannot be archived or removed."),
+        paragraph("Check removal explains whether a workspace is empty. Permanent removal needs its exact address and fresh email verification. It deletes empty workspace settings, membership and unused API keys, releases the address and frees a slot. Customers, products, releases, payments, used keys, exports and other retained history block removal; archive instead. Linked sandboxes must be handled separately. Security audit records are retained."),
+        paragraph("Workspace management is separate from personal-data deletion. Customers request account closure in their buyer account; financial and security records follow the privacy and retention process."),
         h(
           "dl",
           { class: "docs-glossary" },
@@ -913,7 +918,7 @@ export function publicDocs(
           ),
           h("h3", "Confirm sensitive actions"),
           paragraph(
-            "Emailed verification is purpose-specific and bound to your current session. After consumption, its proof lasts five minutes and works once. API-key changes use api_keys, browser publication uses release_publish, workspace export uses tenant_transfer and recovery-code replacement uses recovery_codes. A failed action requires a new proof.",
+            "Emailed verification is purpose-specific and bound to your current session. After consumption, its proof lasts five minutes and works once. API-key changes use api_keys, browser publication uses release_publish, workspace export uses tenant_transfer, empty-workspace removal uses workspace_remove and recovery-code replacement uses recovery_codes. A failed action requires a new proof.",
           ),
           h("h3", "Read health before retrying work"),
           table(

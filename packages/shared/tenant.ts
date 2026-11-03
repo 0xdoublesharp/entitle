@@ -14,6 +14,9 @@ export interface Tenant {
   max_products: number;
   max_storage_bytes: number;
   created_at: number;
+  archived_at?: number | null;
+  parent_archived_at?: number | null;
+  sandbox_parent_slug?: string | null;
   pro_paid_through?: number;
   pro_period_start?: number;
   platform_billing_revision?: number;
@@ -21,3 +24,6 @@ export interface Tenant {
   collect_tax_id?: number;
   collect_billing_address?: number;
 }
+
+export const workspaceArchived = (tenant: Tenant): boolean =>
+  !!(tenant.archived_at || tenant.parent_archived_at);

@@ -22,6 +22,7 @@ export const sensitivePurposes = [
   "billing",
   "api_keys",
   "tenant_transfer",
+  "workspace_remove",
   "release_publish",
 ] as const;
 export type SensitivePurpose = (typeof sensitivePurposes)[number];
