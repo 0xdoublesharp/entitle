@@ -92,6 +92,19 @@ test("hosted production permits complimentary operation without enabling platfor
     code: "billing_unavailable",
     status: 503,
   });
+  let platformRuns = 0;
+  platform.run = async () => {
+    ++platformRuns;
+  };
+  const app = await buildApp(
+    config,
+    db,
+    { send: async () => {} },
+    { store: new InMemoryArtifactStore(), platformBilling: platform },
+  );
+  t.after(() => app.close());
+  await (app as typeof app & { tick: () => Promise<void> }).tick();
+  assert.equal(platformRuns, 0);
   assert.equal((await db("platform_work")).length, 0);
 });
 
