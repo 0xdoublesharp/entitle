@@ -4,7 +4,8 @@ import { normalizeAppBasePath } from "../packages/shared/app-path.ts";
 export const pageMetadata = {
   home: {
     title: `${site.name} · ${site.tagline}`,
-    description: site.description,
+    description:
+      "Set up your plugin, publish private updates and track sales with your AI agent through MCP. Entitle connects licensing, Stripe payments and customer access.",
     path: "/",
     imageAlt:
       "Doublesharp Entitle. Software licensing and private updates for independent developers.",

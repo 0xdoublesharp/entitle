@@ -387,6 +387,9 @@
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 18px;
 }
+.home-page .home-agent-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
 .home-page .home-feature {
   min-width: 0;
   padding: 27px;
@@ -427,6 +430,14 @@
   font-size: 0.875rem;
   color: #5b6c60;
   margin: 0;
+}
+.home-page .home-feature .agent-example {
+  margin-top: 20px;
+  padding-left: 16px;
+  border-left: 3px solid #c4d8c6;
+  color: var(--home-ink);
+  font-weight: 600;
+  text-wrap: pretty;
 }
 .home-page .wordpress-feature {
   display: grid;
