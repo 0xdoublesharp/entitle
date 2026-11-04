@@ -26,6 +26,7 @@ const groups = [
       ["publishing", "Publishing releases"],
       ["client-integration", "Client integration"],
       ["cli", "CLI and CI publication"],
+      ["mcp", "AI agents and MCP"],
     ],
   },
   {
@@ -350,10 +351,18 @@ export function publicDocs(
           "Products have their own plans, licenses, releases and client configuration. They share the workspace’s Stripe connection, billing, access, API keys and storage allowance. Use separate workspaces when those settings and data need to stay independent. A workspace is called a tenant in the API.",
         ),
         h("h3", "Archive, restore or remove a workspace"),
-        paragraph("In hosted deployments, open Administration → Workspaces. Archive hides a workspace from the active selector and preserves its history. Choose Archived workspaces to open or restore it. Its licenses, updates, downloads and subscriptions continue; archiving does not cancel billing or free an account slot."),
-        paragraph("Archiving a publisher also hides its sandbox. Restore the publisher first; a sandbox archived separately stays archived until you restore it too. The primary workspace cannot be archived or removed."),
-        paragraph("Check removal explains whether a workspace is empty. Permanent removal needs its exact address and fresh email verification. It deletes empty workspace settings, membership and unused API keys, releases the address and frees a slot. Customers, products, releases, payments, used keys, exports and other retained history block removal; archive instead. Linked sandboxes must be handled separately. Security audit records are retained."),
-        paragraph("Workspace management is separate from personal-data deletion. Customers request account closure in their buyer account; financial and security records follow the privacy and retention process."),
+        paragraph(
+          "In hosted deployments, open Administration → Workspaces. Archive hides a workspace from the active selector and preserves its history. Choose Archived workspaces to open or restore it. Its licenses, updates, downloads and subscriptions continue; archiving does not cancel billing or free an account slot.",
+        ),
+        paragraph(
+          "Archiving a publisher also hides its sandbox. Restore the publisher first; a sandbox archived separately stays archived until you restore it too. The primary workspace cannot be archived or removed.",
+        ),
+        paragraph(
+          "Check removal explains whether a workspace is empty. Permanent removal needs its exact address and fresh email verification. It deletes empty workspace settings, membership and unused API keys, releases the address and frees a slot. Customers, products, releases, payments, used keys, exports and other retained history block removal; archive instead. Linked sandboxes must be handled separately. Security audit records are retained.",
+        ),
+        paragraph(
+          "Workspace management is separate from personal-data deletion. Customers request account closure in their buyer account; financial and security records follow the privacy and retention process.",
+        ),
         h(
           "dl",
           { class: "docs-glossary" },
@@ -673,6 +682,61 @@ export function publicDocs(
           note(
             "A cached offer still needs current access",
             "Every package request checks token, product, current paid or complimentary entitlement and withdrawal. Native ranges verify the complete object on a cold cache, then serve the requested bytes. Preserve the installed version and credentials during network errors; retry with bounded backoff.",
+          ),
+        ],
+      ),
+      section(
+        "mcp",
+        "AI-assisted publishing",
+        "Connect your AI agent with MCP",
+        [
+          paragraph(
+            "Use an AI client that supports the Model Context Protocol (MCP) to manage your Entitle workspace from a conversation. The tools can create products and paid-plan mappings, publish release files, issue complimentary licenses and read workspace stats.",
+          ),
+          h("ol", { class: "docs-checklist" }, [
+            h(
+              "li",
+              "Create a workspace and a scoped API key in the seller dashboard. Use a read-only key for stats; add catalog:write or releases:write only when your agent needs to change products or publish packages.",
+            ),
+            h(
+              "li",
+              "Configure your MCP client to run pnpm mcp in an Entitle source checkout with the pinned Node and pnpm versions. Supply PUBLIC_ORIGIN, TENANT_SLUG and TENANT_API_KEY through a protected environment.",
+            ),
+            h(
+              "li",
+              "Ask your agent to inspect the workspace, set up your plugin or summarize its stats. Release paths refer to files accessible to the local MCP process.",
+            ),
+          ]),
+          table(
+            "MCP workflows",
+            ["What you want to do", "Tools available to your agent"],
+            [
+              [
+                "Set up a plugin and its paid plans",
+                "entitle_op_product_save; entitle_prices to inspect existing Stripe prices",
+              ],
+              [
+                "Publish a private release",
+                "entitle_op_release_publish or entitle_op_asset_publish",
+              ],
+              [
+                "Read workspace stats",
+                "entitle_licenses for the seller overview; entitle_op_reports for daily download and storage reports",
+              ],
+            ],
+          ),
+          paragraph(
+            "The seller overview includes licenses, seats, downloads, storage and payments separated by currency. Daily download and bandwidth reports require Hosted Pro or a self-hosted installation.",
+          ),
+          paragraph(
+            "The MCP server runs locally over stdio and connects to your hosted or self-hosted Entitle API. Complete owner verification and Stripe authorization interactively; your agent can then map existing prices to your product. Keep API keys and verification material out of prompts and shared transcripts.",
+          ),
+          h(
+            "a",
+            {
+              href: "https://github.com/doublesharp/entitle/blob/main/docs/mcp.md",
+            },
+            "Read the full MCP reference →",
           ),
         ],
       ),

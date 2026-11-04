@@ -25,10 +25,14 @@ const header = (docs = false) =>
         "Docs",
       ),
       h("a", { href: "/docs#troubleshooting" }, "Help"),
-      h("a", { href: applicationHref("/seller"), "aria-label": "Seller dashboard" }, [
-        h("span", { class: "dashboard-label-wide" }, "Seller dashboard"),
-        h("span", { class: "dashboard-label-short" }, "Dashboard"),
-      ]),
+      h(
+        "a",
+        { href: applicationHref("/seller"), "aria-label": "Seller dashboard" },
+        [
+          h("span", { class: "dashboard-label-wide" }, "Seller dashboard"),
+          h("span", { class: "dashboard-label-short" }, "Dashboard"),
+        ],
+      ),
     ]),
   ]);
 // Public illustrations are native SVG/HTML, never fetched customer records.
@@ -70,7 +74,7 @@ const publicHome = () => [
       h(
         "p",
         { class: "intro" },
-        "Issue complimentary licenses for invited pilots, then add Stripe when you’re ready to sell. Manage customer access, installation allowances and private updates in one place.",
+        "Use your AI agent through MCP to set up a plugin, publish updates and track sales stats. Start with complimentary pilot licenses, then connect Stripe when you’re ready to sell.",
       ),
       h("div", { class: "button-row hero-actions" }, [
         h(
@@ -186,6 +190,64 @@ const publicHome = () => [
   h(
     "section",
     {
+      id: "ai-agents",
+      class: "home-section",
+      "aria-labelledby": "agents-title",
+    },
+    [
+      h("div", { class: "home-section-heading" }, [
+        h("p", { class: "eyebrow" }, "Works with your AI agent"),
+        h(
+          "h2",
+          { id: "agents-title" },
+          "From plugin setup to your next sales check.",
+        ),
+        h(
+          "p",
+          "Connect an MCP-compatible AI agent to Entitle. Set up products, publish private releases and check your workspace’s stats from the conversation where you already build.",
+        ),
+      ]),
+      h("div", { class: "home-feature-grid home-agent-grid" }, [
+        h("article", { class: "home-feature" }, [
+          h("span", { class: "feature-icon" }, publicIcon(icons.code)),
+          h("h3", "Set up your plugin for sale"),
+          h(
+            "p",
+            "Have your agent create a product, map an existing annual Stripe price to a paid plan and publish your release. Or start with a complimentary pilot.",
+          ),
+          h(
+            "p",
+            { class: "agent-example" },
+            "“Set up my WordPress plugin with this annual price and publish version 1.0.0 from my build.”",
+          ),
+        ]),
+        h("article", { class: "home-feature" }, [
+          h("span", { class: "feature-icon" }, publicIcon(icons.chart)),
+          h("h3", "Ask how your business is doing"),
+          h(
+            "p",
+            "Ask for a workspace overview of licenses, seats, downloads, storage and payments by currency. Daily download and bandwidth reports are available with Hosted Pro or self-hosting.",
+          ),
+          h(
+            "p",
+            { class: "agent-example" },
+            "“Summarize my workspace’s licenses, downloads and payments, with each currency shown separately.”",
+          ),
+        ]),
+      ]),
+      h("div", { class: "button-row" }, [
+        h(
+          "a",
+          { href: "/docs#mcp", class: "button-secondary" },
+          "Connect your AI agent",
+        ),
+        h("a", { href: "/docs#dashboard-reports" }, "Explore the stats →"),
+      ]),
+    ],
+  ),
+  h(
+    "section",
+    {
       id: "how-it-works",
       class: "home-section",
       "aria-labelledby": "journey-title",
@@ -283,8 +345,8 @@ const publicHome = () => [
           ],
           [
             icons.code,
-            "A dashboard when you need it. An API when you don’t.",
-            "Publish through the dashboard or a scoped CI key. Test purchases in an isolated sandbox and connect Hosted Pro signed events to your own tools.",
+            "Your AI agent, dashboard or build pipeline",
+            "Use MCP tools to configure products, publish releases and read stats with your AI agent. The dashboard, API and scoped CI keys keep the same workflows within reach.",
           ],
         ].map(([icon, title, copy]) =>
           h("article", { class: "home-feature" }, [
