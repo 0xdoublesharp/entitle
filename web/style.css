@@ -1187,6 +1187,9 @@ td button {
   max-width: 1280px;
   padding: 32px 32px 64px;
 }
+.seller-main > .notice {
+  margin-bottom: 24px;
+}
 .seller-app .page-heading {
   margin-bottom: 28px;
   align-items: center;
@@ -1530,6 +1533,33 @@ td button {
 }
 .seller-mobile-tools {
   display: none;
+}
+@media (min-width: 901px) {
+  .seller-header-publisher {
+    grid-template-columns: minmax(0, 1fr) auto auto minmax(0, auto);
+    align-items: center;
+  }
+  .seller-header-publisher .workspace-selector-title {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  .seller-header-publisher .seller-account {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+  .seller-header-publisher .seller-account-email {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .seller-header-publisher .seller-account > button {
+    flex-shrink: 0;
+  }
 }
 .product-empty-state {
   margin: 20px 0;
