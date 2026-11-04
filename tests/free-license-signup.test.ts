@@ -46,7 +46,7 @@ async function fixture(t: TestContext, patch: Record<string, unknown> = {}, stan
 test("free offers are explicit, validated and disabled by default", () => {
   assert.deepEqual(loadConfig(credentials).freeLicenseOffers, []);
   for (const patch of [{ origins: ["https://evil.test/path"] }, { origins: ["https://user:pass@evil.test"] }, { origins: ["*"] },
-    { siteAllowance: 0 }, { expiresAt: "invalid" }, { campaign: "" }, { dailyLimit: 0 }])
+    { siteAllowance: 0 }, { expiresAt: undefined }, { durationDays: 90 }, { expiresAt: undefined, durationDays: 0 }, { expiresAt: "invalid" }, { campaign: "" }, { dailyLimit: 0 }])
     assert.throws(() => loadConfig({ ...credentials, FREE_LICENSE_OFFERS: JSON.stringify([{ ...offer(), ...patch }]) }));
   const duplicate = offer();
   assert.throws(() => loadConfig({ ...credentials, FREE_LICENSE_OFFERS: JSON.stringify([duplicate, duplicate]) }));
@@ -162,4 +162,38 @@ test("free signup is unavailable without explicit configuration, correct product
   const standalone = await fixture(t, {}, true);
   await standalone.issue();
   assert.equal((await standalone.db("licenses")).length, 1);
+});
+
+
+test("Validated Field grants 90 days from signup for two sites without extending retries", async t => {
+  const f = await fixture(t, { product: "validated-field-pro", durationDays: 90, expiresAt: undefined, siteAllowance: 2 });
+  await f.db("products").where({ id: f.productId }).update({ slug: "validated-field-pro", name: "Validated Field Pro" });
+  const vfBase = base.replace("remote-content-shortcode-pro", "validated-field-pro");
+  const post = (path: string, payload: object) => f.app.inject({ method: "POST", url: vfBase + path, headers: { origin }, payload });
+  delete f.config.graceDays;
+  const before = Date.now();
+  assert.equal((await post("", { email: "vf@example.test", consent: true })).statusCode, 202);
+  const license = await f.db("licenses").first();
+  assert.equal(license.site_allowance, 2);
+  assert.ok(license.expires_at >= before + 90 * 86400000 && license.expires_at <= Date.now() + 90 * 86400000);
+  const metadata = await f.app.inject({ url: vfBase, headers: { origin } });
+  assert.equal(metadata.json().durationDays, 90);
+  assert.equal(metadata.json().expiresAt, undefined);
+  // A retry on a later day retains the original grant and sends no extra key.
+  await f.db("licenses").where({ id: license.id }).update({ expires_at: 1 });
+  for (const response of await Promise.all([1, 2].map(() => post("", { email: "vf@example.test", consent: true }))))
+    assert.equal(response.statusCode, 202, response.body);
+  assert.equal((await f.db("licenses").first()).expires_at, 1);
+  assert.equal((await f.db("emails")).length, 1);
+  await f.db("licenses").where({ id: license.id }).update({ expires_at: license.expires_at });
+  const job = await f.db("emails").first();
+  const key = /DE-[A-Za-z0-9_-]+/.exec(unseal<Message>(job.payload, f.config.secret).text)![0];
+  const token = (await post("/unlock", { key })).json().token;
+  const download = await post("/download", { token });
+  assert.equal(download.statusCode, 200, download.body);
+  assert.equal(download.headers["content-disposition"], 'attachment; filename="validated-field-pro-2.0.0.zip"');
+  for (const i of [1, 2, 3]) {
+    const response = await f.app.inject({ method: "POST", url: "/api/v1/tenants/primary/activate", payload: { key, product: "validated-field-pro", installationId: `vf-site-${i}`, siteUrl: `https://site${i}.example.test` } });
+    assert.equal(response.statusCode, i <= 2 ? 200 : 409, response.body);
+  }
 });

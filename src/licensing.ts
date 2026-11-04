@@ -97,10 +97,10 @@ export class Licenses {
   }
   async issueComplimentary(
     input: z.infer<typeof complimentaryInput>,
-    actor: { type: "seller" | "api_key" | "public_signup"; id: string; dailyLimit?: number },
+    actor: { type: "seller" | "api_key" | "public_signup"; id: string; dailyLimit?: number; durationDays?: number },
   ) {
     const request = complimentaryInput.parse(input);
-    const requestHash = hash(JSON.stringify([request.email, request.productId, request.siteAllowance, request.expiresAt, request.note || null]));
+    const requestHash = hash(JSON.stringify([request.email, request.productId, request.siteAllowance, actor.durationDays === undefined ? request.expiresAt : ["days", actor.durationDays], request.note || null]));
     return this.db.transaction(async tx => {
       // Match customer recovery/closure lock order, and serialize with Stripe's
       // customer mapping. Retries never generate another key or outbox job.
