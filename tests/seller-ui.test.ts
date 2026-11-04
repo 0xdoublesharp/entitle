@@ -284,6 +284,68 @@ async function mount(path = "/seller", configure?: () => void) {
 beforeEach(() => dom.sessionStorage.clear());
 afterEach(() => app?.unmount());
 after(() => dom.happyDOM.close());
+test("empty product creation starts complimentary-first and keeps paid plans opt-in", async () => {
+  await mount("/seller", () => {
+    tenants = [tenant, { ...tenant, id: "tenant-b", slug: "beta", name: "Beta apps" }];
+    getOverview = () => ({ ...overview(), products: [], releases: [], licenses: [] });
+  });
+  await click("Products");
+  assert.match(el(".product-empty-state").textContent!, /No products yet/);
+  assert.equal(el<HTMLInputElement>("#include-paid-plan").checked, false);
+  assert.equal(dom.document.querySelector("#plan-name"), null);
+  assert.doesNotMatch(el("#seller-panel-products").textContent!, /Local fixture prices/);
+  el<HTMLButtonElement>(".product-empty-state button").click();
+  await flush();
+  assert.equal(el<HTMLDetailsElement>("#product-create-disclosure").open, true);
+  assert.equal(dom.document.activeElement?.id, "product-name");
+  await input("#product-name", "Pilot plugin");
+  await input("#product-slug", "pilot-plugin");
+  await submit("#product-create");
+  const request = calls.find((call) => call.path.endsWith("/seller/products") && call.init.method === "POST");
+  assert.deepEqual((request!.body as { plans: unknown[] }).plans, []);
+  el<HTMLInputElement>("#include-paid-plan").click();
+  await flush();
+  assert.ok(dom.document.querySelector("#plan-name"));
+  assert.ok(dom.document.querySelector("#price-id"));
+  assert.match(el("#product-create").textContent!, /Local fixture prices/);
+  await click("Refresh dashboard");
+  assert.equal(el<HTMLInputElement>("#include-paid-plan").checked, true);
+  await input("#tenant-select", "beta", "change");
+  assert.equal(el<HTMLInputElement>("#include-paid-plan").checked, false);
+});
+
+test("compact workspace actions preserve refresh, workspace creation and sign out", async () => {
+  await mount();
+  const menu = el<HTMLDetailsElement>(".seller-mobile-tools");
+  const action = (label: string) => {
+    const button = Array.from(menu.querySelectorAll("button")).find(
+      (item) => item.textContent === label,
+    );
+    assert.ok(button, `Missing compact action: ${label}`);
+    return button;
+  };
+  assert.match(menu.textContent!, /seller@example.test/);
+  const previous = calls.filter((call) => call.path.endsWith("/seller/overview")).length;
+  action("Refresh dashboard").click();
+  await flush();
+  assert.equal(calls.filter((call) => call.path.endsWith("/seller/overview")).length, previous + 1);
+  menu.open = true;
+  action("New workspace").click();
+  await flush();
+  assert.equal(menu.open, false);
+  assert.equal(el<HTMLDetailsElement>("#workspace-create-disclosure").open, true);
+  assert.equal(dom.document.activeElement?.id, "tenant-name");
+  menu.open = true;
+  menu.dispatchEvent(new dom.KeyboardEvent("keydown", { key: "Tab", bubbles: true }) as unknown as Event);
+  assert.equal(menu.open, true);
+  menu.dispatchEvent(new dom.KeyboardEvent("keydown", { key: "Escape", bubbles: true }) as unknown as Event);
+  assert.equal(menu.open, false);
+  assert.equal(dom.document.activeElement, menu.querySelector("summary"));
+  action("Sign out").click();
+  await flush();
+  assert.ok(calls.some((call) => call.path.endsWith("/auth/logout") && call.init.method === "POST"));
+  assert.ok(dom.document.querySelector("#seller-login"));
+});
 test("workspace manager archives, restores and removes an empty workspace with fresh confirmation", async () => {
   await mount("/seller", () => {
     tenants = [
@@ -563,9 +625,7 @@ test("a configured platform does not require a connected seller account or price
 test("paid plan setup is optional with configured prices and with an empty price catalog", async () => {
   await mount("/seller");
   await click("Products");
-  assert.equal(el<HTMLInputElement>("#include-paid-plan").checked, true);
-  el<HTMLInputElement>("#include-paid-plan").click();
-  await flush();
+  assert.equal(el<HTMLInputElement>("#include-paid-plan").checked, false);
   assert.equal(dom.document.querySelector("#price-id"), null);
   await submit("#product-create");
   assert.deepEqual(
@@ -705,6 +765,9 @@ test("unconnected Stripe accounts load without an error and keep optional billin
   routes.delete("GET /api/v1/tenants/alpha/seller/prices");
   await click("Refresh dashboard");
   await click("Products");
+  assert.equal(el<HTMLInputElement>("#include-paid-plan").checked, false);
+  el<HTMLInputElement>("#include-paid-plan").click();
+  await flush();
   assert.equal(el<HTMLInputElement>("#include-paid-plan").checked, true);
   assert.equal(el<HTMLSelectElement>("#price-id").value, "price_annual");
 });
@@ -757,10 +820,17 @@ test("public marketing home explains the workflow and links signup and docs with
   assert.ok(dom.document.querySelector('nav a[href="/docs"]'));
   assert.ok(dom.document.querySelector('a[href="#how-it-works"]'));
   assert.equal(dom.document.querySelector("figure figcaption"), null);
+  const figure = el("figure");
   assert.equal(
-    el("figure").getAttribute("aria-label"),
-    "From purchase to update",
+    figure.getAttribute("aria-label"),
+    "From pilot invite or purchase to update",
   );
+  const workflow = figure.textContent || "";
+  assert.match(workflow, /pilot/i);
+  assert.match(workflow, /No charge/);
+  assert.match(workflow, /Checkout\sfor\sbuyers/);
+  assert.match(workflow, /Complimentary or paid/);
+  assert.doesNotMatch(workflow, /Paid access|checks out/);
   assert.equal(dom.document.querySelector("#server-limits"), null);
   assert.equal(calls.length, 0);
 });
@@ -902,7 +972,7 @@ test("seller overview displays real private metrics with exact separate currenci
   assert.match(text(), /Successful downloads/);
   assert.match(text(), /Reserved storage/);
   assert.doesNotMatch(text(), /MRR|99.9%/);
-  assert.match(text(), /Local fixture prices/);
+  assert.doesNotMatch(text(), /Local fixture prices/);
   assert.match(
     el<HTMLTextAreaElement>("#php-config").value,
     /\/api\/v1\/tenants\/alpha/,
@@ -1125,6 +1195,9 @@ test("seller creates a tenant and selects only a membership returned by the serv
 });
 test("seller product setup sends chosen Stripe annual price and site allowance", async () => {
   await mount();
+  await click("Products");
+  el<HTMLInputElement>("#include-paid-plan").click();
+  await flush();
   await input("#product-name", "A new plugin");
   await input("#product-slug", "new-plugin");
   await input("#plugin-basename", "new-plugin/plugin.php");
@@ -1560,7 +1633,11 @@ test("owner view distinguishes suspended and revoked records and restores a revo
   assert.match(text(), /Connected/);
   assert.match(text(), /Not applicable/);
   assert.match(text(), /-\$1\.00/);
+  await click("Products");
+  el<HTMLInputElement>("#include-paid-plan").click();
+  await flush();
   assert.match(text(), /p_custom · Custom price/);
+  await click("Licenses");
   await click("Restore license");
   await click("Confirm restore license");
   assert.deepEqual(
@@ -1869,6 +1946,9 @@ test("recovery cannot expose keys when the recovery API denies tenant access", a
 
 test("framework selection shows only relevant identity fields and sends bounded configuration", async () => {
   await mount();
+  await click("Products");
+  el<HTMLInputElement>("#include-paid-plan").click();
+  await flush();
   for (const [framework, expected] of [
     ["electron", {}],
     ["tauri", {}],
@@ -1909,6 +1989,10 @@ test("framework selection shows only relevant identity fields and sends bounded 
     }
     if (framework === "generic")
       await input("#activation-kind", "site", "change");
+    assert.equal(
+      el("label[for='site-allowance']").textContent,
+      ["joomla", "generic"].includes(framework) ? "Site allowance" : "Device allowance",
+    );
     await submit("#product-create");
     const body = calls
       .filter((c) => c.path.endsWith("/seller/products"))
@@ -3676,6 +3760,14 @@ test("setup wizard guides an empty workspace to the product form without creatin
     el(".setup-step[aria-current='step']").textContent!,
     /Add a product/,
   );
+  assert.ok(
+    el(".setup-steps").compareDocumentPosition(el(".setup-task")) &
+      dom.Node.DOCUMENT_POSITION_FOLLOWING,
+  );
+  assert.ok(
+    el<HTMLButtonElement>(".setup-task button").compareDocumentPosition(el(".setup-location")) &
+      dom.Node.DOCUMENT_POSITION_FOLLOWING,
+  );
   await click("Add your first product");
   assert.equal(el("main h1").textContent, "Products");
   assert.equal(el<HTMLDetailsElement>("#product-create-disclosure").open, true);
@@ -3723,6 +3815,23 @@ test("setup step navigation explains prerequisites and supports next, previous a
   await click("Exit guided setup");
   assert.equal(dom.document.querySelector(".setup-context"), null);
   assert.equal(el("main h1").textContent, "Client setup");
+});
+
+test("compact setup navigation preserves step statuses and selects the current task", async () => {
+  await mount("/seller", () => {
+    getOverview = () => ({ ...overview(), products: [], releases: [], licenses: [] });
+  });
+  await click("Getting started");
+  const picker = el<HTMLSelectElement>("#setup-current-step");
+  assert.equal(picker.options.length, 4);
+  assert.match(picker.options[0]!.textContent!, /Add a product.*To do/);
+  assert.match(picker.options[3]!.textContent!, /Issue a license.*To do/);
+  await input("#setup-current-step", "releases", "change");
+  assert.equal(el("#setup-task-title").textContent, "Publish a release");
+  assert.equal(button("Publish your first release").disabled, true);
+  await input("#setup-current-step", "products", "change");
+  await click("Add your first product");
+  assert.equal(dom.document.activeElement?.id, "product-name");
 });
 
 test("queued setup navigation cannot steal focus after the seller chooses another page", async () => {

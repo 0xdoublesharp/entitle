@@ -488,6 +488,7 @@ export function mountSellerApp(
           file.value = null;
           keys.value = [];
           prices.value = [];
+          includePaidPlan.value = false;
           secret.value = "";
           fields.value["key-verification-token"] = "";
           fields.value["release-verification-token"] = "";
@@ -519,6 +520,7 @@ export function mountSellerApp(
         };
         const dashboard = async () => {
           if (complimentaryWorkspace !== selected.value) {
+            includePaidPlan.value = false;
             resetLicenseFilters();
             licenseSort.value = "Customer";
             licenseDescending.value = false;
@@ -570,8 +572,8 @@ export function mountSellerApp(
             overview.value = data;
             prices.value = priceData.prices;
             localMode.value = priceData.localMode;
-            includePaidPlan.value =
-              data.billingAvailable !== false && priceData.prices.length > 0;
+            if (data.billingAvailable === false || !priceData.prices.length)
+              includePaidPlan.value = false;
             keys.value = keyData.keys;
             fields.value["price-id"] = priceData.prices[0]?.id || "";
             fields.value["release-product"] = data.products[0]?.id || "";
@@ -920,6 +922,40 @@ export function mountSellerApp(
             ],
             "Create publisher workspace",
           );
+        const signOut = () =>
+          void run(async () => {
+            await platform.post("/auth/logout", {});
+            clearSession();
+          });
+        const closeMobileTools = () => {
+          document.querySelector<HTMLDetailsElement>(".seller-mobile-tools")?.removeAttribute("open");
+        };
+        const mobileTools = () =>
+          h("details", {
+            class: "seller-mobile-tools",
+            onKeydown: (event: KeyboardEvent) => {
+              if (event.key !== "Escape") return;
+              event.preventDefault();
+              const menu = event.currentTarget as HTMLDetailsElement;
+              menu.open = false;
+              menu.querySelector("summary")?.focus();
+            },
+          }, [
+            h("summary", { "aria-label": "Workspace and account actions" }, "More"),
+            h("div", { class: "seller-mobile-tools-content" }, [
+              h("p", { class: "seller-account-email" }, seller.value!.user.email),
+              btn("Refresh dashboard", () => {
+                closeMobileTools();
+                void run(dashboard);
+              }, busy.value),
+              btn("New workspace", () => {
+                closeMobileTools();
+                workspaceCreateOpen.value = true;
+                void nextTick(() => document.getElementById("tenant-name")?.focus());
+              }, busy.value),
+              btn("Sign out", signOut, busy.value),
+            ]),
+          ]);
         const workspaceControls = () =>
           h(
             "section",
@@ -1343,6 +1379,12 @@ export function mountSellerApp(
           }
           openSetup();
         };
+        const setupStepStatus = (step: { id: string; complete: boolean }) =>
+          step.complete
+            ? step.id === "setup"
+              ? "Confirmed by you"
+              : "Complete"
+            : "To do";
         const renderSetupWizard = () => {
           const steps = setupSteps();
           const completed = steps.filter((step) => step.complete).length;
@@ -1383,6 +1425,65 @@ export function mountSellerApp(
                 ),
               ]),
             h("div", { class: "setup-layout" }, [
+              h("div", { class: "form-field setup-step-picker" }, [
+                h("label", { for: "setup-current-step" }, "Current step"),
+                h(
+                  "select",
+                  {
+                    id: "setup-current-step",
+                    value: current.id,
+                    disabled: busy.value,
+                    onChange: (event: Event) => {
+                      setupStep.value = (
+                        event.target as HTMLSelectElement
+                      ).value;
+                    },
+                  },
+                  steps.map((step, stepIndex) =>
+                    h(
+                      "option",
+                      { value: step.id },
+                      `${stepIndex + 1}. ${step.title} — ${setupStepStatus(step)}`,
+                    ),
+                  ),
+                ),
+              ]),
+              h(
+                "ol",
+                { class: "setup-steps", "aria-label": "Setup steps" },
+                steps.map((step, stepIndex) =>
+                  h("li", [
+                    h(
+                      "button",
+                      {
+                        type: "button",
+                        class: ["setup-step", step.complete && "is-complete"],
+                        "aria-current":
+                          current.id === step.id ? "step" : undefined,
+                        disabled: busy.value,
+                        onClick: () => {
+                          setupStep.value = step.id;
+                        },
+                      },
+                      [
+                        h(
+                          "span",
+                          { class: "setup-step-number", "aria-hidden": "true" },
+                          step.complete ? "✓" : String(stepIndex + 1),
+                        ),
+                        h("span", [
+                          h("strong", step.title),
+                          h(
+                            "span",
+                            { class: "setup-step-status" },
+                            setupStepStatus(step),
+                          ),
+                        ]),
+                      ],
+                    ),
+                  ]),
+                ),
+              ),
               h(
                 "section",
                 { class: "setup-task", "aria-labelledby": "setup-task-title" },
@@ -1394,10 +1495,6 @@ export function mountSellerApp(
                   ),
                   h("h3", { id: "setup-task-title" }, current.title),
                   h("p", current.description),
-                  h("p", { class: "setup-location" }, [
-                    h("span", "Find it anytime"),
-                    h("strong", current.location),
-                  ]),
                   product &&
                     h(
                       "p",
@@ -1437,47 +1534,11 @@ export function mountSellerApp(
                         busy.value,
                       ),
                   ]),
-                ],
-              ),
-              h(
-                "ol",
-                { class: "setup-steps", "aria-label": "Setup steps" },
-                steps.map((step, stepIndex) =>
-                  h("li", [
-                    h(
-                      "button",
-                      {
-                        type: "button",
-                        class: ["setup-step", step.complete && "is-complete"],
-                        "aria-current":
-                          current.id === step.id ? "step" : undefined,
-                        disabled: busy.value,
-                        onClick: () => {
-                          setupStep.value = step.id;
-                        },
-                      },
-                      [
-                        h(
-                          "span",
-                          { class: "setup-step-number", "aria-hidden": "true" },
-                          step.complete ? "✓" : String(stepIndex + 1),
-                        ),
-                        h("span", [
-                          h("strong", step.title),
-                          h(
-                            "span",
-                            { class: "setup-step-status" },
-                            step.complete
-                              ? step.id === "setup"
-                                ? "Confirmed by you"
-                                : "Complete"
-                              : "To do",
-                          ),
-                        ]),
-                      ],
-                    ),
+                  h("p", { class: "setup-location" }, [
+                    h("span", "Find it anytime"),
+                    h("strong", current.location),
                   ]),
-                ),
+                ],
               ),
             ]),
             h("aside", { class: "setup-optional" }, [
@@ -2001,12 +2062,15 @@ export function mountSellerApp(
                 { class: "product-scope" },
                 `Plugins and apps published by ${data.tenant.name}. Each product has its own plans, licenses, releases and client configuration.`,
               ),
-              localMode.value &&
-                h(
-                  "p",
-                  { class: "notice" },
-                  "Local fixture prices. These are simulated, not live Stripe prices.",
-                ),
+              !data.products.length &&
+                h("section", { class: "product-empty-state", "aria-label": "Add your first product" }, [
+                  h("h3", "No products yet"),
+                  h("p", "Add your first plugin or app. You can issue complimentary licenses without Stripe."),
+                  btn("Create product", () => {
+                    (document.getElementById("product-create-disclosure") as HTMLDetailsElement).open = true;
+                    document.getElementById("product-name")!.focus();
+                  }, busy.value),
+                ]),
               !prices.value.length &&
                 h(
                   "p",
@@ -2109,7 +2173,7 @@ export function mountSellerApp(
                         label: value,
                       })),
                     ),
-                  h("div", { class: "form-field" }, [
+                  h("div", { class: "form-field product-plan-choice" }, [
                     h("label", { for: "include-paid-plan" }, [
                       h("input", {
                         id: "include-paid-plan",
@@ -2127,6 +2191,8 @@ export function mountSellerApp(
                       " Include annual paid plan",
                     ]),
                   ]),
+                  includePaidPlan.value && localMode.value &&
+                    h("p", { class: "notice product-price-note" }, "Local fixture prices. These are simulated, not live Stripe prices."),
                   includePaidPlan.value && field("plan-name", "Plan name"),
                   includePaidPlan.value &&
                     field(
@@ -2887,16 +2953,9 @@ export function mountSellerApp(
                         { class: "seller-account-email" },
                         seller.value.user.email,
                       ),
-                      btn(
-                        "Sign out",
-                        () =>
-                          void run(async () => {
-                            await platform.post("/auth/logout", {});
-                            clearSession();
-                          }),
-                        busy.value,
-                      ),
+                      btn("Sign out", signOut, busy.value),
                     ]),
+                  seller.value?.tenants.length && hosted.value && mobileTools(),
                 ],
               ),
               seller.value?.tenants.some(

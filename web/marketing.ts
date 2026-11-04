@@ -25,7 +25,10 @@ const header = (docs = false) =>
         "Docs",
       ),
       h("a", { href: "/docs#troubleshooting" }, "Help"),
-      h("a", { href: applicationHref("/seller") }, "Seller dashboard"),
+      h("a", { href: applicationHref("/seller"), "aria-label": "Seller dashboard" }, [
+        h("span", { class: "dashboard-label-wide" }, "Seller dashboard"),
+        h("span", { class: "dashboard-label-short" }, "Dashboard"),
+      ]),
     ]),
   ]);
 // Public illustrations are native SVG/HTML, never fetched customer records.
@@ -48,6 +51,8 @@ const icons = {
   key: "M14 5a5 5 0 1 1-2 8L5 20H2v-3l7-7a5 5 0 0 1 5-5Z M16 7h.01",
   box: "m3 7 9-5 9 5v10l-9 5-9-5Z m0 0 9 5 9-5 M12 12v10 M7.5 4.5l9 5",
   card: "M3 4h18v16H3Z M3 9h18 M7 15h4",
+  invite:
+    "M15 20a6 6 0 0 0-12 0 M9 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z M19 8v6 M16 11h6",
   chart: "M4 3v17h17 M8 15v-4 M13 15V7 M18 15V4",
   layers: "m2 7 10-5 10 5-10 5Z M2 12l10 5 10-5 M2 17l10 5 10-5",
   code: "m8 5-6 7 6 7 m8-14 6 7-6 7 M14 3l-4 18",
@@ -88,7 +93,7 @@ const publicHome = () => [
       "figure",
       {
         class: "release-illustration",
-        "aria-label": "From purchase to update",
+        "aria-label": "From pilot invite or purchase to update",
       },
       [
         h("div", { class: "illustration-top" }, [
@@ -97,15 +102,15 @@ const publicHome = () => [
             { class: "illustration-dots", "aria-hidden": "true" },
             "● ● ●",
           ),
-          h("span", "From purchase to update"),
+          h("span", "From pilot or sale to update"),
         ]),
         h("div", { class: "workflow-stack" }, [
           h("div", { class: "workflow-node" }, [
-            h("span", { class: "workflow-icon" }, publicIcon(icons.card)),
+            h("span", { class: "workflow-icon" }, publicIcon(icons.invite)),
             h("div", [
-              h("span", { class: "workflow-overline" }, "01 / PAYMENT"),
-              h("strong", "A customer checks out"),
-              h("span", "Your product. A secure checkout."),
+              h("span", { class: "workflow-overline" }, "01 / ACCESS"),
+              h("strong", "Invite a pilot or sell"),
+              h("span", "No charge for pilots. Checkout\u00a0for\u00a0buyers."),
             ]),
             h(
               "span",
@@ -118,8 +123,8 @@ const publicHome = () => [
             h("span", { class: "workflow-icon" }, publicIcon(icons.key)),
             h("div", [
               h("span", { class: "workflow-overline" }, "02 / LICENSE"),
-              h("strong", "Paid access, delivered"),
-              h("span", "License key + site or device seats"),
+              h("strong", "License key, delivered"),
+              h("span", "Complimentary or paid, with site or device seats"),
             ]),
             h(
               "span",
