@@ -1946,6 +1946,9 @@ test("recovery cannot expose keys when the recovery API denies tenant access", a
 
 test("framework selection shows only relevant identity fields and sends bounded configuration", async () => {
   await mount();
+  await click("Products");
+  el<HTMLInputElement>("#include-paid-plan").click();
+  await flush();
   for (const [framework, expected] of [
     ["electron", {}],
     ["tauri", {}],
@@ -1986,6 +1989,10 @@ test("framework selection shows only relevant identity fields and sends bounded 
     }
     if (framework === "generic")
       await input("#activation-kind", "site", "change");
+    assert.equal(
+      el("label[for='site-allowance']").textContent,
+      ["joomla", "generic"].includes(framework) ? "Site allowance" : "Device allowance",
+    );
     await submit("#product-create");
     const body = calls
       .filter((c) => c.path.endsWith("/seller/products"))
