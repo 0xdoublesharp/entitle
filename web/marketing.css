@@ -1,10 +1,51 @@
 @import "./style.css";
 
+.site-header nav a {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 44px;
+  min-height: 44px;
+}
+.dashboard-label-short {
+  display: none;
+}
+@media (max-width: 640px) {
+  .site-header {
+    gap: 8px;
+    padding-top: 16px;
+    padding-bottom: 12px;
+  }
+  .site-header nav {
+    flex-wrap: nowrap;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .site-header nav a {
+    font-size: 0.8rem;
+  }
+  .dashboard-label-wide {
+    display: none;
+  }
+  .dashboard-label-short {
+    display: inline;
+  }
+}
+
 .home-page {
   --home-ink: #173b32;
   --home-lime: #d8ef9b;
   --home-mint: #e9f0e7;
   --home-gold: #ebca83;
+  /* Focus ring per surface: dark ink on light sections, cream on dark green. */
+  --home-focus: #173b32;
+}
+.home-page :is(.saas-hero, .wordpress-feature) {
+  --home-focus: #fdf6e3;
+}
+.home-page :is(a, button, summary):focus-visible {
+  outline: 3px solid var(--home-focus);
+  outline-offset: 4px;
 }
 .home-page .site-header {
   max-width: 1240px;
@@ -12,8 +53,23 @@
 .home-page .page-main {
   max-width: 1240px;
 }
+/* Equal inline padding keeps text gaps even while short labels stay 44px. */
 .home-page .site-header nav {
-  gap: 24px;
+  gap: 8px;
+  margin-right: -8px;
+}
+.home-page .site-header nav a {
+  padding: 0 8px;
+}
+@media (max-width: 640px) {
+  /* Full-width row: outer padding sits outside the content edge. */
+  .home-page .site-header nav {
+    width: calc(100% + 16px);
+    margin: 0 -8px;
+    justify-content: space-between;
+    flex-wrap: nowrap;
+    gap: 0;
+  }
 }
 .home-page .saas-hero {
   display: grid;
@@ -52,12 +108,12 @@
 }
 .home-page .eyebrow {
   color: #456650;
-  font-size: 0.65rem;
+  font-size: 0.75rem;
   letter-spacing: 0.15em;
 }
 .home-page .hero-copy > .eyebrow {
   display: inline-flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 8px;
   color: #dfcfaa;
 }
@@ -65,10 +121,11 @@
   content: "";
   width: 7px;
   height: 7px;
+  flex: 0 0 7px;
   border-radius: 50%;
   background: var(--home-gold);
   box-shadow: 0 0 0 5px #ebca8317;
-  margin: 0 5px;
+  margin: 0.45em 5px 0;
 }
 .home-page .button {
   min-height: 48px;
@@ -113,8 +170,9 @@
 }
 .home-page .hero-note {
   margin: 18px 0 0;
-  font-size: 0.73rem;
+  font-size: 0.8125rem;
   color: #becfc1;
+  text-wrap: pretty;
 }
 .home-page .release-illustration {
   position: relative;
@@ -133,7 +191,7 @@
   justify-content: space-between;
   gap: 12px;
   color: #4a6050;
-  font-size: 0.66rem;
+  font-size: 0.75rem;
   padding: 0 2px 22px;
 }
 .home-page .illustration-dots {
@@ -160,7 +218,7 @@
   min-width: 0;
 }
 .home-page .workflow-overline {
-  font-size: 0.65rem;
+  font-size: 0.75rem;
   font-weight: 750;
   letter-spacing: 0.1em;
   color: #57715d;
@@ -168,11 +226,13 @@
 .home-page .workflow-node strong {
   font-size: 0.91rem;
   letter-spacing: -0.02em;
+  text-wrap: balance;
 }
 .home-page .workflow-node > div > span:last-child {
-  font-size: 0.65rem;
+  font-size: 0.75rem;
   line-height: 1.5;
   color: #596d5e;
+  text-wrap: pretty;
 }
 .home-page .workflow-icon {
   width: 36px;
@@ -220,7 +280,7 @@
   color: #3d5037;
 }
 .home-page .release-illustration figcaption {
-  font-size: 0.72rem;
+  font-size: 0.75rem;
   text-align: center;
   margin-top: 20px;
   color: #576d58;
@@ -232,7 +292,7 @@
   text-align: center;
 }
 .home-page .framework-strip > p {
-  font-size: 0.7rem;
+  font-size: 0.875rem;
   font-weight: 600;
   color: #5b6c60;
   margin-bottom: 21px;
@@ -250,7 +310,7 @@
   display: flex;
   align-items: center;
   gap: 9px;
-  font-size: 0.8rem;
+  font-size: 0.875rem;
   font-weight: 650;
   color: #3b5143;
 }
@@ -266,7 +326,7 @@
   color: #285c43;
 }
 .home-page .framework-strip > a {
-  font-size: 0.7rem;
+  font-size: 0.875rem;
   color: #536b55;
 }
 .home-page .home-section {
@@ -285,7 +345,7 @@
 .home-page .home-section-heading > p:last-child {
   margin: 17px 0 0;
   max-width: 580px;
-  font-size: 0.92rem;
+  font-size: 1rem;
   color: #5a6c60;
 }
 .home-page .journey-grid {
@@ -319,7 +379,7 @@
 }
 .home-page .journey-grid p {
   color: #5b6c60;
-  font-size: 0.85rem;
+  font-size: 0.875rem;
   margin-bottom: 0;
 }
 .home-page .home-feature-grid {
@@ -364,7 +424,7 @@
   margin: 0 0 12px;
 }
 .home-page .home-feature p {
-  font-size: 0.8rem;
+  font-size: 0.875rem;
   color: #5b6c60;
   margin: 0;
 }
@@ -391,7 +451,7 @@
 }
 .home-page .wordpress-feature p:not(.eyebrow) {
   color: #d1e0d3;
-  font-size: 0.88rem;
+  font-size: 0.9375rem;
 }
 .home-page .wordpress-feature a {
   display: inline-flex;
@@ -458,10 +518,10 @@
   gap: 5px;
 }
 .home-page .wordpress-update strong {
-  font-size: 0.73rem;
+  font-size: 0.875rem;
 }
 .home-page .wordpress-update span {
-  font-size: 0.65rem;
+  font-size: 0.75rem;
   color: #566b55;
 }
 .home-page .home-confidence {
@@ -472,7 +532,7 @@
 }
 .home-page .home-confidence > div > p:not(.eyebrow) {
   color: #5b6c60;
-  font-size: 0.88rem;
+  font-size: 0.9375rem;
   margin-top: 20px;
   margin-bottom: 0;
 }
@@ -498,7 +558,7 @@
 }
 .home-page .confidence-details a {
   display: inline-block;
-  font-size: 0.78rem;
+  font-size: 0.875rem;
   margin-top: 22px;
 }
 .home-page .home-resources {
@@ -527,10 +587,6 @@
   text-decoration: underline;
   text-underline-offset: 4px;
 }
-.home-page .home-resource-links a:focus-visible {
-  outline: 3px solid #205843;
-  outline-offset: 4px;
-}
 .home-page .home-resource-links h3 {
   margin: 0 0 6px;
   font-size: 1rem;
@@ -544,7 +600,7 @@
 .home-page .home-resource-links p {
   margin: 0;
   color: #5b6c60;
-  font-size: 0.85rem;
+  font-size: 0.875rem;
 }
 .home-page .home-resource-art {
   display: block;
@@ -579,7 +635,7 @@
 }
 .home-page .home-cta p:not(.eyebrow) {
   max-width: 550px;
-  font-size: 0.85rem;
+  font-size: 0.875rem;
   color: #506249;
   margin: 16px 0 0;
 }
@@ -590,7 +646,7 @@
   text-align: center;
 }
 .home-page .home-cta-actions > a:last-child {
-  font-size: 0.75rem;
+  font-size: 0.875rem;
 }
 .home-page .site-footer {
   max-width: 1240px;
@@ -620,14 +676,20 @@
 @media (max-width: 800px) {
   .home-page .saas-hero {
     grid-template-columns: 1fr;
-    padding: 44px 32px;
-    gap: 42px;
+    padding: 36px 32px;
+    gap: 28px;
   }
   .home-page .hero-copy {
     max-width: 600px;
   }
   .home-page .saas-hero h1 {
     font-size: clamp(3rem, 8vw, 4rem);
+  }
+  .home-page .saas-hero .intro {
+    margin: 18px 0 20px;
+  }
+  .home-page .hero-note {
+    display: none;
   }
   .home-page .release-illustration {
     width: 100%;
@@ -642,7 +704,7 @@
     font-size: 1rem;
   }
   .home-page .workflow-node > div > span:last-child {
-    font-size: 0.73rem;
+    font-size: 0.75rem;
   }
   .home-page .journey-grid {
     gap: 22px;
@@ -681,23 +743,18 @@
 @media (max-width: 580px) {
   .home-page .site-header {
     flex-wrap: wrap;
-    gap: 20px;
-    padding-top: 20px;
-    padding-bottom: 16px;
-  }
-  .home-page .site-header nav {
-    width: 100%;
-    justify-content: space-between;
-    gap: 12px;
+    gap: 8px;
+    padding-top: 16px;
+    padding-bottom: 12px;
   }
   .home-page .site-header nav a {
     font-size: 0.8rem;
   }
   .home-page .saas-hero {
-    padding: 32px 20px;
+    padding: 24px 20px;
     margin-top: 20px;
     border-radius: 18px;
-    gap: 34px;
+    gap: 24px;
   }
   .home-page .saas-hero h1 {
     font-size: clamp(2.4rem, 10vw, 3.4rem);
@@ -705,18 +762,21 @@
   .home-page .saas-hero .intro {
     font-size: 0.98rem;
   }
+  .home-page .hero-copy > .eyebrow {
+    letter-spacing: 0.08em;
+  }
   .home-page .hero-actions {
     gap: 8px 20px;
   }
   .home-page .hero-note {
-    font-size: 0.68rem;
+    font-size: 0.8125rem;
   }
   .home-page .release-illustration {
     padding: 18px 12px;
     border-radius: 17px;
   }
   .home-page .illustration-top {
-    font-size: 0.61rem;
+    font-size: 0.75rem;
     padding-bottom: 18px;
   }
   .home-page .workflow-node {
@@ -727,7 +787,7 @@
     font-size: 0.81rem;
   }
   .home-page .workflow-node > div > span:last-child {
-    font-size: 0.61rem;
+    font-size: 0.75rem;
   }
   .home-page .workflow-icon {
     width: 31px;
@@ -744,7 +804,7 @@
     gap: 16px 20px;
   }
   .home-page .framework-strip li {
-    font-size: 0.73rem;
+    font-size: 0.875rem;
   }
   .home-page .home-section {
     padding-top: 54px;
@@ -818,7 +878,7 @@
   }
   .home-page .site-footer {
     flex-wrap: wrap;
-    font-size: 0.68rem;
+    font-size: 0.8125rem;
   }
 }
 .home-page .hosting-grid {
@@ -846,10 +906,10 @@
 .home-page .hosting-option p,
 .home-page .hosting-option ul {
   margin: 0;
-  font-size: 0.85rem;
+  font-size: 0.875rem;
 }
 .home-page .hosting-option .eyebrow {
-  font-size: 0.7rem;
+  font-size: 0.75rem;
 }
 .home-page .hosting-option ul {
   padding-left: 20px;
@@ -863,7 +923,7 @@
   color: #506249;
 }
 .home-page .hosting-option > a:last-child {
-  font-size: 0.78rem;
+  font-size: 0.875rem;
 }
 .home-page .home-question {
   padding: 22px 0;
@@ -877,10 +937,10 @@
 .home-page .home-question p {
   max-width: 780px;
   color: #506249;
-  font-size: 0.88rem;
+  font-size: 0.9375rem;
 }
 .home-page .home-question > a {
-  font-size: 0.8rem;
+  font-size: 0.875rem;
 }
 @media (max-width: 600px) {
   .home-page .hosting-grid {
