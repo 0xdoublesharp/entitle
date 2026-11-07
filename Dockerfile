@@ -4,7 +4,7 @@ ADD --checksum=sha256:1de98ed2e9621113b0887b06322b461efb9df73d913fc1d151039b10b7
 FROM scratch AS pnpm-arm64
 ADD --checksum=sha256:e7ca24224eb626a032828ec584c67903ad2f389911b849d009ed70a19f70d8d3 https://registry.npmjs.org/@pnpm/exe.linux-arm64/-/exe.linux-arm64-12.14.0.tgz /pnpm.tgz
 FROM pnpm-${TARGETARCH} AS pnpm
-FROM node:26.12.0-bookworm-slim AS build
+FROM node:26.12.0-bookworm-slim@sha256:742a0fe7320e09e0321222b68165e6ac731d30470e7ea7f98f9bfc3a6e1034fe AS build
 # Install the pinned native CLI directly; npm is not needed in the build stage.
 COPY --from=pnpm /pnpm.tgz /pnpm.tgz
 RUN tar -xzf /pnpm.tgz -C /usr/local/bin --strip-components=1 package/pnpm && rm /pnpm.tgz
@@ -22,7 +22,7 @@ ENV BUILD_DIR=/build
 RUN node scripts/build-server.ts
 RUN pnpm --filter @entitle/server deploy --legacy --prod /runtime
 
-FROM node:26.12.0-bookworm-slim
+FROM node:26.12.0-bookworm-slim@sha256:742a0fe7320e09e0321222b68165e6ac731d30470e7ea7f98f9bfc3a6e1034fe
 ENV NODE_ENV=production PORT=3211 WEB_DIR=/app/web DATA_DIR=/data SERVER_ROLE=all
 WORKDIR /app
 RUN mkdir -p /data && chown node:node /data
