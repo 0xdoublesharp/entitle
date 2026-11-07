@@ -700,6 +700,21 @@ export async function buildApp(
   });
   // Public and seller routes retain the plugin's normalized IP key, including IPv6 /64s.
   await app.register(rateLimit, { max: 1000, timeWindow: "1 minute" });
+  // Bound credential resolution independently of the finer per-activation limits.
+  // This root hook runs before the route limiter's database-backed key generator.
+  const credentialAdmission = app.createRateLimit({
+    max: 1000,
+    timeWindow: "1 minute",
+    keyGenerator: (req) => rateLimit.normalizeIP(req.ip),
+  });
+  app.addHook("onRequest", async (req, reply) => {
+    if (!credentialRoutes.has(req.routeOptions.url ?? "")) return;
+    const limit = await credentialAdmission(req);
+    if (!limit.isAllowed && limit.isExceeded) {
+      reply.header("retry-after", limit.ttlInSeconds);
+      throw new AppError(429, "rate_limited", "Too many requests. Please retry later.");
+    }
+  });
   app.addHook("onRequest", async (req, reply) => {
     reply.header("x-request-id", req.id);
     if (req.url.startsWith("/api/")) reply.header("cache-control", "no-store");

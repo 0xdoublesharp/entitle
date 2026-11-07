@@ -229,6 +229,29 @@ test("random invalid activation credentials share the IP budget instead of alloc
   assert.equal(statuses.filter((status) => status === 429).length, 5);
 });
 
+test("credential admission bounds database lookups before resolving bearer tokens", async (t) => {
+  const f = await fixture(t);
+  let lookups = 0;
+  const count = (query: { sql: string }) => {
+    if (/select\b.*\binstallations\b/i.test(query.sql)) lookups++;
+  };
+  f.db.on("query", count);
+  t.after(() => { f.db.removeListener("query", count); });
+  const request = (i: number) => f.app.inject({
+    url: `${base}/activation`,
+    headers: { authorization: `Bearer invalid-${i}` },
+  });
+  for (let i = 0; i < 1000; i++) await request(i);
+  assert.ok(lookups > 0);
+  const exhausted = lookups;
+  for (let i = 1000; i < 1005; i++) {
+    const response = await request(i);
+    assert.equal(response.statusCode, 429);
+    assert.ok(Number(response.headers["retry-after"]) > 0);
+  }
+  assert.equal(lookups, exhausted);
+});
+
 test("durable platform SMTP reservations defer exhausted mail without dropping payloads or consuming attempts", async (t) => {
   const f = await fixture(t);
   for (const id of ["one", "two"])

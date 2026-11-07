@@ -6,6 +6,11 @@ See [deployment](deployment.md) for the planned hosted address and
 
 Errors use `{error:{code,message,requestId}}`. Credentials belong in Authorization headers or request JSON, never package URLs. Responses containing identity, client secrets or customer data are `Cache-Control: no-store`. Requests have IDs and rate limits. No legacy unscoped licensing routes exist.
 
+Installation-token routes share a 1,000-request-per-minute IP admission limit
+before token resolution. This also groups IPv6 addresses by /64. Route-specific
+limits still apply separately to valid installation tokens; invalid tokens share
+the route's IP budget. A throttled response includes `Retry-After`.
+
 For task walkthroughs, start with [client integration](client-integration.md),
 [seller guide](seller-guide.md), [CLI](cli.md), or [outgoing webhooks](webhooks.md).
 The route tables below are relative to their stated prefix. `:tenant` is a
