@@ -22,6 +22,45 @@ function script(text, anchor) {
   assert.ok(run, `missing script after ${anchor}`);
   return run[1].replace(/^          /gm, "");
 }
+
+test("deployment dispatch accepts only successful canonical main push or manual runs", async () => {
+  const notify = await readFile(
+    new URL("../.github/workflows/notify.yml", import.meta.url),
+    "utf8",
+  );
+  const expression = notify
+    .match(/\n    if: ([\s\S]*?)\n    runs-on:/)[1]
+    .replace(/^>-\n/, "");
+  const eligible = new Function("github", "vars", `return ${expression}`);
+  const baseline = () => ({
+    repository: "doublesharp/entitle",
+    event: {
+      workflow_run: {
+        conclusion: "success",
+        event: "push",
+        head_branch: "main",
+        head_repository: { full_name: "doublesharp/entitle" },
+      },
+    },
+  });
+  const vars = { DISPATCH_APP_ID: "123" };
+  assert.equal(eligible(baseline(), vars), true);
+  const manual = baseline();
+  manual.event.workflow_run.event = "workflow_dispatch";
+  assert.equal(eligible(manual, vars), true);
+  for (const change of [
+    (github) => { github.repository = "fork/entitle"; },
+    (github) => { github.event.workflow_run.event = "pull_request"; },
+    (github) => { github.event.workflow_run.head_repository.full_name = "fork/entitle"; },
+    (github) => { github.event.workflow_run.head_branch = "feature"; },
+    (github) => { github.event.workflow_run.conclusion = "failure"; },
+  ]) {
+    const github = baseline();
+    change(github);
+    assert.equal(eligible(github, vars), false);
+  }
+  assert.equal(eligible(baseline(), { DISPATCH_APP_ID: "" }), false);
+});
 async function fixture(t) {
   const root = await mkdtemp("/Volumes/Scratch/entitle/tmp/ci-test-");
   t.after(() => rm(root, { recursive: true, force: true }));
