@@ -8,6 +8,14 @@ const protectedTag = /^(main|latest|stable|production|staging|retain-.+|keep-.+)
 const validDigest = /^sha256:[a-f0-9]{64}$/;
 const grace = 48 * 60 * 60 * 1000;
 
+// Package REST paths depend on who owns the package: /users/{login} for a personal
+// account, /orgs/{org} for an organization. Registry (ghcr.io) paths are the same for both.
+export function packageVersionsEndpoint(owner, ownerType, name) {
+  const scope = ownerType === 'User' ? 'users' : ownerType === 'Organization' ? 'orgs' : null;
+  if (!scope) throw Error(`Unsupported package owner type for ${owner}: ${ownerType}`);
+  return `/${scope}/${owner}/packages/container/${encodeURIComponent(name)}/versions`;
+}
+
 export async function planPackage({ name, owner, versions, references, manifest, now = Date.now(), keep = 20, cache = false }) {
   const byDigest = new Map(versions.map(v => [v.name, v]));
   const tagged = versions.filter(v => v.metadata.container.tags.length)
@@ -75,11 +83,14 @@ async function main() {
     if (!response.ok) throw Error(`GitHub ${method} ${path}: HTTP ${response.status}`);
     return response.status === 204 ? null : response.json();
   }
+  // The repository moves between a personal account and an org; read which one owns it now.
+  const account = await api(`/users/${owner}`);
+  if (String(account?.login).toLowerCase() !== owner) throw Error(`Owner lookup returned a different account for ${owner}`);
   const plans = [];
   // Complete every package's inventory and manifest traversal BEFORE the first delete.
   for (const entry of config.packages) {
     const name = entry.name;
-    const endpoint = `/users/${owner}/packages/container/${encodeURIComponent(name)}/versions`;
+    const endpoint = packageVersionsEndpoint(owner, account.type, name);
     const versions = [];
     for (let page = 1; ; page++) {
       if (page > 100) throw Error(`Package pagination exceeded safety limit: ${name}`);

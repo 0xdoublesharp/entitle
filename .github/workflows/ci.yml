@@ -26,6 +26,7 @@ jobs:
       runtime: ${{ steps.changes.outputs.runtime }}
       server_hash: ${{ steps.changes.outputs.server_hash }}
       runtime_hash: ${{ steps.changes.outputs.runtime_hash }}
+      image_root: ${{ steps.changes.outputs.image_root }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -38,6 +39,10 @@ jobs:
           REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+          # Images live in the repository owner's GHCR namespace, which is lowercase.
+          owner=$(printf '%s' "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')
+          [[ "$owner" =~ ^[a-z0-9][a-z0-9-]*$ ]]
+          image_root="ghcr.io/$owner"
           server_hash=$(git ls-files -z -- Dockerfile .dockerignore package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.json .node-version apps/server packages/shared src scripts/build-server.ts LICENSE ADDITIONAL-PERMISSION.md NOTICE | sort -z | xargs -0 sha256sum | sha256sum | cut -d ' ' -f 1)
           runtime_hash=$(git ls-files -z -- deploy/runtime.Dockerfile deploy/runtime-entrypoint.sh deploy/api-router-entrypoint.sh deploy/nginx.conf.template .dockerignore | sort -z | xargs -0 sha256sum | sha256sum | cut -d ' ' -f 1)
           server=true
@@ -45,8 +50,8 @@ jobs:
           # PRs qualify from source without registry access, including fork PRs.
           if [[ "$GITHUB_EVENT_NAME" != pull_request ]]; then
             printf '%s' "$REGISTRY_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin >/dev/null
-            if docker manifest inspect "ghcr.io/doublesharp/entitle-server:input-$server_hash" >/dev/null 2>&1; then server=false; fi
-            if docker manifest inspect "ghcr.io/doublesharp/entitle-web-runtime:input-$runtime_hash" >/dev/null 2>&1; then runtime=false; fi
+            if docker manifest inspect "$image_root/entitle-server:input-$server_hash" >/dev/null 2>&1; then server=false; fi
+            if docker manifest inspect "$image_root/entitle-web-runtime:input-$runtime_hash" >/dev/null 2>&1; then runtime=false; fi
           fi
           if [[ ! "$BASE_SHA" =~ ^[0-9a-f]{40}$ || "$BASE_SHA" == 0000000000000000000000000000000000000000 ]]; then
             server=true
@@ -64,7 +69,7 @@ jobs:
             done < <(git diff --name-only "$BASE_SHA" HEAD)
           fi
           printf 'server=%s\nruntime=%s\n' "$server" "$runtime" >> "$GITHUB_OUTPUT"
-          printf 'server_hash=%s\nruntime_hash=%s\n' "$server_hash" "$runtime_hash" >> "$GITHUB_OUTPUT"
+          printf 'server_hash=%s\nruntime_hash=%s\nimage_root=%s\n' "$server_hash" "$runtime_hash" "$image_root" >> "$GITHUB_OUTPUT"
 
   server-checks:
     needs: changes
@@ -211,7 +216,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - id: cached
         env:
-          IMAGE: ghcr.io/doublesharp/entitle-server:input-${{ needs.changes.outputs.server_hash }}
+          IMAGE: ${{ needs.changes.outputs.image_root }}/entitle-server:input-${{ needs.changes.outputs.server_hash }}
         run: |
           digest=$(docker buildx imagetools inspect "$IMAGE" --format '{{.Manifest.Digest}}' 2>/dev/null || true)
           if [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
@@ -228,11 +233,11 @@ jobs:
           platforms: linux/amd64
           push: true
           # Candidates confer no release or reusable qualification.
-          tags: ghcr.io/doublesharp/entitle-server:build-${{ github.run_id }}-${{ github.run_attempt }}
+          tags: ${{ needs.changes.outputs.image_root }}/entitle-server:build-${{ github.run_id }}-${{ github.run_attempt }}
           cache-from: type=gha,scope=entitle-server
           cache-to: type=gha,scope=entitle-server,mode=max
           labels: |
-            org.opencontainers.image.source=https://github.com/doublesharp/entitle
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
 
       - name: Qualify compiled server roles against PostgreSQL
@@ -240,7 +245,7 @@ jobs:
           bash scripts/deployment/setup-ci.sh
           node --test tests/server-container.test.mjs
         env:
-          SERVER_CONTAINER_IMAGE: ghcr.io/doublesharp/entitle-server@${{ steps.cached.outputs.digest || steps.image.outputs.digest }}
+          SERVER_CONTAINER_IMAGE: ${{ needs.changes.outputs.image_root }}/entitle-server@${{ steps.cached.outputs.digest || steps.image.outputs.digest }}
 
   server-image:
     needs: [changes, server-build, server-checks, server-tests]
@@ -263,7 +268,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Publish qualified tags
         env:
-          IMAGE: ghcr.io/doublesharp/entitle-server
+          IMAGE: ${{ needs.changes.outputs.image_root }}/entitle-server
           DIGEST: ${{ needs.server-build.outputs.digest }}
           SOURCE_SHA: ${{ github.sha }}
           INPUT_HASH: ${{ needs.changes.outputs.server_hash }}
@@ -306,7 +311,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - id: cached
         env:
-          IMAGE: ghcr.io/doublesharp/entitle-web-runtime:input-${{ needs.changes.outputs.runtime_hash }}
+          IMAGE: ${{ needs.changes.outputs.image_root }}/entitle-web-runtime:input-${{ needs.changes.outputs.runtime_hash }}
         run: |
           digest=$(docker buildx imagetools inspect "$IMAGE" --format '{{.Manifest.Digest}}' 2>/dev/null || true)
           if [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
@@ -321,12 +326,12 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: |
-            ghcr.io/doublesharp/entitle-web-runtime:source-${{ github.sha }}
-            ghcr.io/doublesharp/entitle-web-runtime:input-${{ needs.changes.outputs.runtime_hash }}
+            ${{ needs.changes.outputs.image_root }}/entitle-web-runtime:source-${{ github.sha }}
+            ${{ needs.changes.outputs.image_root }}/entitle-web-runtime:input-${{ needs.changes.outputs.runtime_hash }}
           cache-from: type=gha,scope=entitle-web-runtime
           cache-to: type=gha,scope=entitle-web-runtime,mode=max
           labels: |
-            org.opencontainers.image.source=https://github.com/doublesharp/entitle
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
       - env:
           DIGEST: ${{ steps.cached.outputs.digest || steps.image.outputs.digest }}
