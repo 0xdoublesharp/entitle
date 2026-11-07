@@ -249,7 +249,7 @@ export function createMcpServer() {
           additionalProperties: false,
         },
         annotations: {
-          readOnlyHint: true,
+          readOnlyHint: false,
           destructiveHint: false,
           openWorldHint: true,
         },
@@ -262,7 +262,7 @@ export function createMcpServer() {
           [key: string]: unknown;
         },
         annotations: {
-          readOnlyHint: operation.readOnly === true,
+          readOnlyHint: operation.readOnly === true && !operation.output,
           destructiveHint: operation.readOnly !== true,
           openWorldHint: true,
         },
