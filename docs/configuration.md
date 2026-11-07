@@ -24,7 +24,7 @@ a present empty string; omit optional price/account IDs until configured.
 | `PORT`                      | `3211`                          | Integer 0-65535; 0 is useful for isolated tests.                                                                        |
 | `STANDALONE_OWNER_EMAIL`    | Empty                           | Required in standalone production; normalized email allowed to sign in as owner.                                        |
 | `APP_SECRET`                | Required                        | Exactly 64 hexadecimal characters. Protect and back up for encrypted retry/outbox state.                                |
-| `OPERATOR_TOKEN`            | Required                        | At least 32 characters; independent from seller keys and `APP_SECRET`.                                                  |
+| `OPERATOR_TOKEN`            | Required                        | At least 32 random characters; independent from seller keys and `APP_SECRET`. The published placeholder is rejected.     |
 | `TRUST_PROXY`               | Disabled                        | Required in production; identify the exact trusted proxy/subnet. Blanket `true`, `0.0.0.0/0` and `::/0` are refused.    |
 | `DEVELOPMENT_HOST_SUFFIXES` | Empty                           | Comma-separated explicit host/suffix exemptions for site seat accounting. Exact or dot-delimited matching.              |
 

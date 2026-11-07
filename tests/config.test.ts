@@ -1,10 +1,22 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { loadConfig } from "../src/config.ts";
 const credentials = {
   APP_SECRET: "01".repeat(32),
   OPERATOR_TOKEN: "operator-".repeat(5),
 };
+
+test("the published example operator token cannot authorize a deployment", () => {
+  const example = readFileSync(new URL("../.env.example", import.meta.url), "utf8");
+  const token = /^OPERATOR_TOKEN=(.+)$/m.exec(example)?.[1];
+  assert.ok(token);
+  assert.throws(
+    () => loadConfig({ ...credentials, OPERATOR_TOKEN: token }),
+    /OPERATOR_TOKEN.*placeholder/i,
+  );
+  assert.equal(loadConfig(credentials).operatorToken, credentials.OPERATOR_TOKEN);
+});
 
 test("a public origin cannot contain paths, URL credentials, query strings or fragments", () => {
   for (const origin of [

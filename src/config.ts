@@ -217,7 +217,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     .string()
     .regex(/^[a-f0-9]{64}$/i)
     .parse(env.APP_SECRET);
-  const operatorToken = z.string().min(32).parse(env.OPERATOR_TOKEN);
+  const operatorToken = z
+    .string()
+    .min(32)
+    .refine((value) => value !== "REPLACE_WITH_AT_LEAST_32_RANDOM_CHARACTERS", {
+      message: "OPERATOR_TOKEN must replace the published placeholder with a random secret",
+    })
+    .parse(env.OPERATOR_TOKEN);
   if (
     env.STRIPE_PUBLISHABLE_KEY &&
     !/^pk_(?:test|live)_[A-Za-z0-9]+$/.test(env.STRIPE_PUBLISHABLE_KEY)
