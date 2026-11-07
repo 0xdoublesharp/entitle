@@ -1,6 +1,9 @@
 // Exercise retention at the package-version and registry-manifest boundary.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { packageVersionsEndpoint, planPackage } from './ghcr-retention.mjs';
@@ -96,18 +99,25 @@ process.argv[1] = process.env.SCRIPT;
 await import(process.env.SCRIPT_URL);
 `;
 function preview(owner, type, login = '') {
-  const result = spawnSync(process.execPath, ['--input-type=module', '-e', harness], {
-    cwd: fileURLToPath(new URL('../..', import.meta.url)),
-    encoding: 'utf8',
-    // The inventory arrives on stdin, so the run needs no SSH access or temporary file.
-    input: JSON.stringify({ schemaVersion: 1, images: [`ghcr.io/example/unrelated@sha256:${'f'.repeat(64)}`], observedAt: new Date().toISOString() }),
-    env: {
-      PATH: process.env.PATH, GITHUB_TOKEN: 'test-token', GITHUB_REPOSITORY: `${owner}/entitle`, GITHUB_ACTOR: 'ci',
-      GHCR_APPLY: 'false', GHCR_INVENTORY: '/dev/stdin',
-      FAKE_OWNER: owner, FAKE_TYPE: type, FAKE_LOGIN: login, SCRIPT: script, SCRIPT_URL: pathToFileURL(script).href,
-    },
-  });
-  return { ...result, calls: JSON.parse(result.stdout.match(/^CALLS (.*)$/m)?.[1] ?? '[]') };
+  // A real file rather than /dev/stdin: on Linux the child's stdin is a socket, and
+  // opening /dev/stdin then fails with ENXIO.
+  const directory = mkdtempSync(join(tmpdir(), 'ghcr-retention-'));
+  const inventory = join(directory, 'inventory.json');
+  writeFileSync(inventory, JSON.stringify({ schemaVersion: 1, images: [`ghcr.io/example/unrelated@sha256:${'f'.repeat(64)}`], observedAt: new Date().toISOString() }));
+  try {
+    const result = spawnSync(process.execPath, ['--input-type=module', '-e', harness], {
+      cwd: fileURLToPath(new URL('../..', import.meta.url)),
+      encoding: 'utf8',
+      env: {
+        PATH: process.env.PATH, GITHUB_TOKEN: 'test-token', GITHUB_REPOSITORY: `${owner}/entitle`, GITHUB_ACTOR: 'ci',
+        GHCR_APPLY: 'false', GHCR_INVENTORY: inventory,
+        FAKE_OWNER: owner, FAKE_TYPE: type, FAKE_LOGIN: login, SCRIPT: script, SCRIPT_URL: pathToFileURL(script).href,
+      },
+    });
+    return { ...result, calls: JSON.parse(result.stdout.match(/^CALLS (.*)$/m)?.[1] ?? '[]') };
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 }
 
 test('preview lists org-owned packages through /orgs and never deletes', () => {
