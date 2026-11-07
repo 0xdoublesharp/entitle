@@ -6,7 +6,7 @@ See [deployment](deployment.md) for the planned hosted address and
 
 Errors use `{error:{code,message,requestId}}`. Credentials belong in Authorization headers or request JSON, never package URLs. Responses containing identity, client secrets or customer data are `Cache-Control: no-store`. Requests have IDs and rate limits. No legacy unscoped licensing routes exist.
 
-Activation status (`GET /activation`) has a shared 60-request-per-minute IP
+Activation status (`GET` and `HEAD /activation`) has a shared 60-request-per-minute IP
 admission limit. Other installation-token routes retain a 1,000-request-per-minute
 aggregate IP ceiling alongside their per-installation route budgets. IPv6
 addresses are grouped by `/64`; throttled responses include `Retry-After`.
@@ -182,7 +182,7 @@ Prefix `/api/v1/tenants/:tenant`:
 | GET      | /updates/generic/:product/:target                | Activation bearer; JSON assets, optional currentVersion query; 204 if no newer release                                                |
 | POST     | /portal                                          | `{}` and buyer CSRF; connected Stripe Customer Portal                                                                                 |
 
-Activation-status requests (`GET /activation`) share an admission ceiling of 60
+Activation-status requests (`GET` and `HEAD /activation`) share an admission ceiling of 60
 requests per minute per normalized source IP, before token lookup. Installations
 behind the same IP share this status ceiling. Other installation-token routes
 retain their separate per-installation route budgets and share a wider admission

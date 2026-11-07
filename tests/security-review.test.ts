@@ -256,6 +256,35 @@ test("activation admission stops database lookups when its registered IP budget 
   assert.ok(lookups > exhausted, "credential resolution resumes after the registered time window");
 });
 
+for (const first of ["GET", "HEAD", "mixed"] as const)
+  test(`activation admission shares GET/HEAD exhaustion after ${first} requests`, async (t) => {
+    const f = await fixture(t);
+    let lookups = 0;
+    const count = (query: { sql: string }) => {
+      if (/select\b.*\binstallations\b/i.test(query.sql)) lookups++;
+    };
+    f.db.on("query", count);
+    t.after(() => { f.db.removeListener("query", count); });
+    const request = (method: "GET" | "HEAD", i: number) => f.app.inject({
+      method,
+      url: `${base}/activation`,
+      headers: { authorization: `Bearer ${Buffer.from(hash(`method-${i}`), "hex").toString("base64url")}` },
+    });
+    for (let i = 0; i < 60; i++) {
+      const method = first === "mixed" ? (i % 2 ? "GET" : "HEAD") : first;
+      assert.equal((await request(method, i)).statusCode, 401);
+    }
+    assert.ok(lookups > 0);
+    const exhausted = lookups;
+    for (let i = 60; i < 65; i++)
+      for (const method of ["GET", "HEAD"] as const) {
+        const response = await request(method, i);
+        assert.equal(response.statusCode, 429);
+        assert.ok(Number(response.headers["retry-after"]) > 0);
+      }
+    assert.equal(lookups, exhausted);
+  });
+
 test("activation pre-admission shares IPv6 subnet budgets before credential lookup", async (t) => {
   const f = await fixture(t);
   let lookups = 0;

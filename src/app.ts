@@ -777,7 +777,10 @@ export async function buildApp(
     "/api/v1/tenants/:tenant/updates/generic/:product/:target",
     "/api/v1/tenants/:tenant/packages/:product/assets/:assetId/:filename",
   ]);
-  const credentialRouteKey = (method: string, template: string) => JSON.stringify([method.toUpperCase(), template]);
+  const credentialRouteKey = (method: string, template: string) => {
+    const verb = method.toUpperCase();
+    return JSON.stringify([verb === "HEAD" ? "GET" : verb, template]);
+  };
   const activationAdmissions = new Map<string, ReturnType<typeof app.createRateLimit>>();
   // Route-specific keys are selected before the rate-limit plugin builds its hooks.
   app.addHook("onRoute", (route) => {
@@ -787,6 +790,7 @@ export async function buildApp(
       const template = route.url;
       for (const method of Array.isArray(route.method) ? route.method : [route.method]) {
         const key = credentialRouteKey(method, template);
+        if (activationAdmissions.has(key)) continue;
         activationAdmissions.set(key, app.createRateLimit({
           ...(policy.max === undefined ? {} : { max: policy.max }),
           ...(policy.timeWindow === undefined ? {} : { timeWindow: policy.timeWindow }),
