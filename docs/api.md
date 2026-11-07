@@ -28,6 +28,10 @@ ID. Do not substitute an internal tenant ID for its public slug.
 | Seller API key       | `Authorization: Bearer DE-TK-...`        | Explicit tenant-bound scopes, expiry and revocation.            |
 | Operator token       | Independent Bearer token                 | `/api/v1/operator`, separate from tenant routes.                |
 
+Publication rechecks API-key revocation, expiration and `releases:write` scope
+inside its final database transaction. Revoking a key cancels uploads still
+being transferred or verified; an already committed release remains published.
+
 | Seller key scope    | Operations                                                                            |
 | ------------------- | ------------------------------------------------------------------------------------- |
 | `read`              | Overview, price picker, safe jobs, features and basic/eligible advanced health reads. |

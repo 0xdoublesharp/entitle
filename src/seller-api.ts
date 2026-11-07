@@ -564,7 +564,7 @@ export async function sellerRoutes(
             ...params,
             ...metadata,
             file,
-          });
+          }, auth.publicationAuthorization(req, context(req).tenant.id));
           await audit(req, "release.published", {
             release_id: release.id,
             product_id: release.product_id,
@@ -712,7 +712,7 @@ export async function sellerRoutes(
               ...params,
               ...metadata,
               file,
-            });
+            }, auth.publicationAuthorization(req, tenant.id));
             await audit(req, "asset.published", {
               release_id: result.release.id,
               asset_id: result.asset.id,

@@ -143,6 +143,64 @@ async function fixture(
   };
 }
 type Fixture = Awaited<ReturnType<typeof fixture>>;
+
+for (const framework of ["wordpress", "generic"] as const) {
+  for (const transition of ["revoked", "expired", "scope_removed"] as const) {
+    test(`${framework} publication denies an API key ${transition} during storage verification`, async (t) => {
+      const f = await fixture(t);
+      const key = await f.key();
+      await f.db("products").insert({
+        tenant_id: "primary", id: "publication", slug: "publication",
+        name: "Publication", framework, framework_config: "{}",
+      });
+      const browser = await seller(f);
+      assert.equal((await f.post("/api/v1/operator/tenants/primary/owner", {
+        email: "owner@example.test",
+      }, f.operator)).statusCode, 200);
+      const revokeHeaders = await verifiedHeaders(f, browser);
+      const original = f.store.get.bind(f.store);
+      t.mock.method(f.store, "get", async (...args: Parameters<typeof original>) => {
+        const bytes = await original(...args);
+        if (transition === "revoked") {
+          const revoked = await f.post(`${prefix}/seller/keys/${key.id}/revoke`, {}, revokeHeaders);
+          assert.equal(revoked.statusCode, 200, revoked.body);
+        } else {
+          await f.db("tenant_api_keys").where({ id: key.id }).update(
+            transition === "expired" ? { expires_at: 0 } : { scopes: '["read"]' },
+          );
+        }
+        return bytes;
+      });
+      const removed = t.mock.method(f.store, "delete");
+      const wordpress = framework === "wordpress";
+      const bytes = wordpress ? zipBytes([{
+        name: "publication/publication.php",
+        data: "<?php /* Plugin Name: Publication\nVersion: 1.0.0\n*/",
+      }]) : Buffer.from("bounded artifact");
+      const response = await f.app.inject({
+        method: "POST",
+        url: `${prefix}/seller/${wordpress ? "releases" : "assets"}/publication/1.0.0`,
+        headers: {
+          ...key.headers,
+          "content-type": wordpress ? "application/zip" : "application/octet-stream",
+          "x-release-metadata": Buffer.from(JSON.stringify({
+            changelog: "First",
+            ...(!wordpress ? { target: "any", filename: "publication.bin" } : {}),
+          })).toString("base64url"),
+        },
+        payload: bytes,
+      });
+      assert.equal(response.statusCode, 403, response.body);
+      assert.equal(response.json().error.code, transition === "scope_removed" ? "scope_denied" : "tenant_denied");
+      assert.equal((await f.db("releases")).length, 0);
+      assert.equal((await f.db("release_assets")).length, 0);
+      assert.equal((await f.db("upload_reservations")).length, 0);
+      assert.equal((await f.db("business_events")).length, 0);
+      assert.equal(removed.mock.callCount(), 1);
+    });
+  }
+}
+
 async function seller(f: Fixture, email = "owner@example.test") {
   const requested = await f.post(
     "/api/v1/platform/auth/request",

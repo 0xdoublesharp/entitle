@@ -238,7 +238,10 @@ export class Releases {
       limit: Number(tenant.max_storage_bytes),
     };
   }
-  async publish(input: Publication): Promise<Release> {
+  async publish(
+    input: Publication,
+    authorize?: (tx: Tx) => Promise<void>,
+  ): Promise<Release> {
     input = { ...input };
     check(
       semver.valid(input.version) === input.version &&
@@ -290,6 +293,7 @@ export class Releases {
     );
     const id = randomUUID();
     await this.db.transaction(async (tx) => {
+      await authorize?.(tx);
       await lock(tx, "schema", this.tenant.id);
       const capacity = await this.capacity(tx);
       check(
@@ -363,6 +367,7 @@ export class Releases {
           tested: input.tested,
         };
         await this.db.transaction(async (tx) => {
+          await authorize?.(tx);
           await lock(tx, "schema", this.tenant.id);
           const capacity = await this.capacity(tx);
           check(

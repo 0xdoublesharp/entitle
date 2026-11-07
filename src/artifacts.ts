@@ -99,6 +99,7 @@ export class Artifacts {
   }
   async publish(
     input: AssetPublication,
+    authorize?: (tx: Tx) => Promise<void>,
   ): Promise<{ release: Release; asset: ReleaseAsset }> {
     input = { ...input };
     check(
@@ -135,6 +136,7 @@ export class Artifacts {
     );
     const id = randomUUID();
     await this.db.transaction(async (tx) => {
+      await authorize?.(tx);
       await lock(tx, "schema", this.tenant.id);
       const capacity = await this.capacity(tx);
       check(
@@ -250,6 +252,7 @@ export class Artifacts {
         "Artifact changed during publication.",
       );
       return await this.db.transaction(async (tx) => {
+        await authorize?.(tx);
         await lock(tx, "schema", this.tenant.id);
         const capacity = await this.capacity(tx);
         const reservation = await tx("upload_reservations")
