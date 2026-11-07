@@ -7,12 +7,13 @@ import {
 import { sealPrivacyAttribution } from "./privacy-attribution.ts";
 import { recordBusinessEvent } from "./business-events.ts";
 import { randomUUID } from "node:crypto";
-import type { DB, License, Plan, Customer } from "./db.ts";
+import type { DB, License, Plan, Customer, Job } from "./db.ts";
 import { lock } from "./db.ts";
 import { hash, random, seal, unseal } from "./crypto.ts";
 import type { Licenses } from "./licensing.ts";
 import { AppError, check } from "./errors.ts";
-import { DeferredJob, runQueue } from "./queue.ts";
+import { DeferredJob, runQueue, assertQueueLease, type WorkerQueueOptions } from "./queue.ts";
+import { withWorkerTurn } from "./worker-continuation.ts";
 import {
   requireTenantCapacity,
   type PublicationPolicy,
@@ -106,6 +107,7 @@ export class Billing {
       const s = await this.source.snapshot(subscriptionId);
       const applied = await this.db.transaction(async (tx) => {
         await lock(tx, "billing", this.licensing.tenant.id);
+        await assertQueueLease(tx);
         const acquired = await tx("locks")
           .where({ id: revisionId, version: revision.version })
           .increment("version", 1);
@@ -159,7 +161,7 @@ export class Billing {
               error instanceof AppError &&
               ["tenant_suspended", "tenant_capacity"].includes(error.code)
             )
-              throw new DeferredJob(Date.now() + 60000);
+              throw new DeferredJob(Date.now() + 60000, "tenant_authority");
             throw error;
           }
         }
@@ -486,38 +488,45 @@ export class Billing {
   }
   async run(
     resolveSubscription: (event: BillingEvent) => Promise<string | null>,
+    worker?: WorkerQueueOptions,
   ) {
+    const handle = async (job: Job) => {
+      if (job.kind === "reconcile") {
+        const { subscriptionId } = unseal<{ subscriptionId: string }>(
+          job.payload,
+          this.licensing.secret,
+        );
+        await this.reconcile(subscriptionId);
+        return;
+      }
+      const { eventId } = unseal<{ eventId: string }>(job.payload, this.licensing.secret);
+      const stored = await this.db("billing_events")
+        .where({ tenant_id: this.licensing.tenant.id, id: eventId }).first();
+      const event = unseal<BillingEvent>(stored.payload, this.licensing.secret);
+      const subscription = await resolveSubscription(event);
+      if (subscription) await this.reconcile(subscription);
+      await this.db.transaction(async (tx) => {
+        await assertQueueLease(tx);
+        await tx("billing_events")
+          .where({ tenant_id: this.licensing.tenant.id, id: eventId })
+          .update({ processed_at: Date.now() });
+      });
+    };
     await runQueue(
       this.db,
       "work",
       async (job) => {
-        if (job.kind === "reconcile") {
-          const { subscriptionId } = unseal<{ subscriptionId: string }>(
-            job.payload,
-            this.licensing.secret,
-          );
-          await this.reconcile(subscriptionId);
-          return;
-        }
-        const { eventId } = unseal<{ eventId: string }>(
-          job.payload,
-          this.licensing.secret,
-        );
-        const stored = await this.db("billing_events")
-          .where({ tenant_id: this.licensing.tenant.id, id: eventId })
-          .first();
-        const event = unseal<BillingEvent>(
-          stored.payload,
-          this.licensing.secret,
-        );
-        const subscription = await resolveSubscription(event);
-        if (subscription) await this.reconcile(subscription);
-        await this.db("billing_events")
-          .where({ tenant_id: this.licensing.tenant.id, id: eventId })
-          .update({ processed_at: Date.now() });
+        if (worker) await withWorkerTurn({
+          db: this.db, secret: this.licensing.secret, job, table: "work",
+          tenantId: this.licensing.tenant.id,
+          budgetMs: worker.budgetMs, maxRequests: worker.maxRequests,
+          onBeginApply: worker.onBeginApply,
+        }, () => handle(job));
+        else await handle(job);
       },
-      20,
+      worker ? 1 : 20,
       this.licensing.tenant.id,
+      worker,
     );
   }
   async enqueueReconcile(subscriptionIds: string[]) {

@@ -31,6 +31,7 @@ import {
 } from "../src/account-management.ts";
 import { up, down } from "../src/migrations/009_accounts.ts";
 import { up as complimentarySchema } from "../src/migrations/014_complimentary_licenses.ts";
+import { up as continuationSchema } from "../src/migrations/016_worker_continuations.ts";
 
 async function migrateAccountsDb(db: ReturnType<typeof createDb>) {
   await db.migrate.latest({
@@ -1635,6 +1636,7 @@ test("email verification cannot be consumed twice, and a new request replaces th
 
 test("operator reconciliation clears a resolved Stripe binding, redacts scoped PII, and preserves financial records before completion", async (t) => {
   const f = await fixture(t);
+  await continuationSchema(f.db);
   await license(f, { revoked: 1, billing_status: "canceled" });
   await f
     .db("customers")
@@ -1693,6 +1695,18 @@ test("operator reconciliation clears a resolved Stripe binding, redacts scoped P
     created_at: 1,
     state: "sent",
   });
+  const checkpointScope = hash(JSON.stringify(["work", "primary", "evt_buyer"]));
+  const foreignScope = hash(JSON.stringify(["work", "other", "evt_buyer"]));
+  for (const scope of [checkpointScope, foreignScope]) {
+    await f.db("worker_continuations").insert({
+      scope, slot: "merchant.snapshot", updated_at: Date.now(),
+      payload: seal({ email: "buyer@example.test" }, f.config.secret),
+    });
+    await f.db("worker_continuation_facts").insert({
+      scope, slot: "merchant.snapshot", kind: "invoice", id: "in_buyer", position: 0,
+      payload: seal({ customer: "cus_buyer" }, f.config.secret),
+    });
+  }
   await f.db("audit_events").insert({
     id: "audit-buyer",
     tenant_id: "primary",
@@ -1731,6 +1745,10 @@ test("operator reconciliation clears a resolved Stripe binding, redacts scoped P
     approval,
   );
   assert.equal(receipt.reconciled, true);
+  assert.equal((await f.db("worker_continuations").where({ scope: checkpointScope })).length, 0);
+  assert.equal((await f.db("worker_continuation_facts").where({ scope: checkpointScope })).length, 0);
+  assert.equal((await f.db("worker_continuations").where({ scope: foreignScope })).length, 1);
+  assert.equal((await f.db("worker_continuation_facts").where({ scope: foreignScope })).length, 1);
   assert.deepEqual(
     await f.customers.reconcileClosure(
       "buyer",

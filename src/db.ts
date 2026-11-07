@@ -48,6 +48,7 @@ const migrationNames = [
   "013_platform_price_history",
   "014_complimentary_licenses",
   "015_workspace_archive",
+  "016_worker_continuations",
 ] as const;
 
 // Knex's migration listing can create its metadata tables. Serving roles only
@@ -104,12 +105,16 @@ export async function migrate(db: DB) {
                                   ? import("./migrations/013_platform_price_history.ts")
                                   : m === "014_complimentary_licenses"
                                     ? import("./migrations/014_complimentary_licenses.ts")
-                                    : import("./migrations/015_workspace_archive.ts"),
+                                    : m === "015_workspace_archive"
+                                      ? import("./migrations/015_workspace_archive.ts")
+                                      : import("./migrations/016_worker_continuations.ts"),
     },
   });
 }
 
 export const tables = [
+  "worker_continuation_facts",
+  "worker_continuations",
   "platform_price_history",
   "business_events",
   "publisher_sandboxes",

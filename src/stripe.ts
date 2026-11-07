@@ -11,6 +11,8 @@ import type { DB, Plan, Tenant } from "./db.ts";
 import { lock } from "./db.ts";
 import type { Config } from "./config.ts";
 import { check } from "./errors.ts";
+import { stripeWorkerHttpClient, workerTurn } from "./worker-continuation.ts";
+import { workerSnapshot, workerResolveSubscription } from "./stripe-worker.ts";
 const id = (value: string | { id: string } | null | undefined) =>
   typeof value === "string" ? value : value?.id;
 export interface GuestCheckout {
@@ -38,6 +40,7 @@ export class StripeBilling implements BillingSource {
       apiVersion: "2026-09-30.endive",
       maxNetworkRetries: 2,
       timeout: 20000,
+      httpClient: stripeWorkerHttpClient(),
     }));
   }
   set stripe(client: Stripe) {
@@ -69,6 +72,7 @@ export class StripeBilling implements BillingSource {
       "local_billing",
       "Stripe reconciliation is disabled in local fixture mode.",
     );
+    if (workerTurn()) return workerSnapshot(this, subscriptionId);
     const sub = await this.stripe.subscriptions.retrieve(
       subscriptionId,
       {},
@@ -651,6 +655,7 @@ export class StripeBilling implements BillingSource {
       "Stripe reconciliation is disabled in local fixture mode.",
     );
     this.options();
+    if (workerTurn()) return workerResolveSubscription(this, event);
     const obj = event.data.object;
     if (event.type.startsWith("customer.subscription.")) return String(obj.id);
     if (event.type.startsWith("invoice.")) {

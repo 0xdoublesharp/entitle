@@ -16,6 +16,7 @@ import { hash, random, seal, unseal } from "./crypto.ts";
 import { check } from "./errors.ts";
 import { recordBusinessEvent } from "./business-events.ts";
 import { outboundEventTypes } from "./outbound-webhooks.ts";
+import { workerContinuationScope } from "./worker-continuation.ts";
 
 export const sensitivePurposes = [
   "recovery_codes",
@@ -1019,6 +1020,13 @@ export class CustomerAccounts {
           state: "canceled",
           last_error: "privacy_redacted",
         });
+        // A failed scan can retain normalized provider facts after its queue
+        // payload is redacted. Erase only this reviewed job's checkpoint scope.
+        if (await tx.schema.hasTable("worker_continuations")) {
+          const scope = workerContinuationScope("work", tenant, id);
+          await tx("worker_continuation_facts").where({ scope }).delete();
+          await tx("worker_continuations").where({ scope }).delete();
+        }
       }
       for (const id of new Set(approval.auditIds)) {
         const row = await tx("audit_events")

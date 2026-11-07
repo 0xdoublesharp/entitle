@@ -38,6 +38,7 @@ import {
 } from "./framework-api.ts";
 import { Releases } from "./releases.ts";
 import { Billing, type BillingEvent } from "./billing.ts";
+import type { WorkerQueueOptions } from "./queue.ts";
 import { StripeBilling } from "./stripe.ts";
 import { Auth } from "./auth.ts";
 import { Outbox, type Mailer } from "./email.ts";
@@ -80,6 +81,11 @@ export interface AppOptions {
   store?: ArtifactStore;
   stripeFactory?: (tenant: Tenant) => StripeBilling;
   platformBilling?: PlatformBilling;
+  billingWorker?: {
+    budgetMs?: number;
+    maxRequests?: number;
+    maxOwnersPerTick?: number;
+  };
 }
 export async function buildApp(
   config: Config,
@@ -87,6 +93,16 @@ export async function buildApp(
   mailer?: Mailer,
   options: AppOptions = {},
 ) {
+  const billingBudgetMs = options.billingWorker?.budgetMs ?? 5000;
+  const billingMaxRequests = options.billingWorker?.maxRequests ?? 8;
+  const billingMaxOwners = options.billingWorker?.maxOwnersPerTick ?? 4;
+  check(
+    Number.isSafeInteger(billingBudgetMs) && billingBudgetMs >= 1 && billingBudgetMs <= 60000 &&
+      Number.isSafeInteger(billingMaxRequests) && billingMaxRequests >= 1 && billingMaxRequests <= 100 &&
+      Number.isSafeInteger(billingMaxOwners) && billingMaxOwners >= 1 && billingMaxOwners <= 100,
+    500, "worker_configuration", "Invalid billing worker budget.",
+  );
+  const billingShutdown = new AbortController();
   const hosted = config.deploymentMode === "hosted";
   const sandboxes = new PublisherSandboxes(db, config);
   if (!hosted) {
@@ -461,6 +477,11 @@ export async function buildApp(
   let ticking = false,
     closing = false,
     tenantCursor = 0;
+  let lastBillingOwner: string | undefined;
+  let billingWindowDeadline = 0,
+    billingWindowTurns = 0,
+    billingBusy = false;
+  let billingIdle: Promise<boolean> | undefined;
   let tickIdle: Promise<void> | undefined;
   let markTickIdle!: () => void;
   const deliveryPool = new WebhookDeliveryPool((tenantId) =>
@@ -469,15 +490,111 @@ export async function buildApp(
       "Webhook work will retry later",
     ),
   );
-  app.addHook("onClose", async () => {
+  app.addHook("preClose", async () => {
     closing = true;
-    await tickIdle;
+    billingShutdown.abort();
+  });
+  app.addHook("onClose", async () => {
+    await Promise.allSettled([tickIdle, billingIdle]);
     await deliveryPool.close();
   });
-  const tenantTick = async (tenant: Tenant) => {
+  const workerPublishers = () => db<Tenant>("tenants")
+    .orderBy("id")
+    .modify((q) => {
+      if (!hosted)
+        q.where((owned) => owned.where({ id: "primary" }).orWhereIn(
+            "id",
+            db("publisher_sandboxes").select("sandbox_tenant_id")
+              .where({ parent_tenant_id: "primary" }),
+          ));
+    });
+  const readyBillingWork = (table: "work" | "platform_work") => db(table)
+    .whereIn("state", ["pending", "running"])
+    .andWhere("available_at", "<=", Date.now())
+    .andWhere("lease_until", "<", Date.now());
+  const billingTurn = async (requestedTenant?: string, deadline = Infinity): Promise<boolean> => {
+    if (billingBusy || closing || performance.now() >= deadline) return false;
+    // Admission is synchronous. Manual requests do not create another provider
+    // lane or wait in an unbounded in-memory queue behind the scheduled worker.
+    billingBusy = true;
+    const work = (async () => {
+      const now = performance.now();
+      if (now >= billingWindowDeadline) {
+        billingWindowDeadline = now + billingBudgetMs;
+        billingWindowTurns = 0;
+      }
+      if (billingWindowTurns >= billingMaxOwners) return false;
+      const turnDeadline = Math.min(deadline, billingWindowDeadline);
+      const publishers = await workerPublishers().whereExists(
+        readyBillingWork("work")
+          .whereRaw("?? = ??", ["work.tenant_id", "tenants.id"]).select(db.raw("1")),
+      );
+      const owners: { key: string; tenant: Tenant | null }[] = [];
+      if (hosted && (config.localBilling || stripeConfigured(config)) &&
+          await readyBillingWork("platform_work").first("id"))
+        owners.push({ key: "platform", tenant: null });
+      for (const tenant of publishers) owners.push({ key: `tenant:${tenant.id}`, tenant });
+      const owner = owners.find((entry) => lastBillingOwner === undefined || entry.key > lastBillingOwner) ?? owners[0];
+      if (!owner || (requestedTenant !== undefined && owner.tenant?.id !== requestedTenant) ||
+          closing || performance.now() >= turnDeadline) return false;
+      let attempted = false;
+      try {
+        const s = owner.tenant === null ? undefined : await makeEnvironment(owner.tenant, true);
+        const remaining = Math.floor(turnDeadline - performance.now());
+        if (closing || remaining < 1) return false;
+        lastBillingOwner = owner.key;
+        billingWindowTurns++;
+        attempted = true;
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), remaining);
+        timer.unref();
+        const worker: WorkerQueueOptions = {
+          signal: AbortSignal.any([billingShutdown.signal, controller.signal]),
+          budgetMs: remaining,
+          maxRequests: billingMaxRequests,
+          onBeginApply: () => {
+            // Only provider work is time sliced. Keep shutdown/lease aborts
+            // armed while complete evidence finishes its atomic local apply.
+            if (performance.now() >= turnDeadline) controller.abort();
+            clearTimeout(timer);
+          },
+        };
+        try {
+          if (owner.tenant === null) await platform.run(worker);
+          else if (s && (s.config.localBilling || stripeConfigured(s.config)))
+            await s.billing.run((event) => s.stripe.resolveSubscription(event), worker);
+        } finally {
+          clearTimeout(timer);
+        }
+      } catch (error) {
+        // An invalid owner's setup must not pin every later owner behind it.
+        if (!attempted) {
+          lastBillingOwner = owner.key;
+          billingWindowTurns++;
+        }
+        app.log.error(
+          { tenantId: owner.tenant?.id, code: "billing_worker_failed" },
+          "Billing work will retry on a later turn",
+        );
+        if (requestedTenant !== undefined) throw error;
+      }
+      return true;
+    })();
+    billingIdle = work;
+    try {
+      return await work;
+    } finally {
+      billingIdle = undefined;
+      billingBusy = false;
+    }
+  };
+  const tenantTick = async (tenant: Tenant, runBilling = true) => {
+    if (runBilling) {
+      check(config.serverRole !== "api", 409, "jobs_disabled", "Job execution is disabled for the API server role.");
+      await billingTurn(tenant.id);
+    }
+    if (closing) return;
     const s = await makeEnvironment(tenant, true);
-    if (s.config.localBilling || stripeConfigured(s.config))
-      await s.billing.run((event) => s.stripe.resolveSubscription(event));
     const operations = new Operations(db, tenant.id);
     let cursor = notificationCursors.get(tenant.id) ?? null;
     for (let page = 0; page < 5; page++) {
@@ -544,19 +661,13 @@ export async function buildApp(
       markTickIdle = resolve;
     });
     try {
-      if (hosted && (config.localBilling || stripeConfigured(config))) await platform.run();
       await platformOutbox.run();
-      const publishers = await db<Tenant>("tenants")
-        .orderBy("id")
-        .modify((q) => {
-          if (!hosted)
-            q.where({ id: "primary" }).orWhereIn(
-              "id",
-              db("publisher_sandboxes")
-                .select("sandbox_tenant_id")
-                .where({ parent_tenant_id: "primary" }),
-            );
-        });
+      const publishers = await workerPublishers();
+      // Every caller shares the owner cursor, admission lane and budget window.
+      // A scheduled tick also stops at its own deadline if the window rolls over.
+      const billingDeadline = performance.now() + billingBudgetMs;
+      for (let attempted = 0; attempted < billingMaxOwners; attempted++)
+        if (!(await billingTurn(undefined, billingDeadline))) break;
       const start = publishers.length ? tenantCursor % publishers.length : 0;
       tenantCursor = publishers.length ? (start + 4) % publishers.length : 0;
       for (const tenant of [
@@ -564,7 +675,7 @@ export async function buildApp(
         ...publishers.slice(0, start),
       ]) {
         try {
-          await tenantTick(tenant);
+          await tenantTick(tenant, false);
         } catch {
           app.log.error(
             { tenantId: tenant.id, code: "tenant_worker_failed" },

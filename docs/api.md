@@ -280,6 +280,12 @@ issuance never charges or enrolls the customer, including after Stripe is added.
 
 `/api/v1/operator` requires the independent platform operator token: GET `/tenants`, POST `/tenants/:id/status` (`suspended`, `exempt`, `maxProducts`, `maxStorageBytes`), POST `/tenants/:id/owner` (`email`, verified seller), POST `/tenants/:id/reconcile`, GET `/jobs`, POST `/jobs/run`, POST `/jobs/:table/:id/retry` (platform_work/platform_emails). Local fixture configuration is POST `/local/tenants/:id` (`connected?`, `paidDays?`, at least one).
 
+Tenant and operator job runs share background billing admission. A tenant run
+processes only its own work and can leave billing pending for a later fair turn.
+Long provider scans checkpoint their progress; budget pauses do not consume
+failure retries or mark an event processed. Complete canonical evidence is
+required before grants or quota change. API-only roles refuse job execution.
+
 `POST /api/v1/stripe/platform-webhook` verifies the raw body with the platform signing secret and rejects connected events. `POST /api/v1/stripe/connect-webhook` uses the separate Connect secret, requires account+configured mode, and resolves the immutable account mapping. Events and work commit before acknowledgment. Duplicate and reordered events reconcile canonical state. Provider failures retry without erasing purchased grants.
 
 After signature verification, Connect events from the other Stripe mode return `200 {ok:true,ignored:true}` without being persisted. Operator bulk recovery is `POST /api/v1/operator/jobs/:table/retry-failed` for platform_work/platform_emails, with the same optional limit. Explicit individual or bulk retry starts a new 72-hour retry window without discarding the retained payload.

@@ -165,6 +165,7 @@ src/migrations/012_business_events.ts
 src/migrations/013_platform_price_history.ts
 src/migrations/014_complimentary_licenses.ts
 src/migrations/015_workspace_archive.ts
+src/migrations/016_worker_continuations.ts
 src/operations-api.ts
 src/operations.ts
 src/operator.ts
@@ -188,6 +189,8 @@ src/sign-in-email.ts
 src/site.ts
 src/storage.ts
 src/stripe.ts
+src/stripe-worker.ts
+src/worker-continuation.ts
 src/tenant-api.ts
 src/tenants.ts
 src/transactional-email.ts
@@ -269,6 +272,7 @@ tests/outbound-security.test.ts
 tests/outbound-transport.test.ts
 tests/platform-billing.test.ts
 tests/platform-queue.test.ts
+tests/platform-worker-continuation.test.ts
 tests/portability-transfer.test.ts
 tests/privacy-attribution.test.ts
 tests/publication.test.ts
@@ -305,6 +309,8 @@ tests/transactional-email.test.ts
 tests/ui.test.ts
 tests/update-adapters.test.ts
 tests/webhook-delivery.test.ts
+tests/worker-admission.test.ts
+tests/worker-scheduling.test.ts
 tests/zip-security.test.ts
 tests/workspace-lifecycle.test.ts
 tsconfig.json

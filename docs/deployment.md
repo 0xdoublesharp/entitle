@@ -246,6 +246,22 @@ Existing subscriptions continue reconciling renewals, refunds and disputes.
 
 ## CLI and reconciliation
 
+Background billing shares a five-second provider-scan budget and at most four
+queue-owner turns per five-second window in each process. Platform and seller
+queues rotate fairly; each turn claims one job and makes at most eight provider
+requests. Long scans resume from durable cursors and encrypted normalized facts,
+including payment, refund, dispute and credit history. No license, key email or
+platform quota is applied from incomplete evidence. Budget pauses preserve job
+identity and do not consume failure retries. Final local reconstruction and the
+atomic database apply can outlast the provider-scan budget.
+
+Manual tenant job runs share that admission budget and cannot take another
+owner's turn. A run can leave billing pending while it processes core work and
+email; inspect the queue for completion. API-only roles refuse job execution.
+Ship migration `016_worker_continuations` with the application and apply it
+through the existing migration procedure before starting API or worker roles.
+Checkpoints are part of the database backup and use the original `APP_SECRET`.
+
 Tenant commands require TENANT_SLUG and a scoped expiring TENANT_API_KEY. Remote commands need no server secret. Platform administration uses OPERATOR_TOKEN separately. Store credentials in a secret manager/protected environment, never command arguments or distributed ZIPs. See README and API docs for command names.
 
 Schedule `reconcile` with a billing:reconcile key for `primary` in standalone, or for each seller workspace in hosted mode. Hosted platform subscriptions additionally need `platform-reconcile TENANT_ID` with operator credentials. Standalone has no platform subscription to reconcile. For example run tenant reconciliation every six hours through a protected host script invoking the CLI. The process polls durable jobs every five seconds. `jobs`/`platform-jobs` show safe state. Failed work retries within a 72-hour window with backoff capped at one hour. Failed jobs remain recoverable through individual or bounded bulk retry APIs; explicit retry starts a fresh retry window. Daily mail budgets defer rather than consuming failure retries or discarding encrypted keys. Monitor failed counts and oldest pending jobs. Platform mail defaults to 1,000 attempts per UTC day and seller signup to 500 creations per hour; configure `PLATFORM_DAILY_EMAIL_LIMIT` and `MAX_SELLER_SIGNUPS_PER_HOUR` separately from each tenant's `DAILY_EMAIL_LIMIT`.
