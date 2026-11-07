@@ -6,10 +6,10 @@ See [deployment](deployment.md) for the planned hosted address and
 
 Errors use `{error:{code,message,requestId}}`. Credentials belong in Authorization headers or request JSON, never package URLs. Responses containing identity, client secrets or customer data are `Cache-Control: no-store`. Requests have IDs and rate limits. No legacy unscoped licensing routes exist.
 
-Installation-token routes share a 1,000-request-per-minute IP admission limit
-before token resolution. This also groups IPv6 addresses by /64. Route-specific
-limits still apply separately to valid installation tokens; invalid tokens share
-the route's IP budget. A throttled response includes `Retry-After`.
+Activation status (`GET /activation`) has a shared 60-request-per-minute IP
+admission limit. Other installation-token routes retain a 1,000-request-per-minute
+aggregate IP ceiling alongside their per-installation route budgets. IPv6
+addresses are grouped by `/64`; throttled responses include `Retry-After`.
 
 For task walkthroughs, start with [client integration](client-integration.md),
 [seller guide](seller-guide.md), [CLI](cli.md), or [outgoing webhooks](webhooks.md).
@@ -181,6 +181,13 @@ Prefix `/api/v1/tenants/:tenant`:
 | GET      | /updates/jetbrains/:product/updatePlugins.xml    | Activation bearer; custom repository XML                                                                                              |
 | GET      | /updates/generic/:product/:target                | Activation bearer; JSON assets, optional currentVersion query; 204 if no newer release                                                |
 | POST     | /portal                                          | `{}` and buyer CSRF; connected Stripe Customer Portal                                                                                 |
+
+Activation-status requests (`GET /activation`) share an admission ceiling of 60
+requests per minute per normalized source IP, before token lookup. Installations
+behind the same IP share this status ceiling. Other installation-token routes
+retain their separate per-installation route budgets and share a wider admission
+ceiling of 1,000 requests per minute per IP. IPv6 addresses in the same `/64`
+share an IP budget. Rate-limit responses use HTTP 429 and include `Retry-After`.
 
 Hosted checkout returns `{url}`. Elements returns `{uiMode:"elements",clientSecret,publishableKey,stripeAccount,returnUrl}`. Initialize the official Stripe.js loader with that publishable key and `stripeAccount`, then `initCheckoutElementsSdk({clientSecret,elementsOptions:{appearance:...}})`. Mount the Payment Element, load actions, display Stripe's canonical total and confirm through Stripe. Keep secrets only in memory. Neither a successful confirmation nor the return URL grants entitlement. Card details go directly to Stripe. See [Elements design](architecture.md#checkout-and-billing).
 

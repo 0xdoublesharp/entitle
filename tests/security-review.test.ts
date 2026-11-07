@@ -229,7 +229,7 @@ test("random invalid activation credentials share the IP budget instead of alloc
   assert.equal(statuses.filter((status) => status === 429).length, 5);
 });
 
-test("credential admission bounds database lookups before resolving bearer tokens", async (t) => {
+test("activation admission stops database lookups when its registered IP budget is exhausted", async (t) => {
   const f = await fixture(t);
   let lookups = 0;
   const count = (query: { sql: string }) => {
@@ -239,17 +239,44 @@ test("credential admission bounds database lookups before resolving bearer token
   t.after(() => { f.db.removeListener("query", count); });
   const request = (i: number) => f.app.inject({
     url: `${base}/activation`,
-    headers: { authorization: `Bearer invalid-${i}` },
+    headers: { authorization: `Bearer ${Buffer.from(hash(`invalid-${i}`), "hex").toString("base64url")}` },
   });
-  for (let i = 0; i < 1000; i++) await request(i);
+  for (let i = 0; i < 60; i++) assert.equal((await request(i)).statusCode, 401);
   assert.ok(lookups > 0);
   const exhausted = lookups;
-  for (let i = 1000; i < 1005; i++) {
+  for (let i = 60; i < 65; i++) {
     const response = await request(i);
     assert.equal(response.statusCode, 429);
     assert.ok(Number(response.headers["retry-after"]) > 0);
   }
   assert.equal(lookups, exhausted);
+  const later = Date.now() + 60001;
+  t.mock.method(Date, "now", () => later);
+  assert.equal((await request(65)).statusCode, 401);
+  assert.ok(lookups > exhausted, "credential resolution resumes after the registered time window");
+});
+
+test("activation pre-admission shares IPv6 subnet budgets before credential lookup", async (t) => {
+  const f = await fixture(t);
+  let lookups = 0;
+  const count = (query: { sql: string }) => {
+    if (/select\b.*\binstallations\b/i.test(query.sql)) lookups++;
+  };
+  f.db.on("query", count);
+  t.after(() => { f.db.removeListener("query", count); });
+  const request = (remoteAddress: string) => f.app.inject({
+    url: `${base}/activation`, remoteAddress,
+    headers: { authorization: `Bearer ${"A".repeat(43)}` },
+  });
+  for (let i = 1; i <= 60; i++)
+    assert.equal((await request(`2001:db8:abcd:1234::${i}`)).statusCode, 401);
+  const exhausted = lookups;
+  assert.ok(exhausted > 0);
+  for (let i = 61; i <= 65; i++)
+    assert.equal((await request(`2001:db8:abcd:1234::${i}`)).statusCode, 429);
+  assert.equal(lookups, exhausted);
+  assert.equal((await request("2001:db8:abcd:5678::1")).statusCode, 401);
+  assert.ok(lookups > exhausted, "another subnet retains its own admission budget");
 });
 
 test("durable platform SMTP reservations defer exhausted mail without dropping payloads or consuming attempts", async (t) => {

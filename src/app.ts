@@ -765,9 +765,23 @@ export async function buildApp(
     "/api/v1/tenants/:tenant/updates/generic/:product/:target",
     "/api/v1/tenants/:tenant/packages/:product/assets/:assetId/:filename",
   ]);
+  const credentialRouteKey = (method: string, template: string) => JSON.stringify([method.toUpperCase(), template]);
+  const activationAdmissions = new Map<string, ReturnType<typeof app.createRateLimit>>();
   // Route-specific keys are selected before the rate-limit plugin builds its hooks.
   app.addHook("onRoute", (route) => {
     if (!credentialRoutes.has(route.url)) return;
+    const policy = route.config?.rateLimit;
+    if (route.url === "/api/v1/tenants/:tenant/activation" && policy && typeof policy === "object") {
+      const template = route.url;
+      for (const method of Array.isArray(route.method) ? route.method : [route.method]) {
+        const key = credentialRouteKey(method, template);
+        activationAdmissions.set(key, app.createRateLimit({
+          ...(policy.max === undefined ? {} : { max: policy.max }),
+          ...(policy.timeWindow === undefined ? {} : { timeWindow: policy.timeWindow }),
+          keyGenerator: (req) => JSON.stringify([rateLimit.normalizeIP(req.ip), key]),
+        }));
+      }
+    }
     route.config = {
       ...route.config,
       rateLimit: {
@@ -815,7 +829,9 @@ export async function buildApp(
   });
   // Public and seller routes retain the plugin's normalized IP key, including IPv6 /64s.
   await app.register(rateLimit, { max: 1000, timeWindow: "1 minute" });
-  // Bound credential resolution independently of the finer per-activation limits.
+  // Status uses its registered route ceiling before credential resolution.
+  // Other token routes retain a wider aggregate ceiling so installations sharing
+  // an IP can use their independent feed and download budgets.
   // This root hook runs before the route limiter's database-backed key generator.
   const credentialAdmission = app.createRateLimit({
     max: 1000,
@@ -823,8 +839,10 @@ export async function buildApp(
     keyGenerator: (req) => rateLimit.normalizeIP(req.ip),
   });
   app.addHook("onRequest", async (req, reply) => {
-    if (!credentialRoutes.has(req.routeOptions.url ?? "")) return;
-    const limit = await credentialAdmission(req);
+    const template = req.routeOptions.url ?? "";
+    if (!credentialRoutes.has(template)) return;
+    const admission = activationAdmissions.get(credentialRouteKey(req.method, template)) ?? credentialAdmission;
+    const limit = await admission(req);
     if (!limit.isAllowed && limit.isExceeded) {
       reply.header("retry-after", limit.ttlInSeconds);
       throw new AppError(429, "rate_limited", "Too many requests. Please retry later.");
