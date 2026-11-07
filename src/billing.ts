@@ -13,7 +13,7 @@ import { hash, random, seal, unseal } from "./crypto.ts";
 import type { Licenses } from "./licensing.ts";
 import { AppError, check } from "./errors.ts";
 import { DeferredJob, runQueue, assertQueueLease, type WorkerQueueOptions } from "./queue.ts";
-import { withWorkerTurn } from "./worker-continuation.ts";
+import { withWorkerTurn, workerTurn } from "./worker-continuation.ts";
 import {
   requireTenantCapacity,
   type PublicationPolicy,
@@ -82,6 +82,7 @@ export class Billing {
     });
   }
   async reconcile(subscriptionId: string) {
+    const turn = workerTurn();
     if (
       await completedSubscriptionClosure(
         this.db,
@@ -105,7 +106,13 @@ export class Billing {
     for (let attempt = 0; attempt < 8; attempt++) {
       const revision = await this.db("locks").where({ id: revisionId }).first();
       const s = await this.source.snapshot(subscriptionId);
+      if (turn) {
+        turn.beginApply();
+        turn.array(s.grants);
+        turn.array(s.invoices ?? []);
+      }
       const applied = await this.db.transaction(async (tx) => {
+        await turn?.prepareTransaction(tx);
         await lock(tx, "billing", this.licensing.tenant.id);
         await assertQueueLease(tx);
         const acquired = await tx("locks")
@@ -128,9 +135,11 @@ export class Billing {
           )
         )
           return true;
-        const plans = await tx<Plan>("plans").where({
+        const plansQuery = tx<Plan>("plans").where({
           tenant_id: this.licensing.tenant.id,
         });
+        const plans = turn ? await turn.rows<Plan>(plansQuery) : await plansQuery;
+        turn?.work(s.grants.length * Math.max(1, plans.length));
         const paid = s.grants.filter(
           (g) =>
             g.settled &&
@@ -166,6 +175,7 @@ export class Billing {
           }
         }
         for (const invoice of s.invoices ?? []) {
+          turn?.work();
           check(
             /^[a-z]{3}$/.test(invoice.currency) &&
               Number.isSafeInteger(invoice.paidMinor) &&
@@ -186,6 +196,7 @@ export class Billing {
             })
             .onConflict(["tenant_id", "invoice_id"])
             .merge(["currency", "paid_minor", "refunded_minor"]);
+          turn?.work();
         }
         let c = await tx<Customer>("customers")
           .where({
@@ -258,6 +269,7 @@ export class Billing {
           .where({ tenant_id: this.licensing.tenant.id, id: l.id })
           .increment("lock_version", 1);
         for (const g of paid) {
+          turn?.work(Math.max(1, plans.length));
           const p = plans.find((p) => p.stripe_price_id === g.priceId)!;
           check(
             p.product_id === l.product_id,
@@ -280,11 +292,15 @@ export class Billing {
               paid_at: g.paidAt,
             });
         }
-        const grants = await tx("grants")
+        const grantsQuery = tx("grants")
           .where({ tenant_id: this.licensing.tenant.id, license_id: l.id })
           .orderBy("period_start", "desc")
           .orderBy("paid_at", "desc")
           .orderBy("id", "desc");
+        const grants = turn
+          ? await turn.rows<{ id: string; plan_id: string; period_end: number }>(grantsQuery)
+          : await grantsQuery;
+        turn?.work(grants.length + plans.length);
         const current = grants[0];
         const p = current
           ? plans.find((p) => p.id === current.plan_id)
@@ -335,6 +351,7 @@ export class Billing {
             l.id,
             "refund",
           );
+        turn?.work();
         return true;
       });
       if (applied) return;
@@ -520,6 +537,8 @@ export class Billing {
           db: this.db, secret: this.licensing.secret, job, table: "work",
           tenantId: this.licensing.tenant.id,
           budgetMs: worker.budgetMs, maxRequests: worker.maxRequests,
+          maxFacts: worker.maxFacts, maxBytes: worker.maxBytes,
+          maxApplyRecords: worker.maxApplyRecords, maxApplyWork: worker.maxApplyWork, applyMs: worker.applyMs,
           onBeginApply: worker.onBeginApply,
         }, () => handle(job));
         else await handle(job);

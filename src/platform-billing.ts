@@ -977,6 +977,7 @@ export class PlatformBilling {
       ]),
     );
     let state = await turn.state<PlatformScan | null>(platformSlot, null);
+    if (state) turn.array(state.prices);
     const tenant = await this.db<PlatformTenant>("tenants")
       .where({ id: tenantId })
       .first();
@@ -1030,17 +1031,17 @@ export class PlatformBilling {
         !prices.has(this.config.platformProStripePriceId)
       )
         prices.set(this.config.platformProStripePriceId, "pro");
-      const history = await this.db<PriceHistory>(
+      const history = await turn.rows<PriceHistory>(this.db<PriceHistory>(
         "platform_price_history",
       ).where({
         tenant_id: tenantId,
         livemode: Number(this.config.stripeLiveMode ?? false),
-      });
+      }));
       for (const entry of history) prices.set(entry.price_id, entry.tier);
       const established = new Set(history.map((entry) => entry.price_id));
-      const legacy = await this.db<PlatformGrant>("platform_grants")
+      const legacy = await turn.rows<PlatformGrant>(this.db<PlatformGrant>("platform_grants")
         .where({ tenant_id: tenantId })
-        .distinct("price_id", "tier");
+        .select("price_id", "tier"));
       state = {
         identity,
         tenant,
@@ -1086,9 +1087,9 @@ export class PlatformBilling {
       if (state.head === state.tail) {
         if (state.phase === "selection" && state.selected) {
           state.phase = "evidence";
-          const stored = await this.db<PlatformGrant>("platform_grants")
+          const stored = await turn.rows<PlatformGrant>(this.db<PlatformGrant>("platform_grants")
             .where({ tenant_id: tenantId })
-            .distinct("subscription_id");
+            .select("subscription_id"));
           await save(
             [
               ...new Set([
@@ -1134,6 +1135,7 @@ export class PlatformBilling {
           const prices = new Map(state.prices);
           prices.set(task.id!, task.tier!);
           state.prices = [...prices];
+          turn.array(state.prices);
           break;
         }
         case "current":
@@ -1390,8 +1392,10 @@ export class PlatformBilling {
       "balance",
     );
     const group = <T>(values: T[], key: (value: T) => string) => {
+      turn.work(values.length);
       const result = new Map<string, T[]>();
       for (const value of values) {
+        turn.work();
         const id = key(value);
         const entries = result.get(id) ?? [];
         entries.push(value);
@@ -1409,16 +1413,21 @@ export class PlatformBilling {
     );
     const invoiceBalances = group(balances, (balance) => balance.invoiceId);
     const evidence: PlatformEvidence[] = invoices.map((entry) => {
+      turn.work();
       const paidCharges = invoiceCharges.get(entry.invoice.id) ?? [];
+      turn.work(paidCharges.length + (invoiceLines.get(entry.invoice.id)?.length ?? 0) +
+        (invoiceBalances.get(entry.invoice.id)?.length ?? 0));
       const refunded = paidCharges.reduce(
         (sum, charge) => sum + charge.refunded,
         0,
       );
       const disputed = paidCharges.some((charge) => {
+        turn.work();
         if (!charge.disputed) return false;
         const found =
           chargeDisputes.get(JSON.stringify([entry.invoice.id, charge.id])) ??
           [];
+        turn.work(found.length);
         return (
           !found.length ||
           found.some(
@@ -1505,6 +1514,7 @@ export class PlatformBilling {
     const details = line.parent?.subscription_item_details;
     const credited = details?.proration_details?.credited_items;
     if (line.amount >= 0 || !details?.proration || !credited) return [];
+    workerTurn()?.work(grants.size * Math.max(1, credited.invoice_line_items.length) + grants.size);
     const priceId = providerId(line.pricing?.price_details?.price);
     return [...grants.values()].filter(
       (grant) =>
@@ -1526,6 +1536,7 @@ export class PlatformBilling {
     grants: Map<string, PlatformGrant>,
     appliedBalance?: number,
   ): Promise<boolean> {
+    workerTurn()?.work(lines.length * 2);
     const positive = lines
       .filter(
         (line) =>
@@ -1604,9 +1615,12 @@ export class PlatformBilling {
       : await this.subscription(tenant, prices);
     if (!sub) return;
     const subscriptionId = sub.id;
-    const stored = await this.db<PlatformGrant>("platform_grants").where({
+    const storedQuery = this.db<PlatformGrant>("platform_grants").where({
       tenant_id: tenantId,
     });
+    const stored = turn ? await turn.rows<PlatformGrant>(storedQuery) : await storedQuery;
+    turn?.records(prices.size);
+    turn?.work(stored.length);
     const subscriptions = new Set([
       subscriptionId,
       ...stored.map((g) => g.subscription_id),
@@ -1644,6 +1658,7 @@ export class PlatformBilling {
       }
     // Cash settlements first. Credit-only invoices may refer to their original
     // paid debits, including debits returned later by the paginated invoice API.
+    turn?.work(evidence.length * Math.max(1, Math.ceil(Math.log2(evidence.length + 1))));
     evidence.sort(
       (a, b) =>
         Number(b.invoice.amount_paid > 0) - Number(a.invoice.amount_paid > 0) ||
@@ -1651,11 +1666,13 @@ export class PlatformBilling {
     );
     const canonical = new Map(stored.map((grant) => [grant.id, grant]));
     const qualificationStarts = new Map<string, number>();
-    for (const { invoice } of evidence)
+    for (const { invoice } of evidence) {
+      turn?.work(stored.length);
       for (const previous of stored.filter(
         (grant) => grant.invoice_id === invoice.id,
       ))
         canonical.set(previous.id, { ...previous, revoked: 1 });
+    }
     for (const {
       invoice,
       subscriptionId: selected,
@@ -1663,6 +1680,7 @@ export class PlatformBilling {
       cashRevoked,
       creditApplied,
     } of evidence) {
+      turn?.work(1 + stored.length + lines.length);
       const paid =
         invoice.status === "paid" &&
         (invoice.amount_paid > 0 ||
@@ -1687,6 +1705,7 @@ export class PlatformBilling {
       }
       if (!paid) continue;
       for (const line of lines) {
+        turn?.work();
         const priceId = providerId(line.pricing?.price_details?.price);
         if (
           line.amount <= 0 ||
@@ -1723,9 +1742,11 @@ export class PlatformBilling {
     // Returning unused service as a linked proration credit ends that service
     // at the returned interval's start. Ordinary cancellation keeps paid time.
     for (const { invoice, subscriptionId: selected, lines } of evidence) {
+      turn?.work(1 + lines.length);
       if (invoice.status !== "paid") continue;
       for (const line of lines)
         for (const original of this.creditedGrants(line, selected, canonical)) {
+          turn?.work();
           const updated = {
             ...original,
             period_end: Math.min(
@@ -1738,6 +1759,7 @@ export class PlatformBilling {
     }
     let obsolete = false;
     await this.db.transaction(async (tx) => {
+      await turn?.prepareTransaction(tx);
       await lock(tx, "billing");
       await assertQueueLease(tx);
       const current = await tx<PlatformTenant>("tenants")
@@ -1773,15 +1795,19 @@ export class PlatformBilling {
           created_at: Date.now(),
         });
       for (const grant of grants.values()) {
+        turn?.work();
         await this.rememberPrice(tx, tenantId, grant.price_id, grant.tier);
         await tx("platform_grants")
           .insert(grant)
           .onConflict(["tenant_id", "id"])
           .merge();
+        turn?.work();
       }
-      const all = await tx<PlatformGrant>("platform_grants").where({
+      const allQuery = tx<PlatformGrant>("platform_grants").where({
         tenant_id: tenantId,
       });
+      const all = turn ? await turn.rows<PlatformGrant>(allQuery) : await allQuery;
+      turn?.work(all.length * (5 + Math.max(1, Math.ceil(Math.log2(all.length + 1)))));
       const valid = all.filter((g) => !g.revoked);
       // Keep the latest past/current nonrevoked interval after expiry so an
       // unpaid renewal can retain pending events. A refund removes its evidence.
@@ -1836,6 +1862,7 @@ export class PlatformBilling {
               }
             : {}),
         });
+      turn?.work();
     });
     if (obsolete && turn) {
       await turn.reset(platformSlot);
@@ -2047,6 +2074,8 @@ export class PlatformBilling {
               budgetMs: worker.budgetMs,
               maxRequests: worker.maxRequests,
               onBeginApply: worker.onBeginApply,
+              maxFacts: worker.maxFacts, maxBytes: worker.maxBytes,
+              maxApplyRecords: worker.maxApplyRecords, maxApplyWork: worker.maxApplyWork, applyMs: worker.applyMs,
             },
             handle,
           );

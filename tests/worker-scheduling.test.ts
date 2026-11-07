@@ -4,7 +4,7 @@ import { createServer, type ServerResponse } from "node:http";
 import { mkdtemp, rm } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
 import Stripe from "stripe";
-import { buildApp } from "../src/app.ts";
+import { buildApp, type AppOptions } from "../src/app.ts";
 import { loadConfig } from "../src/config.ts";
 import { createDb, createTenant, migrate, type Tenant } from "../src/db.ts";
 import { StripeBilling } from "../src/stripe.ts";
@@ -21,7 +21,7 @@ const invoice = (id: string) => ({ id, status: "paid", amount_paid: 100, currenc
   status_transitions: { paid_at: 101 }, parent: { subscription_details: { subscription: "sub_one" } } });
 type Handler = (url: URL, response: ServerResponse) => unknown;
 
-async function fixture(t: TestContext, handler: Handler) {
+async function fixture(t: TestContext, handler: Handler, limits: AppOptions["billingWorker"] = {}) {
   const directory = await mkdtemp("/Volumes/Scratch/entitle/tmp/worker-scheduling-");
   const config = loadConfig({ DEPLOYMENT_MODE: "hosted", APP_SECRET: "71".repeat(32),
     OPERATOR_TOKEN: "worker-operator-token".repeat(3), DATA_DIR: directory,
@@ -47,7 +47,7 @@ async function fixture(t: TestContext, handler: Handler) {
   await migrate(db);
   const app = await buildApp(config, db, { send: async () => {} }, {
     store: new InMemoryArtifactStore(), platformBilling: new PlatformBilling(db, config, client()),
-    stripeFactory: adapter, billingWorker: { budgetMs: 100, maxRequests: 8, maxOwnersPerTick: 4 },
+    stripeFactory: adapter, billingWorker: { budgetMs: 100, maxRequests: 8, maxOwnersPerTick: 4, ...limits },
   });
   t.after(async () => {
     await app.close(); server.closeAllConnections();
@@ -335,7 +335,8 @@ test("provider account changes discard the previous account's partial checkpoint
   assert.equal((await f.db("licenses").where({ tenant_id: tenant.id })).length, 0);
 });
 
-test("complete financial evidence can finish local reconstruction after its provider deadline", async (t) => {
+for (const applyMs of [50, 500]) {
+test(`complete financial evidence uses its separate finite ${applyMs}ms reconstruction budget`, async (t) => {
   const { WorkerTurn } = await import("../src/worker-continuation.ts");
   const facts = WorkerTurn.prototype.facts;
   t.mock.method(WorkerTurn.prototype, "facts", async function<T>(this: InstanceType<typeof WorkerTurn>, slot: string, kind: string) {
@@ -343,9 +344,17 @@ test("complete financial evidence can finish local reconstruction after its prov
     if (kind === "grants") await delay(150);
     return result as T[];
   });
-  const f = await fixture(t, healthy), tenant = await f.publisher("finalize");
+  const f = await fixture(t, healthy, { applyMs }), tenant = await f.publisher("finalize");
   await f.billing(tenant).billing.enqueueReconcile(["sub_one"]);
   await f.tick();
-  assert.ok(await f.db("licenses").where({ tenant_id: tenant.id }).first());
-  assert.equal((await f.db("work").where({ tenant_id: tenant.id }).first()).state, "sent");
+  const job = await f.db("work").where({ tenant_id: tenant.id }).first();
+  if (applyMs === 50) {
+    assert.equal((await f.db("licenses").where({ tenant_id: tenant.id })).length, 0);
+    assert.equal(job.state, "failed"); assert.equal(job.last_error, "resource_limit");
+    assert.ok((await f.db("worker_continuation_facts")).length > 0);
+  } else {
+    assert.ok(await f.db("licenses").where({ tenant_id: tenant.id }).first());
+    assert.equal(job.state, "sent");
+  }
 });
+}

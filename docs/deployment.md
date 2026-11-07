@@ -252,15 +252,41 @@ queues rotate fairly; each turn claims one job and makes at most eight provider
 requests. Long scans resume from durable cursors and encrypted normalized facts,
 including payment, refund, dispute and credit history. No license, key email or
 platform quota is applied from incomplete evidence. Budget pauses preserve job
-identity and do not consume failure retries. Final local reconstruction and the
-atomic database apply can outlast the provider-scan budget.
+identity and do not consume failure retries. Complete evidence enters a separate
+five-second local reconstruction and atomic apply phase. Queued jobs also have
+aggregate limits: 10,000 checkpoint/fact records, 16 MiB of encrypted checkpoint
+and fact payloads, 3,000 materialized financial/configuration records per turn,
+and 1,000,000 conservative local work units. These include existing plans,
+prices and grants as well as incoming evidence. Limits are checked before full
+fact reads and decryption and throughout nested calculations and apply loops.
+An exceeded limit rolls back the apply; it never grants rights from a prefix.
+SQL cancellation and rollback settle before another owner enters. Deadline
+checks occur between SQL calls; cancellation latency depends on the database
+engine. See the configurable ceilings in [configuration](configuration.md#billing-worker-resource-limits).
 
 Manual tenant job runs share that admission budget and cannot take another
 owner's turn. A run can leave billing pending while it processes core work and
 email; inspect the queue for completion. API-only roles refuse job execution.
-Ship migration `016_worker_continuations` with the application and apply it
+Ship migrations `016_worker_continuations` and `017_worker_grant_index` with the application and apply them
 through the existing migration procedure before starting API or worker roles.
 Checkpoints are part of the database backup and use the original `APP_SECRET`.
+
+A job that exceeds an aggregate limit becomes `failed` with
+`last_error=resource_limit` and stops automatic retries. Its sealed job/event
+and existing checkpoints remain available, and the billing event stays
+unprocessed. Server diagnostics identify the budget, observed amount and
+limit. Review those values and the host's resources before increasing the
+matching `BILLING_WORKER_*` setting within its hard ceiling. Raising a setting
+does not retry a held job: explicitly retry the individual tenant or platform
+work item after correcting its cause. Recovery rereads completed provider
+evidence and applies the complete result. Use `job-retry work JOB_ID` or
+`platform-job-retry platform_work JOB_ID` through the authenticated CLI; see
+[job commands](cli.md).
+
+A held refund or dispute leaves previously committed entitlements unchanged;
+prioritize its operator recovery. If the hard ceilings are insufficient, leave
+the job held and use a reviewed isolated maintenance procedure. Preserve the
+retained history and event rather than marking it processed to clear the hold.
 
 Tenant commands require TENANT_SLUG and a scoped expiring TENANT_API_KEY. Remote commands need no server secret. Platform administration uses OPERATOR_TOKEN separately. Store credentials in a secret manager/protected environment, never command arguments or distributed ZIPs. See README and API docs for command names.
 

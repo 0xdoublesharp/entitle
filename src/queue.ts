@@ -11,13 +11,32 @@ export class DeferredJob extends Error {
   }
 }
 
-export interface WorkerQueueOptions {
+export interface WorkerResourceLimits {
+  maxFacts?: number | undefined;
+  maxBytes?: number | undefined;
+  maxApplyRecords?: number | undefined;
+  maxApplyWork?: number | undefined;
+  applyMs?: number | undefined;
+}
+export class WorkerResourceLimit extends Error {
+  readonly budget: keyof WorkerResourceLimits;
+  readonly observed: number;
+  readonly limit: number;
+  constructor(budget: keyof WorkerResourceLimits, observed: number, limit: number) {
+    super(`Billing worker ${budget} limit exceeded (${observed} > ${limit})`);
+    this.name = "WorkerResourceLimit";
+    this.budget = budget; this.observed = observed; this.limit = limit;
+  }
+}
+
+export interface WorkerQueueOptions extends WorkerResourceLimits {
   signal?: AbortSignal;
   heartbeatMs?: number;
   leaseMs?: number;
   budgetMs?: number;
   maxRequests?: number;
   onBeginApply?: () => void;
+  onResourceLimit?: (details: { budget: keyof WorkerResourceLimits; observed: number; limit: number }) => void;
 }
 interface QueueScope {
   signal: AbortSignal;
@@ -131,17 +150,21 @@ export async function runQueue(
         });
     } catch(caught) {
       await stopRenewal();
-      const error = worker && controller.signal.aborted ? controller.signal.reason : caught;
+      const error = caught instanceof WorkerResourceLimit ? caught : worker && controller.signal.aborted ? controller.signal.reason : caught;
+      if (error instanceof WorkerResourceLimit) {
+        try { worker?.onResourceLimit?.({ budget: error.budget, observed: error.observed, limit: error.limit }); }
+        catch { /* Logging cannot release a live lease or lose retained work. */ }
+      }
       await query(db)
         .where({ id: job.id, lease_owner: job.lease_owner, state: "running" })
         .update({
-          state: error instanceof DeferredJob ? "pending" : Date.now()-Number(job.created_at)>=72*3600000 ? "failed" : "pending",
-          attempts: error instanceof DeferredJob ? job.attempts-1 : job.attempts,
+          state: error instanceof WorkerResourceLimit ? "failed" : error instanceof DeferredJob ? "pending" : Date.now()-Number(job.created_at)>=72*3600000 ? "failed" : "pending",
+          attempts: error instanceof DeferredJob || error instanceof WorkerResourceLimit ? job.attempts-1 : job.attempts,
           lease_until: 0,
           lease_owner: null,
           available_at: error instanceof DeferredJob ? error.availableAt : Date.now() +
             Math.min(3600000, 1000 * 2 ** Math.min(job.attempts, 12)),
-          last_error: error instanceof DeferredJob ? "resource_budget" : "processing_failed",
+          last_error: error instanceof WorkerResourceLimit ? "resource_limit" : error instanceof DeferredJob ? "resource_budget" : "processing_failed",
         });
     }
   }

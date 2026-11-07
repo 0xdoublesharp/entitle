@@ -166,6 +166,7 @@ src/migrations/013_platform_price_history.ts
 src/migrations/014_complimentary_licenses.ts
 src/migrations/015_workspace_archive.ts
 src/migrations/016_worker_continuations.ts
+src/migrations/017_worker_grant_index.ts
 src/operations-api.ts
 src/operations.ts
 src/operator.ts
@@ -310,6 +311,7 @@ tests/ui.test.ts
 tests/update-adapters.test.ts
 tests/webhook-delivery.test.ts
 tests/worker-admission.test.ts
+tests/worker-resource-limits.test.ts
 tests/worker-scheduling.test.ts
 tests/zip-security.test.ts
 tests/workspace-lifecycle.test.ts

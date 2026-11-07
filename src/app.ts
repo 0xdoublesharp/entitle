@@ -64,6 +64,7 @@ import { Operations } from "./operations.ts";
 import { BusinessEvents } from "./business-events.ts";
 import { OutboundWebhooks } from "./outbound-webhooks.ts";
 import { WebhookDeliveryPool } from "./webhook-delivery.ts";
+import { billingWorkerResourceLimits } from "./worker-continuation.ts";
 import { featureEntitlements, businessEventPolicy } from "./plan-features.ts";
 import { commerceAdminRoutes } from "./commerce-admin.ts";
 import {
@@ -85,6 +86,11 @@ export interface AppOptions {
     budgetMs?: number;
     maxRequests?: number;
     maxOwnersPerTick?: number;
+    maxFacts?: number;
+    maxBytes?: number;
+    maxApplyRecords?: number;
+    maxApplyWork?: number;
+    applyMs?: number;
   };
 }
 export async function buildApp(
@@ -96,6 +102,7 @@ export async function buildApp(
   const billingBudgetMs = options.billingWorker?.budgetMs ?? 5000;
   const billingMaxRequests = options.billingWorker?.maxRequests ?? 8;
   const billingMaxOwners = options.billingWorker?.maxOwnersPerTick ?? 4;
+  const billingResources = billingWorkerResourceLimits({ ...config.billingWorker, ...options.billingWorker });
   check(
     Number.isSafeInteger(billingBudgetMs) && billingBudgetMs >= 1 && billingBudgetMs <= 60000 &&
       Number.isSafeInteger(billingMaxRequests) && billingMaxRequests >= 1 && billingMaxRequests <= 100 &&
@@ -549,15 +556,20 @@ export async function buildApp(
         const timer = setTimeout(() => controller.abort(), remaining);
         timer.unref();
         const worker: WorkerQueueOptions = {
+          ...billingResources,
           signal: AbortSignal.any([billingShutdown.signal, controller.signal]),
           budgetMs: remaining,
           maxRequests: billingMaxRequests,
           onBeginApply: () => {
-            // Only provider work is time sliced. Keep shutdown/lease aborts
-            // armed while complete evidence finishes its atomic local apply.
+            // Local apply has its own finite deadline and aggregate ceilings.
+            // Shutdown and lease cancellation remain armed throughout.
             if (performance.now() >= turnDeadline) controller.abort();
             clearTimeout(timer);
           },
+          onResourceLimit: (details) => app.log.error(
+            { code: "billing_resource_limit", tenantId: owner.tenant?.id, ...details },
+            "Billing work requires operator resource-limit recovery",
+          ),
         };
         try {
           if (owner.tenant === null) await platform.run(worker);

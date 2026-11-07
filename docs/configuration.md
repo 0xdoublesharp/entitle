@@ -223,6 +223,27 @@ limits. The transfer total is the idle window plus `ceil(size / 1 MiB per second
 in milliseconds. An uncached range request verifies a full object first; cache
 hits still authorize every request. See [deployment transfer details](deployment.md#native-artifact-disk-and-transfer-budgets).
 
+## Billing worker resource limits
+
+These ceilings apply to queued billing work, including explicit job runs. Each
+job must supply complete canonical evidence before licenses, emails or platform
+capacity change. Oversized jobs remain recoverable in the failed queue with
+`resource_limit`; see [operator recovery](deployment.md#cli-and-reconciliation).
+
+| Variable | Default | Hard maximum | Budget |
+| --- | ---: | ---: | --- |
+| `BILLING_WORKER_MAX_FACTS` | 10,000 | 50,000 | Combined checkpoint and normalized fact records for one queue job. |
+| `BILLING_WORKER_MAX_MIB` | 16 | 64 | MiB of encrypted checkpoint and fact payloads for one job. |
+| `BILLING_WORKER_MAX_APPLY_RECORDS` | 3,000 | 20,000 | Aggregate records materialized per turn, including existing plans, prices and grants. Reads stop before loading an oversized set. |
+| `BILLING_WORKER_MAX_APPLY_WORK` | 1,000,000 | 10,000,000 | Conservative local operation units, including nested comparisons and query boundaries. |
+| `BILLING_WORKER_APPLY_MS` | 5,000 | 30,000 | Separate finite local reconstruction/apply deadline, checked throughout the apply. |
+
+All values are positive integers. The existing single-checkpoint 512 KiB and
+single-fact 64 KiB bounds still apply. Check the reported budget before changing
+a limit; raising one does not raise the others. Deadline checks occur between
+SQL calls, with cancellation where the database driver supports it. A failed
+apply completes rollback before its queue lease is released.
+
 ## Optional caches and outbound destinations
 
 | Variable                 | Default   | Constraint / purpose                                                                                                                     |
