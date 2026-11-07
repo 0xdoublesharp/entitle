@@ -72,6 +72,8 @@ export class WorkerTurn {
   private applyRecords = 0;
   private applyWork = 0;
   private storedChecked = false;
+  private storedBytes = 0;
+  private textBytes = 0;
   private readonly countedArrays = new WeakSet<readonly unknown[]>();
   constructor(options: TurnOptions) {
     const budget = options.budgetMs ?? 5000;
@@ -166,8 +168,46 @@ export class WorkerTurn {
     this.countedArrays.add(rows);
     return rows;
   }
+  private combinedBytes() {
+    const bytes = this.storedBytes + this.textBytes;
+    if (bytes > this.limits.maxBytes)
+      throw new WorkerResourceLimit("maxBytes", bytes, this.limits.maxBytes);
+  }
+  // Use an indexed base-table query with a stable primary key. Lock the
+  // metadata-selected rows until their bounded text fetch finishes, so a
+  // concurrent receipt edit cannot grow past the preflight byte allowance.
+  async textRows<T>(query: Knex.QueryBuilder, columns: readonly string[], connection: Tx = this.options.db, key = "id"): Promise<T[]> {
+    await this.storedBounds(connection);
+    const read = async (tx: Tx) => {
+      const scoped = query.clone().transacting(tx as Knex.Transaction);
+      const remaining = Math.max(0, this.limits.maxApplyRecords - this.applyRecords);
+      const metadataQuery = scoped.clone().clearOrder().clearSelect()
+        .select({ worker_text_id: key }).forUpdate().limit(remaining + 1);
+      for (let index = 0; index < columns.length; index++)
+        metadataQuery.select(connection.raw("octet_length(??) as ??", [columns[index]!, `worker_bytes_${index}`]));
+      const metadata = await this.boundedQuery<({ worker_text_id: string } & Record<string, string | number | null>)[]>(metadataQuery);
+      this.records(metadata.length);
+      for (const row of metadata) {
+        this.work(columns.length);
+        for (let index = 0; index < columns.length; index++) this.textBytes += Number(row[`worker_bytes_${index}`] ?? 0);
+        this.combinedBytes();
+      }
+      const rows = metadata.length
+        ? await this.boundedQuery<T[]>(scoped.whereIn(key, metadata.map((row) => row.worker_text_id)).limit(metadata.length))
+        : [];
+      this.countedArrays.add(rows);
+      return rows;
+    };
+    return connection.isTransaction ? read(connection) : connection.transaction(read);
+  }
+  json<T>(value: string): T {
+    this.work(Math.max(1, Math.ceil(Buffer.byteLength(value) / 64)));
+    const parsed = JSON.parse(value) as T;
+    this.work();
+    return parsed;
+  }
   private async storedBounds(connection: Tx, force = false): Promise<void> {
-    if (this.storedChecked && !force) return;
+    if (this.storedChecked && !force) { this.combinedBytes(); return; }
     let records = 0, bytes = 0;
     for (const table of ["worker_continuations", "worker_continuation_facts"]) {
       // The LIMIT bounds legacy scopes before aggregation/decryption too.
@@ -179,11 +219,12 @@ export class WorkerTurn {
         throw new WorkerResourceLimit("maxFacts", records, this.limits.maxFacts);
       for (const row of rows) {
         this.work(); bytes += Number(row.bytes);
-        if (bytes > this.limits.maxBytes)
-          throw new WorkerResourceLimit("maxBytes", bytes, this.limits.maxBytes);
+        if (bytes + this.textBytes > this.limits.maxBytes)
+          throw new WorkerResourceLimit("maxBytes", bytes + this.textBytes, this.limits.maxBytes);
       }
     }
     this.storedChecked = true;
+    this.storedBytes = bytes;
   }
   private key(slot: string) {
     if (!/^[a-zA-Z0-9_.:-]{1,64}$/.test(slot)) throw Error("Invalid worker state slot");
@@ -303,6 +344,7 @@ export class WorkerTurn {
       await tx("worker_continuation_facts").where(this.key(slot)).delete();
       await tx("worker_continuations").where(this.key(slot)).delete();
     });
+    this.storedChecked = false;
   }
   async complete(): Promise<void> {
     await this.options.db.transaction(async (tx) => {
@@ -310,6 +352,7 @@ export class WorkerTurn {
       await tx("worker_continuation_facts").where({ scope: this.scope }).delete();
       await tx("worker_continuations").where({ scope: this.scope }).delete();
     });
+    this.storedChecked = false;
   }
   async discardCompletedEvidence(): Promise<void> {
     // Partial scans survive budget pauses. Once canonical evidence reaches an

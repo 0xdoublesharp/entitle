@@ -254,10 +254,10 @@ including payment, refund, dispute and credit history. No license, key email or
 platform quota is applied from incomplete evidence. Budget pauses preserve job
 identity and do not consume failure retries. Complete evidence enters a separate
 five-second local reconstruction and atomic apply phase. Queued jobs also have
-aggregate limits: 10,000 checkpoint/fact records, 16 MiB of encrypted checkpoint
-and fact payloads, 3,000 materialized financial/configuration records per turn,
+aggregate limits: 10,000 checkpoint/fact records, 16 MiB of combined encrypted
+checkpoint/fact payloads and privacy-receipt text read per turn, 3,000 materialized financial/configuration records per turn,
 and 1,000,000 conservative local work units. These include existing plans,
-prices and grants as well as incoming evidence. Limits are checked before full
+prices, grants and privacy receipts as well as incoming evidence. Limits are checked before full
 fact reads and decryption and throughout nested calculations and apply loops.
 An exceeded limit rolls back the apply; it never grants rights from a prefix.
 SQL cancellation and rollback settle before another owner enters. Deadline
@@ -267,7 +267,7 @@ engine. See the configurable ceilings in [configuration](configuration.md#billin
 Manual tenant job runs share that admission budget and cannot take another
 owner's turn. A run can leave billing pending while it processes core work and
 email; inspect the queue for completion. API-only roles refuse job execution.
-Ship migrations `016_worker_continuations` and `017_worker_grant_index` with the application and apply them
+Ship migrations `016_worker_continuations`, `017_worker_grant_index` and `018_worker_privacy_receipt_index` with the application and apply them
 through the existing migration procedure before starting API or worker roles.
 Checkpoints are part of the database backup and use the original `APP_SECRET`.
 

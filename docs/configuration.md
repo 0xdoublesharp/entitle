@@ -233,8 +233,8 @@ capacity change. Oversized jobs remain recoverable in the failed queue with
 | Variable | Default | Hard maximum | Budget |
 | --- | ---: | ---: | --- |
 | `BILLING_WORKER_MAX_FACTS` | 10,000 | 50,000 | Combined checkpoint and normalized fact records for one queue job. |
-| `BILLING_WORKER_MAX_MIB` | 16 | 64 | MiB of encrypted checkpoint and fact payloads for one job. |
-| `BILLING_WORKER_MAX_APPLY_RECORDS` | 3,000 | 20,000 | Aggregate records materialized per turn, including existing plans, prices and grants. Reads stop before loading an oversized set. |
+| `BILLING_WORKER_MAX_MIB` | 16 | 64 | Combined MiB of the job's encrypted checkpoint/fact payloads and privacy-receipt text materialized per turn. |
+| `BILLING_WORKER_MAX_APPLY_RECORDS` | 3,000 | 20,000 | Aggregate records materialized per turn, including existing plans, prices, grants and privacy receipts. Reads stop before loading an oversized set. |
 | `BILLING_WORKER_MAX_APPLY_WORK` | 1,000,000 | 10,000,000 | Conservative local operation units, including nested comparisons and query boundaries. |
 | `BILLING_WORKER_APPLY_MS` | 5,000 | 30,000 | Separate finite local reconstruction/apply deadline, checked throughout the apply. |
 

@@ -16,7 +16,7 @@ import { hash, random, seal, unseal } from "./crypto.ts";
 import { check } from "./errors.ts";
 import { recordBusinessEvent } from "./business-events.ts";
 import { outboundEventTypes } from "./outbound-webhooks.ts";
-import { workerContinuationScope } from "./worker-continuation.ts";
+import { workerContinuationScope, workerTurn } from "./worker-continuation.ts";
 
 export const sensitivePurposes = [
   "recovery_codes",
@@ -599,6 +599,44 @@ export async function completedCustomerClosure(
   stripeLiveMode: boolean,
 ) {
   const digest = privacyReferenceDigest(secret, stripeCustomerId);
+  const turn = workerTurn();
+  if (turn) {
+    // Bound the raw tenant receipt prefix before qualification. A join filtered
+    // by completion could scan arbitrarily many unrelated/open rows first.
+    const receipts = await turn.textRows<{ id: string; tenant_id: string; customer_id: string; request_id: string; details: string; created_at: number }>(
+      db("account_privacy_receipts").where({ tenant_id: tenantId })
+        .select("id", "tenant_id", "customer_id", "request_id", "details", "created_at"), ["details"], db,
+    );
+    turn.work(receipts.length);
+    const closures = receipts.length ? await turn.rows<{ customer_id: string; id: string }>(db("account_closures")
+      .where({ tenant_id: tenantId, status: "completed" })
+      .whereIn("customer_id", [...new Set(receipts.map((receipt) => receipt.customer_id))])
+      .select("customer_id", "id")) : [];
+    turn.work(closures.length);
+    const completed = new Set(closures.map((closure) => JSON.stringify([closure.customer_id, closure.id])));
+    for (const receipt of receipts) {
+      turn.work();
+      if (!completed.has(JSON.stringify([receipt.customer_id, receipt.request_id]))) continue;
+      const details = turn.json<Record<string, unknown>>(receipt.details);
+      turn.work(Array.isArray(details.referenceDigests) ? details.referenceDigests.length : 1);
+      const matches = z.array(z.string().regex(/^[a-f0-9]{64}$/)).max(10000)
+        .parse(details.referenceDigests).includes(digest);
+      turn.work();
+      if (!matches) continue;
+      check(typeof details.stripeLiveMode === "boolean", 503, "billing_privacy_mode_required", "Establish the retained receipt's provider mode before replay.");
+      if (details.stripeLiveMode !== stripeLiveMode) continue;
+      if (details.stripeCustomerAttribution !== undefined) {
+        turn.work(typeof details.stripeCustomerAttribution === "string" ? Math.max(1, Math.ceil(details.stripeCustomerAttribution.length / 64)) : 1);
+        unsealPrivacyAttribution(z.string().parse(details.stripeCustomerAttribution), { tenantId, customerId: receipt.customer_id, requestId: receipt.request_id, stripeLiveMode }, secret);
+      }
+      // Retained HMAC bindings remain authoritative even after a reviewed null
+      // or later provider attribution; the direct path below has the same rule.
+      turn.work();
+      return receipt;
+    }
+    turn.work();
+    return undefined;
+  }
   const receipts = await db("account_privacy_receipts")
     .join("account_closures", function () {
       this.on(
@@ -657,6 +695,37 @@ export async function completedSubscriptionClosure(
   subscriptionId: string,
   stripeLiveMode: boolean,
 ) {
+  const turn = workerTurn();
+  if (turn) {
+    // This unique lookup avoids traversing another subscription's closure or
+    // license history before applying the receipt bound.
+    const licenses = await turn.rows<{ customer_id: string }>(db("licenses")
+      .where({ tenant_id: tenantId, subscription_id: subscriptionId }).select("customer_id"));
+    turn.work();
+    const license = licenses[0];
+    if (!license) return false;
+    const closures = await turn.rows<{ id: string }>(db("account_closures")
+      .where({ tenant_id: tenantId, customer_id: license.customer_id, status: "completed" }).select("id"));
+    turn.work();
+    const closure = closures[0];
+    if (!closure) return false;
+    const receipts = await turn.textRows<{ customer_id: string; request_id: string; details: string }>(
+      db("account_privacy_receipts").where({ tenant_id: tenantId, customer_id: license.customer_id, request_id: closure.id })
+        .select("customer_id", "request_id", "details"), ["details"], db,
+    );
+    for (const row of receipts) {
+      const details = turn.json<Record<string, unknown>>(row.details);
+      turn.work();
+      if (details.stripeLiveMode !== stripeLiveMode || details.stripeCustomerAttribution === undefined) continue;
+      turn.work(typeof details.stripeCustomerAttribution === "string" ? Math.max(1, Math.ceil(details.stripeCustomerAttribution.length / 64)) : 1);
+      const attribution = unsealPrivacyAttribution(z.string().parse(details.stripeCustomerAttribution),
+        { tenantId, customerId: row.customer_id, requestId: row.request_id, stripeLiveMode }, secret);
+      turn.work();
+      if (attribution !== null) return true;
+    }
+    turn.work();
+    return false;
+  }
   const rows = await db("account_privacy_receipts as receipt")
     .join("account_closures as closure", function () {
       this.on("closure.tenant_id", "receipt.tenant_id")

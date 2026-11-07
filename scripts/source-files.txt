@@ -167,6 +167,7 @@ src/migrations/014_complimentary_licenses.ts
 src/migrations/015_workspace_archive.ts
 src/migrations/016_worker_continuations.ts
 src/migrations/017_worker_grant_index.ts
+src/migrations/018_worker_privacy_receipt_index.ts
 src/operations-api.ts
 src/operations.ts
 src/operator.ts
@@ -276,6 +277,7 @@ tests/platform-queue.test.ts
 tests/platform-worker-continuation.test.ts
 tests/portability-transfer.test.ts
 tests/privacy-attribution.test.ts
+tests/privacy-worker-limits.test.ts
 tests/publication.test.ts
 tests/read-cache.test.ts
 tests/releases.test.ts

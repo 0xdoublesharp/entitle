@@ -50,6 +50,7 @@ const migrationNames = [
   "015_workspace_archive",
   "016_worker_continuations",
   "017_worker_grant_index",
+  "018_worker_privacy_receipt_index",
 ] as const;
 
 // Knex's migration listing can create its metadata tables. Serving roles only
@@ -110,7 +111,9 @@ export async function migrate(db: DB) {
                                       ? import("./migrations/015_workspace_archive.ts")
                                       : m === "016_worker_continuations"
                                         ? import("./migrations/016_worker_continuations.ts")
-                                        : import("./migrations/017_worker_grant_index.ts"),
+                                        : m === "017_worker_grant_index"
+                                          ? import("./migrations/017_worker_grant_index.ts")
+                                          : import("./migrations/018_worker_privacy_receipt_index.ts"),
     },
   });
 }

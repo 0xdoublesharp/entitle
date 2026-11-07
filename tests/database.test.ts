@@ -6,6 +6,40 @@ import { randomUUID } from "node:crypto";
 import { down } from "../src/migrations/001_initial.ts";
 import { down as downIdentity } from "../src/migrations/002_plugin_identity.ts";
 import { up as workerGrantIndex } from "../src/migrations/017_worker_grant_index.ts";
+import { up as workerPrivacyReceiptIndex } from "../src/migrations/018_worker_privacy_receipt_index.ts";
+
+test("worker privacy metadata seeks bounded tenant and exact closure receipt prefixes", async () => {
+  const root = await mkdtemp("/Volumes/Scratch/entitle/tmp/worker-privacy-index-");
+  const db = createDb(`sqlite:${root}/db`);
+  try {
+    await db.schema.createTable("account_privacy_receipts", (table) => {
+      table.string("id").primary();
+      for (const name of ["tenant_id", "customer_id", "request_id"]) table.string(name).notNullable();
+      table.text("details").notNullable();
+    });
+    await db.batchInsert("account_privacy_receipts", Array.from({ length: 1004 }, (_, i) => ({
+      id: `receipt_${i}`, tenant_id: i < 1001 ? "foreign" : "target", customer_id: "customer", request_id: "request", details: "{}",
+    })), 100);
+    const query = () => db("account_privacy_receipts").where({ tenant_id: "target" })
+      .select("id", db.raw("octet_length(details) as bytes")).limit(4);
+    const plan = async (builder: ReturnType<typeof query>) => {
+      const sql = builder.toSQL();
+      const rows = await db.raw(`EXPLAIN QUERY PLAN ${sql.sql}`, sql.bindings);
+      return rows.map((row: { detail: string }) => row.detail).join("\n");
+    };
+    assert.match(await plan(query()), /SCAN account_privacy_receipts/);
+    await workerPrivacyReceiptIndex(db);
+    await workerPrivacyReceiptIndex(db);
+    assert.match(await plan(query()), /SEARCH account_privacy_receipts USING INDEX privacy_receipts_worker_scope \(tenant_id=\?\)/);
+    assert.match(await plan(query().where({ customer_id: "customer", request_id: "request" })),
+      /privacy_receipts_worker_scope \(tenant_id=\? AND customer_id=\? AND request_id=\?\)/);
+    assert.equal((await query()).length, 3);
+    assert.equal((await db("account_privacy_receipts").count({ count: "*" }).first())?.count, 1004);
+  } finally {
+    await db.destroy();
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test("worker grant reads seek to one license without scanning unrelated grants or sorting its entire history", async () => {
   const root = await mkdtemp("/Volumes/Scratch/entitle/tmp/worker-grant-index-");
@@ -98,6 +132,7 @@ test("SQLite migration preserves constraints and reruns without deleting records
       "015_workspace_archive",
       "016_worker_continuations",
       "017_worker_grant_index",
+      "018_worker_privacy_receipt_index",
     ]);
     await assert.rejects(
       db("plans").insert({
@@ -241,6 +276,7 @@ test(
         { name: "015_workspace_archive" },
         { name: "016_worker_continuations" },
         { name: "017_worker_grant_index" },
+        { name: "018_worker_privacy_receipt_index" },
       ]);
     } finally {
       try {
@@ -288,6 +324,7 @@ test("migration002 upgrades existing products without changing original migratio
       "015_workspace_archive",
       "016_worker_continuations",
       "017_worker_grant_index",
+      "018_worker_privacy_receipt_index",
     ]);
     assert.equal(
       (await db("products").where({ id: "legacy" }).first()).plugin_basename,
