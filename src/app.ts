@@ -149,6 +149,7 @@ export async function buildApp(
   );
   await mkdir(config.storage, { recursive: true, mode: 0o700 });
   let inFlightDiskBytes = 0;
+  let inFlightReadDiskBytes = 0;
   const diskAllocations = new WeakMap<FastifyRequest, number>();
   const activeNativeUploads = new WeakSet<FastifyRequest>();
   const releaseDisk = (req: FastifyRequest) => {
@@ -234,61 +235,68 @@ export async function buildApp(
       signal,
       onProgress,
     ) {
-      await requireFreeDisk(inFlightDiskBytes + size);
-      if (backend.getToFile)
-        await backend.getToFile(
-          tenantId,
-          id,
-          checksum,
-          size,
-          destination,
-          signal,
-          onProgress,
-        );
-      else {
-        // Legacy test/custom stores return Buffers. Account their temporary RAM
-        // separately rather than treating a buffered adapter as native streaming.
-        check(
-          size <= MAX_ARTIFACT_BYTES,
-          503,
-          "streaming_storage_required",
-          "Streaming storage is required for this artifact.",
-        );
-        const extra = Math.max(0, 2 * size - streamMemory);
-        check(
-          inFlightBytes + extra <=
-            (config.transferMemoryBytes ?? 256 * 1024 ** 2),
-          503,
-          "transfer_capacity",
-          "Transfer capacity is busy. Retry shortly.",
-        );
-        inFlightBytes += extra;
-        try {
-          const bytes = await backend.get(tenantId, id, checksum, size);
-          check(
-            bytes.length === size,
-            503,
-            "artifact_integrity",
-            "Stored artifact length mismatch.",
-          );
-          await writeFile(destination, bytes, {
-            flag: "wx",
-            mode: 0o600,
+      // Reserve before the first await: other cold reads and publications must
+      // account for this file even while no bytes have reached the filesystem.
+      inFlightReadDiskBytes += size;
+      try {
+        await requireFreeDisk(inFlightDiskBytes + inFlightReadDiskBytes);
+        if (backend.getToFile)
+          await backend.getToFile(
+            tenantId,
+            id,
+            checksum,
+            size,
+            destination,
             signal,
-          });
-          onProgress?.(bytes.length);
-        } finally {
-          inFlightBytes -= extra;
+            onProgress,
+          );
+        else {
+          // Legacy test/custom stores return Buffers. Account their temporary RAM
+          // separately rather than treating a buffered adapter as native streaming.
+          check(
+            size <= MAX_ARTIFACT_BYTES,
+            503,
+            "streaming_storage_required",
+            "Streaming storage is required for this artifact.",
+          );
+          const extra = Math.max(0, 2 * size - streamMemory);
+          check(
+            inFlightBytes + extra <=
+              (config.transferMemoryBytes ?? 256 * 1024 ** 2),
+            503,
+            "transfer_capacity",
+            "Transfer capacity is busy. Retry shortly.",
+          );
+          inFlightBytes += extra;
+          try {
+            const bytes = await backend.get(tenantId, id, checksum, size);
+            check(
+              bytes.length === size,
+              503,
+              "artifact_integrity",
+              "Stored artifact length mismatch.",
+            );
+            await writeFile(destination, bytes, {
+              flag: "wx",
+              mode: 0o600,
+              signal,
+            });
+            onProgress?.(bytes.length);
+          } finally {
+            inFlightBytes -= extra;
+          }
         }
+        check(
+          (await hashArtifactFile(destination, size, onProgress, signal))
+            .checksum === checksum,
+          503,
+          "artifact_integrity",
+          "Stored artifact failed integrity verification.",
+        );
+        await storageRead(tenantId, id, size);
+      } finally {
+        inFlightReadDiskBytes -= size;
       }
-      check(
-        (await hashArtifactFile(destination, size, onProgress, signal))
-          .checksum === checksum,
-        503,
-        "artifact_integrity",
-        "Stored artifact failed integrity verification.",
-      );
-      await storageRead(tenantId, id, size);
     },
   };
   const reads = new ReadCache({
@@ -1131,7 +1139,7 @@ export async function buildApp(
           reply.raw.once("close", () => {
             if (!activeNativeUploads.has(req)) releaseDisk(req);
           });
-          await requireFreeDisk(inFlightDiskBytes);
+          await requireFreeDisk(inFlightDiskBytes + inFlightReadDiskBytes);
           reserve(
             req,
             backend.putFile && backend.getToFile
