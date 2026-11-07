@@ -176,6 +176,7 @@ src/platform-billing.ts
 src/portability-api.ts
 src/portability.ts
 src/privacy-attribution.ts
+src/publication-policy.ts
 src/queue.ts
 src/read-cache.ts
 src/releases.ts

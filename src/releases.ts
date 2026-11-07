@@ -11,10 +11,13 @@ import {
   type DB,
   type Release,
   type TenantContext,
-  type Tenant,
   type Tx,
 } from "./db.ts";
 import { AppError, check } from "./errors.ts";
+import {
+  requirePublicationTenant,
+  type PublicationPolicy,
+} from "./publication-policy.ts";
 import {
   DEFAULT_ARTIFACT_BYTES,
   MAX_ARTIFACT_BYTES,
@@ -188,18 +191,24 @@ export class Releases {
   readonly tenant: Readonly<TenantContext>;
   root: string;
   maxBytes: number;
+  readonly publicationPolicy: Readonly<PublicationPolicy>;
   constructor(
     db: DB,
     store: ArtifactStore,
     tenant: TenantContext,
     workDir: string,
     maxBytes = DEFAULT_ARTIFACT_BYTES,
+    publicationPolicy: PublicationPolicy = { deploymentMode: "hosted" },
   ) {
     this.db = db;
     this.store = store;
     this.tenant = Object.freeze({ ...tenant });
     this.root = resolve(workDir);
     this.maxBytes = maxBytes;
+    this.publicationPolicy = Object.freeze({
+      deploymentMode: publicationPolicy.deploymentMode,
+      graceDays: publicationPolicy.graceDays,
+    });
     check(
       Number.isSafeInteger(maxBytes) &&
         maxBytes > 0 &&
@@ -210,10 +219,11 @@ export class Releases {
     );
   }
   private async capacity(tx: Tx) {
-    const tenant = await tx<Tenant>("tenants")
-      .where({ id: this.tenant.id })
-      .first();
-    check(tenant, 404, "not_found", "Tenant not found.");
+    const tenant = await requirePublicationTenant(
+      tx,
+      this.tenant.id,
+      this.publicationPolicy,
+    );
     const stored = await tx("releases")
       .where({ tenant_id: this.tenant.id })
       .sum({ bytes: "size" })

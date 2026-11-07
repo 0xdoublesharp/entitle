@@ -375,6 +375,10 @@ export async function buildApp(
         tenant,
         config.storage,
         config.maxUploadBytes ?? 25 * 1024 * 1024,
+        {
+          deploymentMode: tenantConfig.deploymentMode,
+          graceDays: tenantConfig.graceDays,
+        },
       ),
       artifacts: new Artifacts(
         db,
@@ -383,6 +387,10 @@ export async function buildApp(
         nativeLimit,
         undefined,
         nativeCache,
+        {
+          deploymentMode: tenantConfig.deploymentMode,
+          graceDays: tenantConfig.graceDays,
+        },
       ),
       reads,
       billing: new Billing(db, licensing, stripe, {

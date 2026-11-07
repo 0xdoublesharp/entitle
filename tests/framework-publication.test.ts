@@ -449,6 +449,94 @@ test("final publication rechecks reservations, capacity and framework identity a
   await db("tenants").insert({ ...primaryTenant });
 });
 
+for (const state of ["suspended", "expired"] as const) {
+  for (const sandbox of [false, true]) {
+    test(`native publication rechecks ${sandbox ? "sandbox parent" : "tenant"} ${state} after storage readback`, async (t) => {
+      const service = await artifacts();
+      const input = await publication();
+      let authorityId = primaryTenant.id;
+      if (sandbox) {
+        const parent = await createTenant(db, {
+          id: randomUUID(),
+          slug: "parent",
+          name: "Parent",
+        });
+        authorityId = parent.id;
+        await db("publisher_sandboxes").insert({
+          parent_tenant_id: parent.id,
+          sandbox_tenant_id: primaryTenant.id,
+          mode: "fixture",
+          created_at: Date.now(),
+        });
+      }
+      const get = store.get.bind(store);
+      t.mock.method(
+        store,
+        "get",
+        async (...args: Parameters<typeof store.get>) => {
+          const value = await get(...args);
+          await db("tenants")
+            .where({ id: authorityId })
+            .update(
+              state === "suspended"
+                ? { suspended: 1 }
+                : { exempt: 0, trial_ends_at: 0, paid_through: 0 },
+            );
+          return value;
+        },
+      );
+      const remove = t.mock.method(store, "delete");
+      await assert.rejects(service.publish(input), {
+        status: 403,
+        code: state === "suspended" ? "tenant_suspended" : "tenant_capacity",
+      });
+      assert.equal(remove.mock.callCount(), 1);
+      assert.equal((await db("releases")).length, 0);
+      assert.equal((await db("release_assets")).length, 0);
+      assert.equal((await db("business_events")).length, 0);
+      assert.equal((await db("upload_reservations")).length, 0);
+    });
+  }
+}
+
+for (const policy of [
+  { deploymentMode: "standalone", graceDays: 0, allowed: true },
+  { deploymentMode: "hosted", graceDays: 2, allowed: true },
+  { deploymentMode: "hosted", graceDays: 0, allowed: false },
+] as const) {
+  test(`native publication respects ${policy.deploymentMode} mode and ${policy.graceDays} grace days`, async () => {
+    const { Artifacts } = await import("../src/artifacts.ts");
+    await db("tenants")
+      .where({ id: primaryTenant.id })
+      .update({
+        exempt: 0,
+        trial_ends_at: 0,
+        paid_through: Date.now() - 86400000,
+      });
+    const service = new Artifacts(
+      db,
+      store,
+      primaryTenant,
+      undefined,
+      undefined,
+      undefined,
+      policy,
+    );
+    const input = await publication();
+    if (policy.allowed) {
+      const { asset } = await service.publish(input);
+      assert.equal((await service.read(asset)).toString(), "first bytes");
+    } else {
+      await assert.rejects(service.publish(input), {
+        status: 403,
+        code: "tenant_capacity",
+      });
+      assert.equal((await db("upload_reservations")).length, 0);
+      assert.equal((await db("release_assets")).length, 0);
+    }
+  });
+}
+
 test("the WordPress publication endpoint rejects a non-WordPress product", async () => {
   const input = await publication();
   await assert.rejects(
