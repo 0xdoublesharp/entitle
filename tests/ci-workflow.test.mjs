@@ -99,9 +99,9 @@ test("change detection forces all qualifying test/tooling changes, and PRs never
   );
   await executable(
     "docker",
-    'printf "%s\\n" "$1" >> "$CALLS"\nif [[ "$1" == login ]]; then cat >/dev/null; fi\n',
+    'printf "%s\\n" "$*" >> "$CALLS"\nif [[ "$1" == login ]]; then cat >/dev/null; fi\n',
   );
-  const run = (file, event = "push") =>
+  const run = (file, event = "push", owner = "0xDoubleSharp") =>
     spawnSync("bash", ["-c", script(job("changes"), "- id: changes")], {
       cwd: root,
       encoding: "utf8",
@@ -109,6 +109,7 @@ test("change detection forces all qualifying test/tooling changes, and PRs never
         ...process.env,
         PATH: `${root}:${process.env.PATH}`,
         GITHUB_EVENT_NAME: event,
+        GITHUB_REPOSITORY_OWNER: owner,
         GITHUB_ACTOR: "ci",
         BASE_SHA: "a".repeat(40),
         REGISTRY_TOKEN: "do-not-print-token",
@@ -134,7 +135,16 @@ test("change detection forces all qualifying test/tooling changes, and PRs never
     const output = await readFile(join(root, "output"), "utf8");
     assert.match(output, /server=true/, file);
     assert.match(output, /runtime=true/, file);
+    assert.match(output, /^image_root=ghcr\.io\/0xdoublesharp$/m, file);
     assert.doesNotMatch(result.stdout + result.stderr, /do-not-print-token/);
+  }
+  // Cache probes use the repository owner's lowercase namespace.
+  const probes = await readFile(join(root, "calls"), "utf8");
+  assert.match(probes, /^manifest inspect ghcr\.io\/0xdoublesharp\/entitle-server:input-[0-9a-f]{64}$/m);
+  assert.match(probes, /^manifest inspect ghcr\.io\/0xdoublesharp\/entitle-web-runtime:input-[0-9a-f]{64}$/m);
+  assert.doesNotMatch(probes, /do-not-print-token|ghcr\.io\/(?!0xdoublesharp\/)/);
+  for (const owner of ["", "bad/owner"]) {
+    assert.notEqual(run("docs/guide.md", "push", owner).status, 0, owner);
   }
   await writeFile(join(root, "output"), "");
   assert.equal(run("docs/guide.md").status, 0);
@@ -149,6 +159,20 @@ test("change detection forces all qualifying test/tooling changes, and PRs never
   assert.match(
     await readFile(join(root, "output"), "utf8"),
     /server=true\nruntime=true/,
+  );
+});
+
+test("image names and source labels follow the repository owner", () => {
+  assert.doesNotMatch(workflow, /ghcr\.io\/doublesharp|github\.com\/doublesharp/);
+  // The only registry namespace is the one the changes job derives from the owner.
+  assert.deepEqual(workflow.match(/ghcr\.io\/[^\s"']*/g), ["ghcr.io/$owner"]);
+  assert.match(job("changes"), /image_root: \$\{\{ steps\.changes\.outputs\.image_root \}\}/);
+  for (const name of ["server-build", "server-image", "web-runtime"]) {
+    assert.match(job(name), /\$\{\{ needs\.changes\.outputs\.image_root \}\}\/entitle-/, name);
+  }
+  assert.equal(
+    workflow.match(/org\.opencontainers\.image\.source=\$\{\{ github\.server_url \}\}\/\$\{\{ github\.repository \}\}/g)?.length,
+    2,
   );
 });
 

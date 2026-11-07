@@ -20,7 +20,8 @@ jobs:
         with:
           app-id: ${{ vars.DISPATCH_APP_ID }}
           private-key: ${{ secrets.DISPATCH_APP_PRIVATE_KEY }}
-          owner: doublesharp
+          # entitle and entitle-deploy always share an owner; they move together.
+          owner: ${{ github.repository_owner }}
           repositories: entitle-deploy
           permission-actions: write
       - name: Notify the private promotion workflow
@@ -29,7 +30,7 @@ jobs:
           SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
           RUN_ID: ${{ github.event.workflow_run.id }}
         run: |
-          gh api --method POST repos/doublesharp/entitle-deploy/actions/workflows/release.yml/dispatches \
+          gh api --method POST "repos/$GITHUB_REPOSITORY_OWNER/entitle-deploy/actions/workflows/release.yml/dispatches" \
             -f ref=main \
             -f "inputs[source_sha]=$SOURCE_SHA" \
             -f "inputs[run_id]=$RUN_ID"
