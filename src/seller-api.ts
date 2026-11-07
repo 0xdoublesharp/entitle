@@ -22,7 +22,7 @@ import { tenantMetrics } from "./metrics.ts";
 import { AccountManagement } from "./account-management.ts";
 import { validateAssetMetadata } from "./package-validation.ts";
 import { frameworks, validateFrameworkConfig } from "./frameworks.ts";
-import { complimentaryInput } from "./licensing.ts";
+import { complimentaryInput, installationExempt, productActivationKind } from "./licensing.ts";
 import { stripeConfigured } from "./config.ts";
 const slug = z
     .string()
@@ -203,13 +203,13 @@ export async function sellerRoutes(
         ...r,
         withdrawn: !!r.withdrawn,
       })),
-      metrics: await tenantMetrics(db, tenant),
+      metrics: await tenantMetrics(db, tenant, undefined, config.exemptSuffixes),
       sandbox:
         (await new PublisherSandboxes(db, config).describe(tenant.id)) ?? null,
     };
   });
   app.get("/licenses/:id", async (req) => {
-    const { db, tenant } = context(req);
+    const { db, tenant, config } = context(req);
     const { id } = z.object({ id: z.string().min(1).max(64) }).parse(req.params);
     const { after, limit } = z.object({ after: z.string().min(1).max(64).optional(), limit: z.coerce.number().int().min(1).max(500).default(100) }).strict().parse(req.query);
     const license = await db("licenses")
@@ -219,11 +219,14 @@ export async function sellerRoutes(
       .where({ "licenses.tenant_id": tenant.id, "licenses.id": id })
       .first("licenses.id", "licenses.customer_id", "licenses.product_id", "licenses.site_allowance", "licenses.paid_through", "licenses.billing_status", "licenses.provenance", "licenses.expires_at", "licenses.internal_note", "licenses.issued_at", "licenses.revoked", "licenses.refund_revoked", "licenses.suspended", {product_name:"products.name",plan_name:"plans.name",customer_email:"customers.email"});
     check(license, 404, "not_found", "License not found.");
+    const product = await db("products").where({ tenant_id: tenant.id, id: license.product_id }).first("framework", "framework_config");
+    check(product, 404, "not_found", "Product not found.");
+    const kind = productActivationKind(product);
     const query = db("installations").where({ tenant_id:tenant.id, license_id:id }).orderBy("id").limit(limit+1).select("id","site_url","label","active","exempt");
     if (after) query.andWhere("id", ">", after);
     const rows=await query;
     const page=rows.slice(0,limit);
-    return {license:{...license,plan_name:license.plan_name??"Complimentary",expires_at:license.expires_at===null?null:Number(license.expires_at),paid_through:Number(license.paid_through),revoked:!!license.revoked||!!license.refund_revoked,suspended:!!license.suspended},installations:page.map((item)=>({...item,active:!!item.active,exempt:!!item.exempt})),nextCursor:rows.length>limit?page.at(-1)!.id:null};
+    return {license:{...license,plan_name:license.plan_name??"Complimentary",expires_at:license.expires_at===null?null:Number(license.expires_at),paid_through:Number(license.paid_through),revoked:!!license.revoked||!!license.refund_revoked,suspended:!!license.suspended},installations:page.map((item)=>({...item,active:!!item.active,exempt:installationExempt(item.site_url,kind,config.exemptSuffixes)})),nextCursor:rows.length>limit?page.at(-1)!.id:null};
   });
   app.get("/prices", async (req) => {
     const { tenant, stripe, config, reads } = context(req);

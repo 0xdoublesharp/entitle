@@ -5,11 +5,14 @@ import { mkdtemp, writeFile, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { createDb, migrate, reset } from "../src/db.ts";
 import { Licenses } from "../src/licensing.ts";
-import { unseal } from "../src/crypto.ts";
+import { hash, unseal } from "../src/crypto.ts";
 import { Billing, type BillingSnapshot } from "../src/billing.ts";
 import { InMemoryArtifactStore } from "../src/storage.ts";
 import { Releases } from "../src/releases.ts";
 import { Outbox } from "../src/email.ts";
+import { tenantMetrics } from "../src/metrics.ts";
+import { buildApp } from "../src/app.ts";
+import { loadConfig } from "../src/config.ts";
 
 const root = await mkdtemp("/Volumes/Scratch/entitle/tmp/core-");
 const db = createDb(
@@ -383,6 +386,13 @@ test("staging exemptions require configured exact host or dot-delimited suffix",
     "https://branch.staging.example.test",
     "example-pro",
   );
+  const nondefaultHttp = await configured.activate(
+    key,
+    "staging-http-443",
+    "http://staging.example.test:443/path",
+    "example-pro",
+  );
+  assert.equal((await configured.resolve(nondefaultHttp.token)).installation.exempt, 1);
   await assert.rejects(
     configured.activate(
       key,
@@ -397,6 +407,119 @@ test("staging exemptions require configured exact host or dot-delimited suffix",
     1,
   );
 });
+test("removed development suffixes count existing seats without revoking active tokens or retries", async () => {
+  const { key } = await purchase();
+  const configured = new Licenses(db, secret, ["staging.example.test"], primaryTenant);
+  const production = await configured.activate(key, "production", "https://example.test", "example-pro");
+  const staging = await configured.activate(key, "staging", "https://STAGING.example.test:8443/path/", "example-pro");
+  const branch = await configured.activate(key, "branch", "https://branch.staging.example.test", "example-pro");
+  const current = new Licenses(db, secret, [], primaryTenant);
+  assert.equal((await current.resolve(staging.token)).installation.exempt, 0);
+  assert.equal((await current.resolve(branch.token)).installation.exempt, 0);
+  assert.equal((await db("installations").where({ installation_id: "staging" }).first()).exempt, 1, "reads do not rewrite snapshots");
+  await assert.rejects(current.activate(key, "another", "https://another.example.test", "example-pro"), { code: "site_limit" });
+  for (const [id, site, token] of [
+    ["production", "https://example.test", production.token],
+    ["staging", "https://staging.example.test:8443/path", staging.token],
+    ["branch", "https://branch.staging.example.test", branch.token],
+  ]) {
+    assert.equal((await current.activate(key, id!, site!, "example-pro")).token, token);
+    assert.equal((await current.status(token!)).entitled, true);
+  }
+  assert.equal((await db("installations").where({ active: 1, exempt: 0 })).length, 3);
+  await current.deactivate(staging.token);
+  await current.deactivate(branch.token);
+  await assert.rejects(current.activate(key, "another", "https://another.example.test", "example-pro"), { code: "site_limit" });
+  await current.deactivate(production.token);
+  await current.activate(key, "another", "https://another.example.test", "example-pro");
+});
+
+test("concurrent activations use current development exemptions before allocating the remaining paid seats", async () => {
+  snapshot.grants[0]!.priceId = "price_five";
+  const { key } = await purchase();
+  const configured = new Licenses(db, secret, ["staging.example.test"], primaryTenant);
+  for (let i = 0; i < 4; i++)
+    await configured.activate(key, `staging-${i}`, `https://${i}.staging.example.test`, "example-pro");
+  const current = new Licenses(db, secret, [], primaryTenant);
+  const results = await Promise.allSettled(Array.from({ length: 3 }, (_, i) =>
+    current.activate(key, `production-${i}`, `https://${i}.example.test`, "example-pro"),
+  ));
+  assert.equal(results.filter((result) => result.status === "fulfilled").length, 1);
+  for (const result of results)
+    if (result.status === "rejected") assert.equal(result.reason.code, "site_limit");
+  assert.equal((await db("installations").where({ active: 1, exempt: 0 })).length, 5);
+});
+
+test("new development suffixes reclassify existing sites while device products remain counted", async () => {
+  const { key } = await purchase();
+  const first = await licensing.activate(key, "staging", "https://staging.example.test", "example-pro");
+  const current = new Licenses(db, secret, ["staging.example.test", "device"], primaryTenant);
+  assert.equal((await current.resolve(first.token)).installation.exempt, 1);
+  assert.equal((await current.activate(key, "staging", "https://staging.example.test", "example-pro")).token, first.token);
+  assert.equal((await db("installations").first()).exempt, 1);
+  const production = await current.activate(key, "production", "https://example.test", "example-pro");
+  await db("products").where({ id: "prod", tenant_id: "primary" }).update({ framework: "generic", framework_config: "{}" });
+  assert.equal((await current.resolve(first.token)).installation.exempt, 0);
+  await assert.rejects(current.activate(key, "another-device", undefined, "example-pro"), { code: "site_limit" });
+  await current.deactivate(first.token);
+  await current.deactivate(production.token);
+  const device = await current.activate(key, "00000001", undefined, "example-pro");
+  assert.equal((await current.resolve(device.token)).installation.exempt, 0, "a numeric device ID is never parsed as a host port exemption");
+});
+
+test("development exemption refresh reaches every page while preserving an over-capacity installation retry", async () => {
+  const { key } = await purchase();
+  const configured = new Licenses(db, secret, ["staging.example.test"], primaryTenant);
+  const staging = await configured.activate(key, "staging", "https://staging.example.test", "example-pro");
+  const original = await db("installations").first();
+  await db.batchInsert("installations", Array.from({ length: 500 }, (_, index) => ({
+    ...original,
+    id: `batch-${String(index).padStart(3, "0")}`,
+    installation_id: `batch-${index}`,
+    site_url: `${index}.staging.example.test`,
+    token_hash: hash(`batch-token-${index}`),
+  })), 100);
+  const current = new Licenses(db, secret, [], primaryTenant);
+  assert.equal((await current.activate(key, "staging", "https://staging.example.test", "example-pro")).token, staging.token);
+  assert.equal((await db("installations").where({ active: 1, exempt: 0 })).length, 501);
+  assert.equal((await current.status(staging.token)).entitled, true);
+  await assert.rejects(current.activate(key, "another", "https://another.example.test", "example-pro"), { code: "site_limit" });
+});
+
+test("buyer and seller views and metrics apply current suffixes without rewriting installation snapshots", async (t) => {
+  const { key, license } = await purchase();
+  const configured = new Licenses(db, secret, ["staging.example.test"], primaryTenant);
+  await configured.activate(key, "staging", "https://staging.example.test", "example-pro");
+  const config = loadConfig({ DEPLOYMENT_MODE: "hosted", APP_SECRET: secret, OPERATOR_TOKEN: "development-policy-fixture".repeat(2), DATA_DIR: root, LOCAL_BILLING: "true" });
+  const apiKey = `DE-TK-${"P".repeat(43)}`;
+  await db("tenant_api_keys").insert({ id: "policy-key", tenant_id: "primary", name: "Policy", key_hash: hash(apiKey), scopes: '["read"]', display_prefix: "policy", created_at: Date.now(), expires_at: Date.now() + 86400000 });
+  await db("sessions").insert({ tenant_id: "primary", id: hash("policy-buyer-session"), customer_id: license.customer_id, expires_at: Date.now() + 86400000 });
+  const app = await buildApp(config, db, { send: async () => {} }, { store: new InMemoryArtifactStore() });
+  t.after(() => app.close());
+  const buyer = await app.inject({ url: "/api/v1/tenants/primary/me", headers: { cookie: "de-session-primary=policy-buyer-session" } });
+  assert.equal(buyer.statusCode, 200, buyer.body);
+  assert.equal(buyer.json().licenses[0].installations[0].exempt, false);
+  const sellerHeaders = { authorization: `Bearer ${apiKey}` };
+  const seller = await app.inject({ url: `/api/v1/tenants/primary/seller/licenses/${license.id}`, headers: sellerHeaders });
+  assert.equal(seller.statusCode, 200, seller.body);
+  assert.equal(seller.json().installations[0].exempt, false);
+  const overview = await app.inject({ url: "/api/v1/tenants/primary/seller/overview", headers: sellerHeaders });
+  assert.equal(overview.statusCode, 200, overview.body);
+  assert.equal(overview.json().metrics.installations.developmentActive, 0);
+  assert.equal(overview.json().metrics.seats.used, 1);
+  const metrics = await tenantMetrics(db, primaryTenant);
+  assert.equal(metrics.installations.developmentActive, 0);
+  assert.equal((await db("installations").first()).exempt, 1, "projections leave stored flags alone");
+  config.exemptSuffixes.push("staging.example.test");
+  assert.equal((await app.inject({ url: "/api/v1/tenants/primary/me", headers: { cookie: "de-session-primary=policy-buyer-session" } })).json().licenses[0].installations[0].exempt, true);
+  assert.equal((await app.inject({ url: `/api/v1/tenants/primary/seller/licenses/${license.id}`, headers: sellerHeaders })).json().installations[0].exempt, true);
+  assert.equal((await app.inject({ url: "/api/v1/tenants/primary/seller/overview", headers: sellerHeaders })).json().metrics.seats.used, 0);
+  await db("products").where({ id: "prod", tenant_id: "primary" }).update({ framework: "generic", framework_config: "{}" });
+  assert.equal((await app.inject({ url: "/api/v1/tenants/primary/me", headers: { cookie: "de-session-primary=policy-buyer-session" } })).json().licenses[0].installations[0].exempt, false);
+  assert.equal((await app.inject({ url: `/api/v1/tenants/primary/seller/licenses/${license.id}`, headers: sellerHeaders })).json().installations[0].exempt, false);
+  assert.equal((await app.inject({ url: "/api/v1/tenants/primary/seller/overview", headers: sellerHeaders })).json().metrics.seats.used, 1);
+});
+
 test("future paid downgrade preserves seats through the larger paid period then enforces the lower allowance", async () => {
   let now = Date.now();
   const clocked = new Licenses(db, secret, [], primaryTenant, () => now);

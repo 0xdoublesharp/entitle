@@ -28,6 +28,15 @@ a present empty string; omit optional price/account IDs until configured.
 | `TRUST_PROXY`               | Disabled                        | Required in production; identify the exact trusted proxy/subnet. Blanket `true`, `0.0.0.0/0` and `::/0` are refused.    |
 | `DEVELOPMENT_HOST_SUFFIXES` | Empty                           | Comma-separated explicit host/suffix exemptions for site seat accounting. Exact or dot-delimited matching.              |
 
+Development exemptions follow the current suffix configuration for existing and
+new site installations. Removing a suffix makes its existing installations count
+toward the paid allowance. Active tokens and same-site retries continue to work,
+as after a paid allowance reduction; new production activations are refused until
+enough installations are deactivated. Buyer and seller views use the current
+policy without rewriting installation records. A successful activation or retry
+refreshes stored exemption flags under the license's seat-admission lock. Device
+installations never receive development-host exemptions.
+
 Standalone startup refuses a hosted database with unrelated tenants or connected
 account/platform billing mappings. Keep hosted databases in hosted mode. Do not
 delete records to bypass the guard. An isolated sandbox child is supported.

@@ -96,11 +96,11 @@ test("financial and seat summaries reconcile paid states while byte hooks suppor
   for(const [id,patch] of [["expired",{paid_through:now-1}],["revoked",{revoked:1}],["refunded",{refund_revoked:1}],["suspended",{suspended:1}]] as const)
     await db("licenses").insert({...base,...patch,id,subscription_id:id,key_hash:id});
   for(const [id,exempt] of [["production",0],["development",1]] as const)
-    await db("installations").insert({tenant_id:tenant.id,id,license_id:ids.license,installation_id:id,site_url:"https://example.com",active:1,exempt,token_hash:id,token_cipher:"encrypted"});
+    await db("installations").insert({tenant_id:tenant.id,id,license_id:ids.license,installation_id:id,site_url:exempt?"staging.example.com":"example.com",active:1,exempt,token_hash:id,token_cipher:"encrypted"});
   await db("invoice_metrics").insert([{tenant_id:tenant.id,invoice_id:"one",currency:"usd",paid_minor:100,refunded_minor:10},{tenant_id:tenant.id,invoice_id:"two",currency:"usd",paid_minor:50,refunded_minor:0},{tenant_id:tenant.id,invoice_id:"three",currency:"eur",paid_minor:80,refunded_minor:20}]);
   await recordDownload(db,tenant.id,ids.release);await recordStorageRead(db,tenant.id,ids.release,100);
   await db("upload_reservations").insert({tenant_id:tenant.id,id:"reservation",bytes:12,expires_at:now+1000});
-  let m=await tenantMetrics(db,tenant);
+  let m=await tenantMetrics(db,tenant,undefined,["staging.example.com"]);
   assert.deepEqual(m.payments,[{currency:"eur",paidMinor:"80",refundedMinor:"20",netMinor:"60"},{currency:"usd",paidMinor:"150",refundedMinor:"10",netMinor:"140"}]);
   assert.equal(m.installations.productionActive,1);assert.equal(m.installations.developmentActive,1);assert.equal(m.licenses.entitled,1);
   await db("releases").where({id:ids.release}).update({withdrawn:1});m=await tenantMetrics(db,tenant);assert.equal(m.releases.withdrawn,1);
