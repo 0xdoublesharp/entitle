@@ -552,13 +552,15 @@ export class Billing {
     for (const subscriptionId of new Set(subscriptionIds))
       await this.db.transaction(async (tx) => {
         // Serialize scheduling with worker claims on all supported engines.
-        // Keep one reusable job without changing a pending retry or live lease.
+        // Keep one reusable job without changing pending retries, live leases,
+        // or resource-limit holds that require explicit operator recovery.
         await lock(tx, "work", this.licensing.tenant.id);
         const id = `reconcile:${hash(subscriptionId)}`;
         const existing = await tx("work")
           .where({ tenant_id: this.licensing.tenant.id, id })
           .first();
-        if (existing && ["pending", "running"].includes(existing.state)) return;
+        if (existing && (["pending", "running"].includes(existing.state) ||
+          (existing.state === "failed" && existing.last_error === "resource_limit"))) return;
         const row = {
           tenant_id: this.licensing.tenant.id,
           id,

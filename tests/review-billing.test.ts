@@ -12,6 +12,10 @@ import {
 import { Licenses } from "../src/licensing.ts";
 import { StripeBilling } from "../src/stripe.ts";
 import { loadConfig } from "../src/config.ts";
+import { randomUUID } from "node:crypto";
+import { hash } from "../src/crypto.ts";
+import { buildApp } from "../src/app.ts";
+import { InMemoryArtifactStore } from "../src/storage.ts";
 
 const root = await mkdtemp(
   "/Volumes/Scratch/entitle/tmp/review-billing-",
@@ -107,6 +111,110 @@ test("concurrent scheduled passes reuse one pending job per subscription and rea
   await billing.run(async () => null);
   assert.ok((await db("work")).every((job) => job.state === "sent"));
   assert.equal((await db("licenses")).length, 0);
+});
+
+test("routine reconciliation scheduling preserves a failed resource-limit hold without executing provider work", async () => {
+  let providerCalls = 0;
+  const billing = new Billing(db, licenses, {
+    snapshot: async (subscriptionId) => {
+      providerCalls++;
+      return snapshot({ subscriptionId, grants: [] });
+    },
+  });
+  await billing.enqueueReconcile(["sub"]);
+  await db("work").update({
+    state: "failed",
+    last_error: "resource_limit",
+    attempts: 7,
+    created_at: Date.now() - 4 * 86400000,
+    available_at: Date.now() - 86400000,
+  });
+  const held = await db("work").first();
+  for (let pass = 0; pass < 3; pass++) {
+    await Promise.all([
+      billing.enqueueReconcile(["sub", "sub"]),
+      new Billing(db, licenses, billing.source).enqueueReconcile(["sub"]),
+    ]);
+  }
+  assert.deepEqual(await db("work").first(), held,
+    "routine scheduling must preserve the operator-held row, including payload and retry history");
+  await billing.run(async () => null);
+  assert.equal(providerCalls, 0);
+  assert.deepEqual(await db("work").first(), held);
+});
+
+test("routine reconciliation scheduling still rearms ordinary failed jobs", async () => {
+  let providerCalls = 0;
+  const billing = new Billing(db, licenses, {
+    snapshot: async (subscriptionId) => {
+      providerCalls++;
+      return snapshot({ subscriptionId, grants: [] });
+    },
+  });
+  await billing.enqueueReconcile(["sub"]);
+  await db("work").update({ state: "failed", last_error: "processing_failed", attempts: 3 });
+  await billing.enqueueReconcile(["sub"]);
+  const rearmed = await db("work").first();
+  assert.equal(rearmed.state, "pending");
+  assert.equal(rearmed.attempts, 0);
+  assert.equal(rearmed.last_error, null);
+  await billing.run(async () => null);
+  assert.equal(providerCalls, 1);
+  assert.equal((await db("work").first()).state, "sent");
+});
+
+test("an explicit authenticated retry releases a resource-limit hold and permits reconciliation", async () => {
+  let providerCalls = 0;
+  const billing = new Billing(db, licenses, {
+    snapshot: async (subscriptionId) => {
+      providerCalls++;
+      return snapshot({ subscriptionId, grants: [] });
+    },
+  });
+  await billing.enqueueReconcile(["sub"]);
+  await db("work").update({
+    state: "failed", last_error: "resource_limit", attempts: 7,
+    created_at: Date.now() - 4 * 86400000,
+  });
+  const held = await db("work").first();
+  const key = `DE-TK-${"R".repeat(43)}`;
+  await db("tenant_api_keys").insert({
+    id: randomUUID(), tenant_id: "primary", name: "Explicit job recovery",
+    key_hash: hash(key), scopes: JSON.stringify(["billing:reconcile"]),
+    display_prefix: key.slice(0, 14), created_at: Date.now(),
+    expires_at: Date.now() + 60000, revoked_at: null, last_used_at: null,
+  });
+  const appConfig = {
+    ...config, storage: `${root}/retry-storage`, staticDir: `${root}/retry-static`,
+  };
+  const app = await buildApp(appConfig, db, { send: async () => {} }, {
+    store: new InMemoryArtifactStore(),
+  });
+  try {
+    await app.ready();
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/v1/tenants/primary/seller/jobs/work/${held.id}/retry`,
+      headers: { authorization: `Bearer ${key}` },
+      payload: {},
+    });
+    assert.equal(response.statusCode, 200, response.body);
+    const released = await db("work").first();
+    assert.equal(released.payload, held.payload);
+    assert.equal(released.state, "pending");
+    assert.equal(released.last_error, null);
+    assert.equal(released.attempts, 0);
+    assert.equal(Number(released.available_at), 0);
+    assert.equal(Number(released.lease_until), 0);
+    assert.equal(released.lease_owner, null);
+    assert.ok(Number(released.created_at) > Number(held.created_at));
+    assert.equal(providerCalls, 0);
+    await billing.run(async () => null);
+    assert.equal(providerCalls, 1);
+    assert.equal((await db("work").first()).state, "sent");
+  } finally {
+    await app.close();
+  }
 });
 
 test("scheduling during a running reconciliation preserves its live lease and does not create duplicate work", async () => {
