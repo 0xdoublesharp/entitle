@@ -11,8 +11,12 @@ import type { DB, License, Plan, Customer } from "./db.ts";
 import { lock } from "./db.ts";
 import { hash, random, seal, unseal } from "./crypto.ts";
 import type { Licenses } from "./licensing.ts";
-import { check } from "./errors.ts";
-import { runQueue } from "./queue.ts";
+import { AppError, check } from "./errors.ts";
+import { DeferredJob, runQueue } from "./queue.ts";
+import {
+  requireTenantCapacity,
+  type PublicationPolicy,
+} from "./publication-policy.ts";
 export interface PaidGrant {
   id: string;
   invoiceId: string;
@@ -48,6 +52,7 @@ export interface BillingEvent {
 }
 export interface BillingPrivacyContext {
   stripeLiveMode: boolean;
+  purchasePolicy?: Readonly<PublicationPolicy>;
   /** Canonical provider attribution for events without a customer field. Called outside SQL transactions. */
   resolveCustomer?: (event: BillingEvent) => Promise<string | null>;
 }
@@ -59,6 +64,7 @@ export class Billing {
   licensing: Licenses;
   source: BillingSource;
   privacy: BillingPrivacyContext;
+  readonly purchasePolicy: Readonly<PublicationPolicy>;
   constructor(
     db: DB,
     licensing: Licenses,
@@ -69,6 +75,10 @@ export class Billing {
     this.licensing = licensing;
     this.source = source;
     this.privacy = privacy;
+    this.purchasePolicy = Object.freeze({
+      deploymentMode: privacy.purchasePolicy?.deploymentMode ?? "hosted",
+      graceDays: privacy.purchasePolicy?.graceDays,
+    });
   }
   async reconcile(subscriptionId: string) {
     if (
@@ -133,6 +143,26 @@ export class Billing {
           .first();
         check(!l || l.provenance !== "complimentary", 409, "billing_provenance_conflict", "Stripe cannot reconcile complimentary entitlement.");
         if (!l && !paid.length) return true;
+        if (!l) {
+          // An open checkout reserves no authority to issue a new license.
+          // Existing subscriptions still reconcile renewals, refunds and disputes.
+          // A hold rolls back this apply; the sealed paid event stays unprocessed
+          // for recovery. It does not cancel or refund the provider payment.
+          try {
+            await requireTenantCapacity(
+              tx,
+              this.licensing.tenant.id,
+              this.purchasePolicy,
+            );
+          } catch (error) {
+            if (
+              error instanceof AppError &&
+              ["tenant_suspended", "tenant_capacity"].includes(error.code)
+            )
+              throw new DeferredJob(Date.now() + 60000);
+            throw error;
+          }
+        }
         for (const invoice of s.invoices ?? []) {
           check(
             /^[a-z]{3}$/.test(invoice.currency) &&

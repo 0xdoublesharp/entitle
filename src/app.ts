@@ -403,13 +403,17 @@ export async function buildApp(
       reads,
       billing: new Billing(db, licensing, stripe, {
         stripeLiveMode: tenantConfig.stripeLiveMode === true,
+        purchasePolicy: {
+          deploymentMode: tenantConfig.deploymentMode,
+          graceDays: tenantConfig.graceDays,
+        },
         resolveCustomer: (event) => stripe.resolveCustomer(event),
       }),
       auth: new Auth(db, tenantConfig, tenant),
     };
   };
-  const makeEnvironment = async (tenant: Tenant) => {
-    const runtime = await sandboxes.runtime(tenant);
+  const makeEnvironment = async (tenant: Tenant, reconciliation = false) => {
+    const runtime = await sandboxes.runtime(tenant, { reconciliation });
     return make(runtime.tenant, runtime.config, !!runtime.parentId);
   };
   const contexts = new WeakMap<FastifyRequest, TenantServices>();
@@ -471,7 +475,7 @@ export async function buildApp(
     await deliveryPool.close();
   });
   const tenantTick = async (tenant: Tenant) => {
-    const s = await makeEnvironment(tenant);
+    const s = await makeEnvironment(tenant, true);
     if (s.config.localBilling || stripeConfigured(s.config))
       await s.billing.run((event) => s.stripe.resolveSubscription(event));
     const operations = new Operations(db, tenant.id);
@@ -1056,7 +1060,7 @@ export async function buildApp(
         const state = await sandboxes.describe(tenant.id);
         if (state?.mode !== "stripe") return { ok: true, ignored: true };
         await (
-          await makeEnvironment(tenant)
+          await makeEnvironment(tenant, true)
         ).billing.receive(event as BillingEvent);
         return { ok: true };
       });

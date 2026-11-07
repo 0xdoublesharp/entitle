@@ -8,10 +8,10 @@ export interface PublicationPolicy {
   graceDays?: number | undefined;
 }
 
-// Called under the tenant's schema lock, both before reserving storage and at
-// final publication. Row locks also serialize operator and billing updates,
-// which do not share that schema lock. SQLite already holds a write lock.
-export async function requirePublicationTenant(
+// Call within the mutation's schema or billing transaction. Row locks serialize
+// current authority with operator/platform billing writes that use other mutexes.
+// SQLite callers already hold a write lock through their transaction mutex.
+export async function requireTenantCapacity(
   tx: Tx,
   tenantId: string,
   policy: Readonly<PublicationPolicy>,
@@ -49,3 +49,5 @@ export async function requirePublicationTenant(
     );
   return tenants.get(tenantId)!;
 }
+
+export { requireTenantCapacity as requirePublicationTenant };

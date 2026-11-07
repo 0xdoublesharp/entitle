@@ -288,6 +288,14 @@ After signature verification, Connect events from the other Stripe mode return `
 
 Platform delinquency blocks new capacity and purchases after grace, while existing buyers retain paid downloads, activation/recovery and billing reconciliation. Explicit abuse suspension blocks tenant business service; platform billing/key recovery and operator routes remain available. Neither state remotely disables installed software.
 
+Checkout creation reserves no purchase authority. First paid-license issuance
+rechecks the current workspace and sandbox parent. Suspension or hosted capacity
+expiry leaves the encrypted provider event unprocessed and its job pending until
+authority returns; these holds consume no failure retries and have no 72-hour
+expiry. Existing subscriptions still reconcile renewals, refunds and disputes.
+The hold does not cancel or refund a provider payment; unresolved payments need
+merchant recovery or refund.
+
 ## Account security and sensitive actions
 
 Seller account routes use `/api/v1/platform/account` with an interactive seller

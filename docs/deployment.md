@@ -236,6 +236,14 @@ Events are durable and idempotent; jobs read canonical Stripe data outside SQL t
 
 In hosted mode, a paid positive configured-price platform invoice raises tenant quota. Subscription status/redirect/unpaid upgrade alone cannot. Platform delinquency after grace blocks new products/releases/purchases, while existing buyer paid rights, recovery and billing reconciliation continue. Explicit operator abuse suspension denies tenant business service, while operator and owner platform billing/key recovery remain available. Installed PHP features never depend on these states.
 
+Creating a checkout does not reserve purchase authority. First license issuance
+checks the current workspace and sandbox parent again. If suspension or hosted
+capacity expiry prevents issuance, the encrypted paid event stays unprocessed
+and its job remains pending without consuming failure retries or expiring after
+72 hours. Restore purchase authority to resume issuance, or resolve the payment
+with the merchant. The hold does not cancel or refund the Stripe payment.
+Existing subscriptions continue reconciling renewals, refunds and disputes.
+
 ## CLI and reconciliation
 
 Tenant commands require TENANT_SLUG and a scoped expiring TENANT_API_KEY. Remote commands need no server secret. Platform administration uses OPERATOR_TOKEN separately. Store credentials in a secret manager/protected environment, never command arguments or distributed ZIPs. See README and API docs for command names.

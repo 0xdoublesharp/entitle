@@ -206,6 +206,7 @@ tests/api-router.test.mjs
 tests/api.test.ts
 tests/app-path.test.ts
 tests/backup-integration.test.ts
+tests/billing-capacity.test.ts
 tests/billing-privacy.test.ts
 tests/build.test.ts
 tests/business-events-core.test.ts
