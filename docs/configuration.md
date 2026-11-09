@@ -24,9 +24,18 @@ a present empty string; omit optional price/account IDs until configured.
 | `PORT`                      | `3211`                          | Integer 0-65535; 0 is useful for isolated tests.                                                                        |
 | `STANDALONE_OWNER_EMAIL`    | Empty                           | Required in standalone production; normalized email allowed to sign in as owner.                                        |
 | `APP_SECRET`                | Required                        | Exactly 64 hexadecimal characters. Protect and back up for encrypted retry/outbox state.                                |
-| `OPERATOR_TOKEN`            | Required                        | At least 32 characters; independent from seller keys and `APP_SECRET`.                                                  |
+| `OPERATOR_TOKEN`            | Required                        | At least 32 random characters; independent from seller keys and `APP_SECRET`. The published placeholder is rejected.     |
 | `TRUST_PROXY`               | Disabled                        | Required in production; identify the exact trusted proxy/subnet. Blanket `true`, `0.0.0.0/0` and `::/0` are refused.    |
 | `DEVELOPMENT_HOST_SUFFIXES` | Empty                           | Comma-separated explicit host/suffix exemptions for site seat accounting. Exact or dot-delimited matching.              |
+
+Development exemptions follow the current suffix configuration for existing and
+new site installations. Removing a suffix makes its existing installations count
+toward the paid allowance. Active tokens and same-site retries continue to work,
+as after a paid allowance reduction; new production activations are refused until
+enough installations are deactivated. Buyer and seller views use the current
+policy without rewriting installation records. A successful activation or retry
+refreshes stored exemption flags under the license's seat-admission lock. Device
+installations never receive development-host exemptions.
 
 Standalone startup refuses a hosted database with unrelated tenants or connected
 account/platform billing mappings. Keep hosted databases in hosted mode. Do not
@@ -213,6 +222,27 @@ Native operations have progress-based idle limits plus finite size-scaled total
 limits. The transfer total is the idle window plus `ceil(size / 1 MiB per second)`
 in milliseconds. An uncached range request verifies a full object first; cache
 hits still authorize every request. See [deployment transfer details](deployment.md#native-artifact-disk-and-transfer-budgets).
+
+## Billing worker resource limits
+
+These ceilings apply to queued billing work, including explicit job runs. Each
+job must supply complete canonical evidence before licenses, emails or platform
+capacity change. Oversized jobs remain recoverable in the failed queue with
+`resource_limit`; see [operator recovery](deployment.md#cli-and-reconciliation).
+
+| Variable | Default | Hard maximum | Budget |
+| --- | ---: | ---: | --- |
+| `BILLING_WORKER_MAX_FACTS` | 10,000 | 50,000 | Combined checkpoint and normalized fact records for one queue job. |
+| `BILLING_WORKER_MAX_MIB` | 16 | 64 | Combined MiB of the job's encrypted checkpoint/fact payloads and privacy-receipt text materialized per turn. |
+| `BILLING_WORKER_MAX_APPLY_RECORDS` | 3,000 | 20,000 | Aggregate records materialized per turn, including existing plans, prices, grants and privacy receipts. Reads stop before loading an oversized set. |
+| `BILLING_WORKER_MAX_APPLY_WORK` | 1,000,000 | 10,000,000 | Conservative local operation units, including nested comparisons and query boundaries. |
+| `BILLING_WORKER_APPLY_MS` | 5,000 | 30,000 | Separate finite local reconstruction/apply deadline, checked throughout the apply. |
+
+All values are positive integers. The existing single-checkpoint 512 KiB and
+single-fact 64 KiB bounds still apply. Check the reported budget before changing
+a limit; raising one does not raise the others. Deadline checks occur between
+SQL calls, with cancellation where the database driver supports it. A failed
+apply completes rollback before its queue lease is released.
 
 ## Optional caches and outbound destinations
 

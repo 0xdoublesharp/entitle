@@ -1,6 +1,7 @@
 import { resolve } from "node:path";
 import { z } from "zod";
 import { normalizeAppBasePath } from "../packages/shared/app-path.ts";
+import type { WorkerResourceLimits } from "./queue.ts";
 export type ServerRole = "all" | "api" | "worker" | "migrate";
 export type DeploymentSlot = "blue" | "green";
 
@@ -36,6 +37,7 @@ export const freeLicenseOffersSchema = z.array(z.object({
 export type FreeLicenseOffer = z.infer<typeof freeLicenseOffersSchema>[number];
 
 export interface Config {
+  billingWorker?: WorkerResourceLimits;
   freeLicenseOffers?: FreeLicenseOffer[];
   serverRole?: ServerRole;
   deploymentSlot?: DeploymentSlot;
@@ -217,7 +219,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     .string()
     .regex(/^[a-f0-9]{64}$/i)
     .parse(env.APP_SECRET);
-  const operatorToken = z.string().min(32).parse(env.OPERATOR_TOKEN);
+  const operatorToken = z
+    .string()
+    .min(32)
+    .refine((value) => value !== "REPLACE_WITH_AT_LEAST_32_RANDOM_CHARACTERS", {
+      message: "OPERATOR_TOKEN must replace the published placeholder with a random secret",
+    })
+    .parse(env.OPERATOR_TOKEN);
   if (
     env.STRIPE_PUBLISHABLE_KEY &&
     !/^pk_(?:test|live)_[A-Za-z0-9]+$/.test(env.STRIPE_PUBLISHABLE_KEY)
@@ -262,6 +270,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const data = env.DATA_DIR ?? "/Volumes/Scratch/entitle/data/local";
   const limits = z
     .object({
+      BILLING_WORKER_MAX_FACTS: z.coerce.number().int().min(1).max(50000).default(10000),
+      BILLING_WORKER_MAX_MIB: z.coerce.number().int().min(1).max(64).default(16),
+      BILLING_WORKER_MAX_APPLY_RECORDS: z.coerce.number().int().min(1).max(20000).default(3000),
+      BILLING_WORKER_MAX_APPLY_WORK: z.coerce.number().int().min(1).max(10000000).default(1000000),
+      BILLING_WORKER_APPLY_MS: z.coerce.number().int().min(1).max(30000).default(5000),
       CACHE_MEMORY_MIB: z.coerce.number().int().min(1).max(256).default(8),
       CACHE_NAMESPACE: z
         .string()
@@ -484,6 +497,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     smtpSecure: env.SMTP_SECURE === "true",
     mailFrom: env.MAIL_FROM ?? "licenses@example.test",
     maxNativeUploadBytes: limits.MAX_NATIVE_UPLOAD_MIB * 1048576,
+    billingWorker: {
+      maxFacts: limits.BILLING_WORKER_MAX_FACTS,
+      maxBytes: limits.BILLING_WORKER_MAX_MIB * 1048576,
+      maxApplyRecords: limits.BILLING_WORKER_MAX_APPLY_RECORDS,
+      maxApplyWork: limits.BILLING_WORKER_MAX_APPLY_WORK,
+      applyMs: limits.BILLING_WORKER_APPLY_MS,
+    },
     nativeSpoolBytes: limits.NATIVE_SPOOL_MIB * 1048576,
     nativeUploadTimeoutMs: limits.NATIVE_UPLOAD_TIMEOUT_MS,
     artifactCacheBytes: limits.ARTIFACT_CACHE_MIB * 1048576,

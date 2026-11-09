@@ -236,11 +236,63 @@ Events are durable and idempotent; jobs read canonical Stripe data outside SQL t
 
 In hosted mode, a paid positive configured-price platform invoice raises tenant quota. Subscription status/redirect/unpaid upgrade alone cannot. Platform delinquency after grace blocks new products/releases/purchases, while existing buyer paid rights, recovery and billing reconciliation continue. Explicit operator abuse suspension denies tenant business service, while operator and owner platform billing/key recovery remain available. Installed PHP features never depend on these states.
 
+Creating a checkout does not reserve purchase authority. First license issuance
+checks the current workspace and sandbox parent again. If suspension or hosted
+capacity expiry prevents issuance, the encrypted paid event stays unprocessed
+and its job remains pending without consuming failure retries or expiring after
+72 hours. Restore purchase authority to resume issuance, or resolve the payment
+with the merchant. The hold does not cancel or refund the Stripe payment.
+Existing subscriptions continue reconciling renewals, refunds and disputes.
+
 ## CLI and reconciliation
+
+Background billing shares a five-second provider-scan budget and at most four
+queue-owner turns per five-second window in each process. Platform and seller
+queues rotate fairly; each turn claims one job and makes at most eight provider
+requests. Long scans resume from durable cursors and encrypted normalized facts,
+including payment, refund, dispute and credit history. No license, key email or
+platform quota is applied from incomplete evidence. Budget pauses preserve job
+identity and do not consume failure retries. Complete evidence enters a separate
+five-second local reconstruction and atomic apply phase. Queued jobs also have
+aggregate limits: 10,000 checkpoint/fact records, 16 MiB of combined encrypted
+checkpoint/fact payloads and privacy-receipt text read per turn, 3,000 materialized financial/configuration records per turn,
+and 1,000,000 conservative local work units. These include existing plans,
+prices, grants and privacy receipts as well as incoming evidence. Limits are checked before full
+fact reads and decryption and throughout nested calculations and apply loops.
+An exceeded limit rolls back the apply; it never grants rights from a prefix.
+SQL cancellation and rollback settle before another owner enters. Deadline
+checks occur between SQL calls; cancellation latency depends on the database
+engine. See the configurable ceilings in [configuration](configuration.md#billing-worker-resource-limits).
+
+Manual tenant job runs share that admission budget and cannot take another
+owner's turn. A run can leave billing pending while it processes core work and
+email; inspect the queue for completion. API-only roles refuse job execution.
+Ship migrations `016_worker_continuations`, `017_worker_grant_index` and `018_worker_privacy_receipt_index` with the application and apply them
+through the existing migration procedure before starting API or worker roles.
+Checkpoints are part of the database backup and use the original `APP_SECRET`.
+
+A job that exceeds an aggregate limit becomes `failed` with
+`last_error=resource_limit` and stops automatic retries. Its sealed job/event
+and existing checkpoints remain available, and the billing event stays
+unprocessed. Server diagnostics identify the budget, observed amount and
+limit. Review those values and the host's resources before increasing the
+matching `BILLING_WORKER_*` setting within its hard ceiling. Raising a setting
+does not retry a held job: explicitly retry the individual tenant or platform
+work item after correcting its cause. Recovery rereads completed provider
+evidence and applies the complete result. Use `job-retry work JOB_ID` or
+`platform-job-retry platform_work JOB_ID` through the authenticated CLI; see
+[job commands](cli.md).
+
+A held refund or dispute leaves previously committed entitlements unchanged;
+prioritize its operator recovery. If the hard ceilings are insufficient, leave
+the job held and use a reviewed isolated maintenance procedure. Preserve the
+retained history and event rather than marking it processed to clear the hold.
 
 Tenant commands require TENANT_SLUG and a scoped expiring TENANT_API_KEY. Remote commands need no server secret. Platform administration uses OPERATOR_TOKEN separately. Store credentials in a secret manager/protected environment, never command arguments or distributed ZIPs. See README and API docs for command names.
 
-Schedule `reconcile` with a billing:reconcile key for `primary` in standalone, or for each seller workspace in hosted mode. Hosted platform subscriptions additionally need `platform-reconcile TENANT_ID` with operator credentials. Standalone has no platform subscription to reconcile. For example run tenant reconciliation every six hours through a protected host script invoking the CLI. The process polls durable jobs every five seconds. `jobs`/`platform-jobs` show safe state. Failed work retries within a 72-hour window with backoff capped at one hour. Failed jobs remain recoverable through individual or bounded bulk retry APIs; explicit retry starts a fresh retry window. Daily mail budgets defer rather than consuming failure retries or discarding encrypted keys. Monitor failed counts and oldest pending jobs. Platform mail defaults to 1,000 attempts per UTC day and seller signup to 500 creations per hour; configure `PLATFORM_DAILY_EMAIL_LIMIT` and `MAX_SELLER_SIGNUPS_PER_HOUR` separately from each tenant's `DAILY_EMAIL_LIMIT`.
+Schedule `reconcile` with a billing:reconcile key for `primary` in standalone, or for each seller workspace in hosted mode. For example run tenant reconciliation every six hours through a protected host script invoking the CLI. The process polls durable jobs every five seconds. Hosted platform webhook jobs also use the durable worker queue. The operator command `platform-reconcile TENANT_ID` runs synchronously in its HTTP request, outside the shared worker budgets. Standalone has no platform subscription to reconcile.
+
+`jobs`/`platform-jobs` show safe state. Processing errors retry within a 72-hour window with backoff capped at one hour; `resource_limit` holds require explicit recovery as described above. Failed jobs remain recoverable through individual or bounded bulk retry APIs; explicit retry starts a fresh retry window. Daily mail budgets defer rather than consuming failure retries or discarding encrypted keys. Monitor failed counts and oldest pending jobs. Platform mail defaults to 1,000 attempts per UTC day and seller signup to 500 creations per hour; configure `PLATFORM_DAILY_EMAIL_LIMIT` and `MAX_SELLER_SIGNUPS_PER_HOUR` separately from each tenant's `DAILY_EMAIL_LIMIT`.
 
 ## Upgrade and migration
 

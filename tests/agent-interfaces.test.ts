@@ -362,5 +362,27 @@ test("MCP stdio entrypoint initializes and advertises agent tools", async () => 
   assert.equal(code, 0);
   const responses = lines.map((line) => JSON.parse(line));
   assert.ok(responses.find((item) => item.id === 1)?.result?.protocolVersion);
-  assert.ok(responses.find((item) => item.id === 2)?.result?.tools?.length);
+  const tools = responses.find((item) => item.id === 2)?.result?.tools as {
+    name: string;
+    annotations: { readOnlyHint: boolean; destructiveHint: boolean };
+  }[];
+  assert.ok(tools?.length);
+  for (const name of [
+    "entitle_export_download",
+    "entitle_op_buyer_data_export",
+    "entitle_op_buyer_release_download",
+    "entitle_op_buyer_asset_download",
+    "entitle_op_installation_release_download",
+    "entitle_op_installation_asset_download",
+  ]) {
+    const tool = tools.find((tool) => tool.name === name);
+    assert.ok(tool, name);
+    assert.equal(tool.annotations.readOnlyHint, false, name);
+    assert.equal(tool.annotations.destructiveHint, false, name);
+  }
+  assert.equal(
+    tools.find((tool) => tool.name === "entitle_op_buyer_closure_status")
+      ?.annotations.readOnlyHint,
+    true,
+  );
 });

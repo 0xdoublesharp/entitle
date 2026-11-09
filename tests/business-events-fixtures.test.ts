@@ -19,6 +19,7 @@ export async function businessFixture(run: (db: DB) => Promise<void>) {
       "007_frameworks",
       "009_accounts",
       "010_operations",
+      "011_sandboxes",
     ];
     await fixture.db.migrate.latest({
       migrationSource: {

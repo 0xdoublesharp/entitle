@@ -6,6 +6,11 @@ See [deployment](deployment.md) for the planned hosted address and
 
 Errors use `{error:{code,message,requestId}}`. Credentials belong in Authorization headers or request JSON, never package URLs. Responses containing identity, client secrets or customer data are `Cache-Control: no-store`. Requests have IDs and rate limits. No legacy unscoped licensing routes exist.
 
+Activation status (`GET` and `HEAD /activation`) has a shared 60-request-per-minute IP
+admission limit. Other installation-token routes retain a 1,000-request-per-minute
+aggregate IP ceiling alongside their per-installation route budgets. IPv6
+addresses are grouped by `/64`; throttled responses include `Retry-After`.
+
 For task walkthroughs, start with [client integration](client-integration.md),
 [seller guide](seller-guide.md), [CLI](cli.md), or [outgoing webhooks](webhooks.md).
 The route tables below are relative to their stated prefix. `:tenant` is a
@@ -22,6 +27,10 @@ ID. Do not substitute an internal tenant ID for its public slug.
 | Seller session       | Seller HttpOnly cookie                   | Owned workspaces and interactive owner-only actions.            |
 | Seller API key       | `Authorization: Bearer DE-TK-...`        | Explicit tenant-bound scopes, expiry and revocation.            |
 | Operator token       | Independent Bearer token                 | `/api/v1/operator`, separate from tenant routes.                |
+
+Publication rechecks API-key revocation, expiration and `releases:write` scope
+inside its final database transaction. Revoking a key cancels uploads still
+being transferred or verified; an already committed release remains published.
 
 | Seller key scope    | Operations                                                                            |
 | ------------------- | ------------------------------------------------------------------------------------- |
@@ -173,6 +182,13 @@ Prefix `/api/v1/tenants/:tenant`:
 | GET      | /updates/generic/:product/:target                | Activation bearer; JSON assets, optional currentVersion query; 204 if no newer release                                                |
 | POST     | /portal                                          | `{}` and buyer CSRF; connected Stripe Customer Portal                                                                                 |
 
+Activation-status requests (`GET` and `HEAD /activation`) share an admission ceiling of 60
+requests per minute per normalized source IP, before token lookup. Installations
+behind the same IP share this status ceiling. Other installation-token routes
+retain their separate per-installation route budgets and share a wider admission
+ceiling of 1,000 requests per minute per IP. IPv6 addresses in the same `/64`
+share an IP budget. Rate-limit responses use HTTP 429 and include `Retry-After`.
+
 Hosted checkout returns `{url}`. Elements returns `{uiMode:"elements",clientSecret,publishableKey,stripeAccount,returnUrl}`. Initialize the official Stripe.js loader with that publishable key and `stripeAccount`, then `initCheckoutElementsSdk({clientSecret,elementsOptions:{appearance:...}})`. Mount the Payment Element, load actions, display Stripe's canonical total and confirm through Stripe. Keep secrets only in memory. Neither a successful confirmation nor the return URL grants entitlement. Card details go directly to Stripe. See [Elements design](architecture.md#checkout-and-billing).
 
 A seller's independent website can proxy guest checkout and render its own Elements form if it relays the issuing browser's HttpOnly checkout cookie, including on a provider error response. That claim allows retries only for its unpaid, unlicensed customer; it is not a buyer session. Existing customers must sign in through the hosted buyer flow or a complete same-origin session proxy. No general cross-domain authentication bridge is included. Customer-session cross-origin CORS is intentionally disabled. Never put tenant automation keys into browsers or plugin ZIPs. The server controls the return URL.
@@ -271,6 +287,12 @@ issuance never charges or enrolls the customer, including after Stripe is added.
 
 `/api/v1/operator` requires the independent platform operator token: GET `/tenants`, POST `/tenants/:id/status` (`suspended`, `exempt`, `maxProducts`, `maxStorageBytes`), POST `/tenants/:id/owner` (`email`, verified seller), POST `/tenants/:id/reconcile`, GET `/jobs`, POST `/jobs/run`, POST `/jobs/:table/:id/retry` (platform_work/platform_emails). Local fixture configuration is POST `/local/tenants/:id` (`connected?`, `paidDays?`, at least one).
 
+Tenant and operator job runs share background billing admission. A tenant run
+processes only its own work and can leave billing pending for a later fair turn.
+Long provider scans checkpoint their progress; budget pauses do not consume
+failure retries or mark an event processed. Complete canonical evidence is
+required before grants or quota change. API-only roles refuse job execution.
+
 `POST /api/v1/stripe/platform-webhook` verifies the raw body with the platform signing secret and rejects connected events. `POST /api/v1/stripe/connect-webhook` uses the separate Connect secret, requires account+configured mode, and resolves the immutable account mapping. Events and work commit before acknowledgment. Duplicate and reordered events reconcile canonical state. Provider failures retry without erasing purchased grants.
 
 After signature verification, Connect events from the other Stripe mode return `200 {ok:true,ignored:true}` without being persisted. Operator bulk recovery is `POST /api/v1/operator/jobs/:table/retry-failed` for platform_work/platform_emails, with the same optional limit. Explicit individual or bulk retry starts a new 72-hour retry window without discarding the retained payload.
@@ -278,6 +300,14 @@ After signature verification, Connect events from the other Stripe mode return `
 `GET /api/v1/health` is process liveness. `GET /api/v1/ready` checks database, S3 bucket access and private working-directory access. Both return generic failures without credentials.
 
 Platform delinquency blocks new capacity and purchases after grace, while existing buyers retain paid downloads, activation/recovery and billing reconciliation. Explicit abuse suspension blocks tenant business service; platform billing/key recovery and operator routes remain available. Neither state remotely disables installed software.
+
+Checkout creation reserves no purchase authority. First paid-license issuance
+rechecks the current workspace and sandbox parent. Suspension or hosted capacity
+expiry leaves the encrypted provider event unprocessed and its job pending until
+authority returns; these holds consume no failure retries and have no 72-hour
+expiry. Existing subscriptions still reconcile renewals, refunds and disputes.
+The hold does not cancel or refund a provider payment; unresolved payments need
+merchant recovery or refund.
 
 ## Account security and sensitive actions
 

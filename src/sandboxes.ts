@@ -193,7 +193,10 @@ export class PublisherSandboxes {
       mode: mapping.mode,
     };
   }
-  async runtime(tenant: Tenant): Promise<SandboxRuntime> {
+  async runtime(
+    tenant: Tenant,
+    options: { reconciliation?: boolean } = {},
+  ): Promise<SandboxRuntime> {
     const mapping = await this.db<Mapping>("publisher_sandboxes")
       .where({ sandbox_tenant_id: tenant.id })
       .first();
@@ -201,17 +204,21 @@ export class PublisherSandboxes {
     const parent = (await this.db<Tenant>("tenants")
       .where({ id: mapping.parent_tenant_id })
       .first())!;
-    check(
-      !parent.suspended,
-      403,
-      "tenant_suspended",
-      "This publisher's service is suspended.",
-    );
+    // Only internal signed-event ingestion and reconciliation may run while
+    // suspended. HTTP tenant contexts retain the ordinary admission check.
+    if (!options.reconciliation)
+      check(
+        !parent.suspended,
+        403,
+        "tenant_suspended",
+        "This publisher's service is suspended.",
+      );
     if (mapping.mode === "stripe") this.stripeConfigured();
     return {
       parentId: parent.id,
       tenant: {
         ...tenant,
+        suspended: tenant.suspended || parent.suspended ? 1 : 0,
         stripe_account_id: parent.stripe_account_id,
         stripe_status: parent.stripe_status,
         exempt: parent.exempt,

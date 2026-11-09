@@ -310,6 +310,77 @@ test("capacity reductions during provider HTTP reject final commit and release u
   await clean();
 });
 
+for (const state of ["suspended", "expired"] as const) {
+  for (const sandbox of [false, true]) {
+    test(`WordPress publication rechecks ${sandbox ? "sandbox parent" : "tenant"} ${state} after storage readback`, async (t) => {
+      let authority = tenant;
+      if (sandbox) {
+        authority = await createTenant(db, {
+          id: randomUUID(),
+          slug: "parent",
+          name: "Parent",
+        });
+        await db("tenants").where({ id: tenant.id }).update({ exempt: 1 });
+        await db("publisher_sandboxes").insert({
+          parent_tenant_id: authority.id,
+          sandbox_tenant_id: tenant.id,
+          mode: "fixture",
+          created_at: Date.now(),
+        });
+      }
+      const get = store.get.bind(store);
+      t.mock.method(store, "get", async (...args: Parameters<Store["get"]>) => {
+        const value = await get(...args);
+        await db("tenants")
+          .where({ id: authority.id })
+          .update(
+            state === "suspended"
+              ? { suspended: 1 }
+              : { exempt: 0, trial_ends_at: 0, paid_through: 0 },
+          );
+        return value;
+      });
+      await assert.rejects(releases.publish(publication), {
+        status: 403,
+        code: state === "suspended" ? "tenant_suspended" : "tenant_capacity",
+      });
+      assert.equal(store.removals.length, 1);
+      assert.equal(
+        (await db("business_events").where({ tenant_id: tenant.id })).length,
+        0,
+      );
+      await clean();
+    });
+  }
+}
+
+for (const policy of [
+  { deploymentMode: "standalone", graceDays: 0, allowed: true },
+  { deploymentMode: "hosted", graceDays: 2, allowed: true },
+  { deploymentMode: "hosted", graceDays: 0, allowed: false },
+] as const) {
+  test(`WordPress publication respects ${policy.deploymentMode} mode and ${policy.graceDays} grace days`, async () => {
+    await db("tenants")
+      .where({ id: tenant.id })
+      .update({
+        exempt: 0,
+        trial_ends_at: 0,
+        paid_through: Date.now() - 86400000,
+      });
+    const service = new Releases(db, store, tenant, work, undefined, policy);
+    if (policy.allowed) {
+      const release = await service.publish(publication);
+      assert.deepEqual(await service.read(release), bytes);
+    } else {
+      await assert.rejects(service.publish(publication), {
+        status: 403,
+        code: "tenant_capacity",
+      });
+      await clean();
+    }
+  });
+}
+
 test("source growth after stat is charged by actual validated bytes and cannot bypass storage quota", async () => {
   const expanded = zipBytes([
     {

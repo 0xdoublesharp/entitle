@@ -243,7 +243,7 @@ They use `OPERATOR_ORIGIN` when supplied, otherwise `PUBLIC_ORIGIN`, and target
 | `tenants`                           | Lists platform tenants.                                       |
 | `tenant-status TENANT_ID JSON_FILE` | Applies reviewed status/capacity settings.                    |
 | `tenant-owner TENANT_ID EMAIL`      | Assigns ownership to a verified seller.                       |
-| `platform-reconcile TENANT_ID`      | Queues hosted platform-subscription reconciliation.           |
+| `platform-reconcile TENANT_ID`      | Runs hosted platform-subscription reconciliation synchronously. |
 | `platform-jobs`                     | Lists safe platform job/email state.                          |
 | `platform-work`                     | Runs a bounded batch of platform work.                        |
 | `local-tenant TENANT_ID JSON_FILE`  | Development-only fixture state; unavailable for real billing. |

@@ -5,6 +5,7 @@ import { z } from "zod";
 import type { DB, Tenant, License, Installation, Release, Plan } from "./db.ts";
 import type { Config } from "./config.ts";
 import type { Licenses } from "./licensing.ts";
+import { installationExempt, productActivationKind } from "./licensing.ts";
 import type { Artifacts } from "./artifacts.ts";
 import type { Releases } from "./releases.ts";
 import type { Billing } from "./billing.ts";
@@ -353,6 +354,7 @@ export async function buyerRoutes(
     }
     for (const l of effectiveRows) {
       const product = products.get(l.product_id)!;
+      const kind = productActivationKind(product);
       const plan = l.plan_id ? plans.get(l.plan_id) : undefined;
       licenses.push({
         id: l.id,
@@ -375,7 +377,7 @@ export async function buyerRoutes(
           site_url: i.site_url,
           label: i.label,
           active: !!i.active,
-          exempt: !!i.exempt,
+          exempt: installationExempt(i.site_url, kind, config.exemptSuffixes),
         })),
         releases: releasesByProduct.get(l.product_id) ?? [],
       });

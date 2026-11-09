@@ -38,6 +38,7 @@ import {
 } from "./framework-api.ts";
 import { Releases } from "./releases.ts";
 import { Billing, type BillingEvent } from "./billing.ts";
+import type { WorkerQueueOptions } from "./queue.ts";
 import { StripeBilling } from "./stripe.ts";
 import { Auth } from "./auth.ts";
 import { Outbox, type Mailer } from "./email.ts";
@@ -63,6 +64,7 @@ import { Operations } from "./operations.ts";
 import { BusinessEvents } from "./business-events.ts";
 import { OutboundWebhooks } from "./outbound-webhooks.ts";
 import { WebhookDeliveryPool } from "./webhook-delivery.ts";
+import { billingWorkerResourceLimits } from "./worker-continuation.ts";
 import { featureEntitlements, businessEventPolicy } from "./plan-features.ts";
 import { commerceAdminRoutes } from "./commerce-admin.ts";
 import {
@@ -80,6 +82,16 @@ export interface AppOptions {
   store?: ArtifactStore;
   stripeFactory?: (tenant: Tenant) => StripeBilling;
   platformBilling?: PlatformBilling;
+  billingWorker?: {
+    budgetMs?: number;
+    maxRequests?: number;
+    maxOwnersPerTick?: number;
+    maxFacts?: number;
+    maxBytes?: number;
+    maxApplyRecords?: number;
+    maxApplyWork?: number;
+    applyMs?: number;
+  };
 }
 export async function buildApp(
   config: Config,
@@ -87,6 +99,17 @@ export async function buildApp(
   mailer?: Mailer,
   options: AppOptions = {},
 ) {
+  const billingBudgetMs = options.billingWorker?.budgetMs ?? 5000;
+  const billingMaxRequests = options.billingWorker?.maxRequests ?? 8;
+  const billingMaxOwners = options.billingWorker?.maxOwnersPerTick ?? 4;
+  const billingResources = billingWorkerResourceLimits({ ...config.billingWorker, ...options.billingWorker });
+  check(
+    Number.isSafeInteger(billingBudgetMs) && billingBudgetMs >= 1 && billingBudgetMs <= 60000 &&
+      Number.isSafeInteger(billingMaxRequests) && billingMaxRequests >= 1 && billingMaxRequests <= 100 &&
+      Number.isSafeInteger(billingMaxOwners) && billingMaxOwners >= 1 && billingMaxOwners <= 100,
+    500, "worker_configuration", "Invalid billing worker budget.",
+  );
+  const billingShutdown = new AbortController();
   const hosted = config.deploymentMode === "hosted";
   const sandboxes = new PublisherSandboxes(db, config);
   if (!hosted) {
@@ -149,6 +172,7 @@ export async function buildApp(
   );
   await mkdir(config.storage, { recursive: true, mode: 0o700 });
   let inFlightDiskBytes = 0;
+  let inFlightReadDiskBytes = 0;
   const diskAllocations = new WeakMap<FastifyRequest, number>();
   const activeNativeUploads = new WeakSet<FastifyRequest>();
   const releaseDisk = (req: FastifyRequest) => {
@@ -234,61 +258,68 @@ export async function buildApp(
       signal,
       onProgress,
     ) {
-      await requireFreeDisk(inFlightDiskBytes + size);
-      if (backend.getToFile)
-        await backend.getToFile(
-          tenantId,
-          id,
-          checksum,
-          size,
-          destination,
-          signal,
-          onProgress,
-        );
-      else {
-        // Legacy test/custom stores return Buffers. Account their temporary RAM
-        // separately rather than treating a buffered adapter as native streaming.
-        check(
-          size <= MAX_ARTIFACT_BYTES,
-          503,
-          "streaming_storage_required",
-          "Streaming storage is required for this artifact.",
-        );
-        const extra = Math.max(0, 2 * size - streamMemory);
-        check(
-          inFlightBytes + extra <=
-            (config.transferMemoryBytes ?? 256 * 1024 ** 2),
-          503,
-          "transfer_capacity",
-          "Transfer capacity is busy. Retry shortly.",
-        );
-        inFlightBytes += extra;
-        try {
-          const bytes = await backend.get(tenantId, id, checksum, size);
-          check(
-            bytes.length === size,
-            503,
-            "artifact_integrity",
-            "Stored artifact length mismatch.",
-          );
-          await writeFile(destination, bytes, {
-            flag: "wx",
-            mode: 0o600,
+      // Reserve before the first await: other cold reads and publications must
+      // account for this file even while no bytes have reached the filesystem.
+      inFlightReadDiskBytes += size;
+      try {
+        await requireFreeDisk(inFlightDiskBytes + inFlightReadDiskBytes);
+        if (backend.getToFile)
+          await backend.getToFile(
+            tenantId,
+            id,
+            checksum,
+            size,
+            destination,
             signal,
-          });
-          onProgress?.(bytes.length);
-        } finally {
-          inFlightBytes -= extra;
+            onProgress,
+          );
+        else {
+          // Legacy test/custom stores return Buffers. Account their temporary RAM
+          // separately rather than treating a buffered adapter as native streaming.
+          check(
+            size <= MAX_ARTIFACT_BYTES,
+            503,
+            "streaming_storage_required",
+            "Streaming storage is required for this artifact.",
+          );
+          const extra = Math.max(0, 2 * size - streamMemory);
+          check(
+            inFlightBytes + extra <=
+              (config.transferMemoryBytes ?? 256 * 1024 ** 2),
+            503,
+            "transfer_capacity",
+            "Transfer capacity is busy. Retry shortly.",
+          );
+          inFlightBytes += extra;
+          try {
+            const bytes = await backend.get(tenantId, id, checksum, size);
+            check(
+              bytes.length === size,
+              503,
+              "artifact_integrity",
+              "Stored artifact length mismatch.",
+            );
+            await writeFile(destination, bytes, {
+              flag: "wx",
+              mode: 0o600,
+              signal,
+            });
+            onProgress?.(bytes.length);
+          } finally {
+            inFlightBytes -= extra;
+          }
         }
+        check(
+          (await hashArtifactFile(destination, size, onProgress, signal))
+            .checksum === checksum,
+          503,
+          "artifact_integrity",
+          "Stored artifact failed integrity verification.",
+        );
+        await storageRead(tenantId, id, size);
+      } finally {
+        inFlightReadDiskBytes -= size;
       }
-      check(
-        (await hashArtifactFile(destination, size, onProgress, signal))
-          .checksum === checksum,
-        503,
-        "artifact_integrity",
-        "Stored artifact failed integrity verification.",
-      );
-      await storageRead(tenantId, id, size);
     },
   };
   const reads = new ReadCache({
@@ -375,6 +406,10 @@ export async function buildApp(
         tenant,
         config.storage,
         config.maxUploadBytes ?? 25 * 1024 * 1024,
+        {
+          deploymentMode: tenantConfig.deploymentMode,
+          graceDays: tenantConfig.graceDays,
+        },
       ),
       artifacts: new Artifacts(
         db,
@@ -383,17 +418,25 @@ export async function buildApp(
         nativeLimit,
         undefined,
         nativeCache,
+        {
+          deploymentMode: tenantConfig.deploymentMode,
+          graceDays: tenantConfig.graceDays,
+        },
       ),
       reads,
       billing: new Billing(db, licensing, stripe, {
         stripeLiveMode: tenantConfig.stripeLiveMode === true,
+        purchasePolicy: {
+          deploymentMode: tenantConfig.deploymentMode,
+          graceDays: tenantConfig.graceDays,
+        },
         resolveCustomer: (event) => stripe.resolveCustomer(event),
       }),
       auth: new Auth(db, tenantConfig, tenant),
     };
   };
-  const makeEnvironment = async (tenant: Tenant) => {
-    const runtime = await sandboxes.runtime(tenant);
+  const makeEnvironment = async (tenant: Tenant, reconciliation = false) => {
+    const runtime = await sandboxes.runtime(tenant, { reconciliation });
     return make(runtime.tenant, runtime.config, !!runtime.parentId);
   };
   const contexts = new WeakMap<FastifyRequest, TenantServices>();
@@ -441,6 +484,11 @@ export async function buildApp(
   let ticking = false,
     closing = false,
     tenantCursor = 0;
+  let lastBillingOwner: string | undefined;
+  let billingWindowDeadline = 0,
+    billingWindowTurns = 0,
+    billingBusy = false;
+  let billingIdle: Promise<boolean> | undefined;
   let tickIdle: Promise<void> | undefined;
   let markTickIdle!: () => void;
   const deliveryPool = new WebhookDeliveryPool((tenantId) =>
@@ -449,15 +497,116 @@ export async function buildApp(
       "Webhook work will retry later",
     ),
   );
-  app.addHook("onClose", async () => {
+  app.addHook("preClose", async () => {
     closing = true;
-    await tickIdle;
+    billingShutdown.abort();
+  });
+  app.addHook("onClose", async () => {
+    await Promise.allSettled([tickIdle, billingIdle]);
     await deliveryPool.close();
   });
-  const tenantTick = async (tenant: Tenant) => {
-    const s = await makeEnvironment(tenant);
-    if (s.config.localBilling || stripeConfigured(s.config))
-      await s.billing.run((event) => s.stripe.resolveSubscription(event));
+  const workerPublishers = () => db<Tenant>("tenants")
+    .orderBy("id")
+    .modify((q) => {
+      if (!hosted)
+        q.where((owned) => owned.where({ id: "primary" }).orWhereIn(
+            "id",
+            db("publisher_sandboxes").select("sandbox_tenant_id")
+              .where({ parent_tenant_id: "primary" }),
+          ));
+    });
+  const readyBillingWork = (table: "work" | "platform_work") => db(table)
+    .whereIn("state", ["pending", "running"])
+    .andWhere("available_at", "<=", Date.now())
+    .andWhere("lease_until", "<", Date.now());
+  const billingTurn = async (requestedTenant?: string, deadline = Infinity): Promise<boolean> => {
+    if (billingBusy || closing || performance.now() >= deadline) return false;
+    // Admission is synchronous. Manual requests do not create another provider
+    // lane or wait in an unbounded in-memory queue behind the scheduled worker.
+    billingBusy = true;
+    const work = (async () => {
+      const now = performance.now();
+      if (now >= billingWindowDeadline) {
+        billingWindowDeadline = now + billingBudgetMs;
+        billingWindowTurns = 0;
+      }
+      if (billingWindowTurns >= billingMaxOwners) return false;
+      const turnDeadline = Math.min(deadline, billingWindowDeadline);
+      const publishers = await workerPublishers().whereExists(
+        readyBillingWork("work")
+          .whereRaw("?? = ??", ["work.tenant_id", "tenants.id"]).select(db.raw("1")),
+      );
+      const owners: { key: string; tenant: Tenant | null }[] = [];
+      if (hosted && (config.localBilling || stripeConfigured(config)) &&
+          await readyBillingWork("platform_work").first("id"))
+        owners.push({ key: "platform", tenant: null });
+      for (const tenant of publishers) owners.push({ key: `tenant:${tenant.id}`, tenant });
+      const owner = owners.find((entry) => lastBillingOwner === undefined || entry.key > lastBillingOwner) ?? owners[0];
+      if (!owner || (requestedTenant !== undefined && owner.tenant?.id !== requestedTenant) ||
+          closing || performance.now() >= turnDeadline) return false;
+      let attempted = false;
+      try {
+        const s = owner.tenant === null ? undefined : await makeEnvironment(owner.tenant, true);
+        const remaining = Math.floor(turnDeadline - performance.now());
+        if (closing || remaining < 1) return false;
+        lastBillingOwner = owner.key;
+        billingWindowTurns++;
+        attempted = true;
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), remaining);
+        timer.unref();
+        const worker: WorkerQueueOptions = {
+          ...billingResources,
+          signal: AbortSignal.any([billingShutdown.signal, controller.signal]),
+          budgetMs: remaining,
+          maxRequests: billingMaxRequests,
+          onBeginApply: () => {
+            // Local apply has its own finite deadline and aggregate ceilings.
+            // Shutdown and lease cancellation remain armed throughout.
+            if (performance.now() >= turnDeadline) controller.abort();
+            clearTimeout(timer);
+          },
+          onResourceLimit: (details) => app.log.error(
+            { code: "billing_resource_limit", tenantId: owner.tenant?.id, ...details },
+            "Billing work requires operator resource-limit recovery",
+          ),
+        };
+        try {
+          if (owner.tenant === null) await platform.run(worker);
+          else if (s && (s.config.localBilling || stripeConfigured(s.config)))
+            await s.billing.run((event) => s.stripe.resolveSubscription(event), worker);
+        } finally {
+          clearTimeout(timer);
+        }
+      } catch (error) {
+        // An invalid owner's setup must not pin every later owner behind it.
+        if (!attempted) {
+          lastBillingOwner = owner.key;
+          billingWindowTurns++;
+        }
+        app.log.error(
+          { tenantId: owner.tenant?.id, code: "billing_worker_failed" },
+          "Billing work will retry on a later turn",
+        );
+        if (requestedTenant !== undefined) throw error;
+      }
+      return true;
+    })();
+    billingIdle = work;
+    try {
+      return await work;
+    } finally {
+      billingIdle = undefined;
+      billingBusy = false;
+    }
+  };
+  const tenantTick = async (tenant: Tenant, runBilling = true) => {
+    if (runBilling) {
+      check(config.serverRole !== "api", 409, "jobs_disabled", "Job execution is disabled for the API server role.");
+      await billingTurn(tenant.id);
+    }
+    if (closing) return;
+    const s = await makeEnvironment(tenant, true);
     const operations = new Operations(db, tenant.id);
     let cursor = notificationCursors.get(tenant.id) ?? null;
     for (let page = 0; page < 5; page++) {
@@ -524,19 +673,13 @@ export async function buildApp(
       markTickIdle = resolve;
     });
     try {
-      if (hosted && (config.localBilling || stripeConfigured(config))) await platform.run();
       await platformOutbox.run();
-      const publishers = await db<Tenant>("tenants")
-        .orderBy("id")
-        .modify((q) => {
-          if (!hosted)
-            q.where({ id: "primary" }).orWhereIn(
-              "id",
-              db("publisher_sandboxes")
-                .select("sandbox_tenant_id")
-                .where({ parent_tenant_id: "primary" }),
-            );
-        });
+      const publishers = await workerPublishers();
+      // Every caller shares the owner cursor, admission lane and budget window.
+      // A scheduled tick also stops at its own deadline if the window rolls over.
+      const billingDeadline = performance.now() + billingBudgetMs;
+      for (let attempted = 0; attempted < billingMaxOwners; attempted++)
+        if (!(await billingTurn(undefined, billingDeadline))) break;
       const start = publishers.length ? tenantCursor % publishers.length : 0;
       tenantCursor = publishers.length ? (start + 4) % publishers.length : 0;
       for (const tenant of [
@@ -544,7 +687,7 @@ export async function buildApp(
         ...publishers.slice(0, start),
       ]) {
         try {
-          await tenantTick(tenant);
+          await tenantTick(tenant, false);
         } catch {
           app.log.error(
             { tenantId: tenant.id, code: "tenant_worker_failed" },
@@ -634,9 +777,27 @@ export async function buildApp(
     "/api/v1/tenants/:tenant/updates/generic/:product/:target",
     "/api/v1/tenants/:tenant/packages/:product/assets/:assetId/:filename",
   ]);
+  const credentialRouteKey = (method: string, template: string) => {
+    const verb = method.toUpperCase();
+    return JSON.stringify([verb === "HEAD" ? "GET" : verb, template]);
+  };
+  const activationAdmissions = new Map<string, ReturnType<typeof app.createRateLimit>>();
   // Route-specific keys are selected before the rate-limit plugin builds its hooks.
   app.addHook("onRoute", (route) => {
     if (!credentialRoutes.has(route.url)) return;
+    const policy = route.config?.rateLimit;
+    if (route.url === "/api/v1/tenants/:tenant/activation" && policy && typeof policy === "object") {
+      const template = route.url;
+      for (const method of Array.isArray(route.method) ? route.method : [route.method]) {
+        const key = credentialRouteKey(method, template);
+        if (activationAdmissions.has(key)) continue;
+        activationAdmissions.set(key, app.createRateLimit({
+          ...(policy.max === undefined ? {} : { max: policy.max }),
+          ...(policy.timeWindow === undefined ? {} : { timeWindow: policy.timeWindow }),
+          keyGenerator: (req) => JSON.stringify([rateLimit.normalizeIP(req.ip), key]),
+        }));
+      }
+    }
     route.config = {
       ...route.config,
       rateLimit: {
@@ -684,6 +845,25 @@ export async function buildApp(
   });
   // Public and seller routes retain the plugin's normalized IP key, including IPv6 /64s.
   await app.register(rateLimit, { max: 1000, timeWindow: "1 minute" });
+  // Status uses its registered route ceiling before credential resolution.
+  // Other token routes retain a wider aggregate ceiling so installations sharing
+  // an IP can use their independent feed and download budgets.
+  // This root hook runs before the route limiter's database-backed key generator.
+  const credentialAdmission = app.createRateLimit({
+    max: 1000,
+    timeWindow: "1 minute",
+    keyGenerator: (req) => rateLimit.normalizeIP(req.ip),
+  });
+  app.addHook("onRequest", async (req, reply) => {
+    const template = req.routeOptions.url ?? "";
+    if (!credentialRoutes.has(template)) return;
+    const admission = activationAdmissions.get(credentialRouteKey(req.method, template)) ?? credentialAdmission;
+    const limit = await admission(req);
+    if (!limit.isAllowed && limit.isExceeded) {
+      reply.header("retry-after", limit.ttlInSeconds);
+      throw new AppError(429, "rate_limited", "Too many requests. Please retry later.");
+    }
+  });
   app.addHook("onRequest", async (req, reply) => {
     reply.header("x-request-id", req.id);
     if (req.url.startsWith("/api/")) reply.header("cache-control", "no-store");
@@ -1025,7 +1205,7 @@ export async function buildApp(
         const state = await sandboxes.describe(tenant.id);
         if (state?.mode !== "stripe") return { ok: true, ignored: true };
         await (
-          await makeEnvironment(tenant)
+          await makeEnvironment(tenant, true)
         ).billing.receive(event as BillingEvent);
         return { ok: true };
       });
@@ -1123,7 +1303,7 @@ export async function buildApp(
           reply.raw.once("close", () => {
             if (!activeNativeUploads.has(req)) releaseDisk(req);
           });
-          await requireFreeDisk(inFlightDiskBytes);
+          await requireFreeDisk(inFlightDiskBytes + inFlightReadDiskBytes);
           reserve(
             req,
             backend.putFile && backend.getToFile

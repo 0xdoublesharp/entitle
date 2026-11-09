@@ -2,6 +2,8 @@ import test, { type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID, createHash } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
+import fs from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import { buildApp } from "../src/app.ts";
 import { loadConfig } from "../src/config.ts";
 import { createTenant, migrate } from "../src/db.ts";
@@ -1080,6 +1082,98 @@ test("asset downloads reserve 128 KiB through concurrent verified spools and rec
     ).statusCode,
     403,
   );
+});
+
+test("concurrent cold downloads reserve disk before transfer while cache hits and released capacity remain available", async (t) => {
+  const f = await fixture(t);
+  const paid = await f.purchase("generic");
+  const bytes = Buffer.alloc(1024, 5);
+  const urls: string[] = [];
+  for (const version of ["1.0.0", "1.1.0"]) {
+    const publication = await f.app.inject({
+      method: "POST",
+      url: `${prefix}/seller/assets/generic-product/${version}`,
+      headers: {
+        ...f.headers,
+        "content-type": "application/octet-stream",
+        "x-release-metadata": Buffer.from(
+          JSON.stringify({ target: "any", filename: "disk.bin", changelog: "" }),
+        ).toString("base64url"),
+      },
+      payload: bytes,
+    });
+    assert.equal(publication.statusCode, 200, publication.body);
+    urls.push(`${prefix}/packages/generic-product/assets/${publication.json().asset.id}/disk.bin`);
+  }
+  const activation = await f.post(
+    "/activate",
+    { key: paid.key, product: paid.product.slug, installationId: "disk-cache-installation" },
+    {},
+  );
+  assert.equal(activation.statusCode, 200, activation.body);
+  const headers = { authorization: `Bearer ${activation.json().token}` };
+  const floor = 4096;
+  f.config.minDiskFreeBytes = floor;
+  let available = BigInt(floor + 1.5 * bytes.length);
+  const actualSpace = await fs.statfs(f.config.storage, { bigint: true });
+  const disk = t.mock.method(
+    fs,
+    "statfs",
+    (async () => ({ ...actualSpace, bavail: available, bsize: 1n })) as unknown as typeof fs.statfs,
+  );
+  syncBuiltinESMExports();
+  t.after(() => {
+    disk.mock.restore();
+    syncBuiltinESMExports();
+  });
+  let release!: () => void, started!: () => void;
+  const blocked = new Promise<void>((resolve) => { release = resolve; });
+  const ready = new Promise<void>((resolve) => { started = resolve; });
+  let reads = 0;
+  const original: InMemoryArtifactStore["get"] = f.store.get.bind(f.store);
+  t.mock.method(f.store, "get", async (...args: Parameters<typeof original>) => {
+    reads++;
+    if (reads === 1) {
+      started();
+      await blocked;
+    }
+    return original(...args);
+  });
+  const first = f.app.inject({ url: urls[0]!, headers });
+  await ready;
+  try {
+    const second = await f.app.inject({ url: urls[1]!, headers });
+    assert.equal(second.statusCode, 503);
+    assert.equal(second.json().error.code, "disk_capacity");
+    assert.equal(reads, 1);
+    available = BigInt(floor + 2.5 * bytes.length);
+    const put = t.mock.method(f.store, "put", f.store.put.bind(f.store));
+    const upload = await f.app.inject({
+      method: "POST",
+      url: `${prefix}/seller/assets/generic-product/1.2.0`,
+      headers: {
+        ...f.headers,
+        "content-type": "application/octet-stream",
+        "x-release-metadata": Buffer.from(
+          JSON.stringify({ target: "any", filename: "disk.bin", changelog: "" }),
+        ).toString("base64url"),
+      },
+      payload: bytes,
+    });
+    assert.equal(upload.statusCode, 503, upload.body);
+    assert.equal(upload.json().error.code, "disk_capacity");
+    assert.equal(put.mock.callCount(), 0, "publication includes pending read copies before storing an object");
+  } finally {
+    release();
+    assert.equal((await first).statusCode, 200);
+  }
+  available = BigInt(floor);
+  assert.equal((await f.app.inject({ url: urls[0]!, headers })).statusCode, 200);
+  assert.equal(reads, 1, "cached bytes do not reserve another disk copy");
+  available = BigInt(floor + 1.5 * bytes.length);
+  const retry = await f.app.inject({ url: urls[1]!, headers });
+  assert.equal(retry.statusCode, 200, retry.body);
+  assert.equal(reads, 2, "completed and rejected reservations are released");
 });
 
 test("native uploads use a separate file cap and public info reports it", async (t) => {

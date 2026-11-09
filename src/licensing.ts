@@ -21,6 +21,21 @@ export function normalizeSite(input: string) {
   const path = url.pathname.replace(/\/+$/, "");
   return `${url.hostname.toLowerCase()}${url.port ? `:${url.port}` : ""}${path}`;
 }
+export function productActivationKind(product: { framework: unknown; framework_config: string }) {
+  const framework = validateFramework(product.framework);
+  return activationKind(framework, validateFrameworkConfig(framework, JSON.parse(product.framework_config)));
+}
+export function installationExempt(site: string, kind: "site" | "device", suffixes: readonly string[]) {
+  if (kind !== "site" || !suffixes.length) return false;
+  try {
+    const url = new URL(`https://${site}`);
+    if (url.username || url.password) return false;
+    const host = url.hostname.toLowerCase();
+    return suffixes.some((suffix) => host === suffix || host.endsWith(`.${suffix}`));
+  } catch {
+    return false;
+  }
+}
 export async function effectiveLicense(
   l: License,
   tx: Tx,
@@ -184,14 +199,12 @@ export class Licenses {
         .where({ tenant_id: this.tenant.id, id: l.product_id, slug: product })
         .first();
       check(p, 403, "wrong_product", "License does not cover this product.");
-      const framework = validateFramework(p.framework);
-      const kind = activationKind(framework, validateFrameworkConfig(framework, JSON.parse(p.framework_config)));
+      const kind = productActivationKind(p);
       let normalized: string, exempt = false;
       if (kind === "site") {
         check(siteUrl, 400, "invalid_site", "A site URL is required for this product.");
         normalized = normalizeSite(siteUrl);
-        const host = new URL(siteUrl).hostname.toLowerCase();
-        exempt = this.exemptSuffixes.some(s => host === s || host.endsWith(`.${s}`));
+        exempt = installationExempt(normalized, kind, this.exemptSuffixes);
       } else {
         check(siteUrl === undefined, 400, "invalid_activation_input", "Device activations do not accept a site URL.");
         normalized = `device:${installationId}`;
@@ -205,6 +218,32 @@ export class Licenses {
       const existing = await tx<Installation>("installations")
         .where({ tenant_id: this.tenant.id, license_id: l.id, installation_id: installationId })
         .first();
+      let count = 0;
+      // The license write above serializes policy refresh and seat admission.
+      // Bound both result sets and update placeholders for development installs.
+      let after: string | undefined;
+      while (true) {
+        const query = tx<Installation>("installations")
+          .where({ tenant_id: this.tenant.id, license_id: l.id, active: 1 })
+          .orderBy("id").limit(500).select("id", "site_url", "exempt");
+        if (after !== undefined) query.andWhere("id", ">", after);
+        const active = await query;
+        const changed = [[], []] as [string[], string[]];
+        for (const installation of active) {
+          const current = installationExempt(installation.site_url, kind, this.exemptSuffixes) ? 1 : 0;
+          if (!current) count++;
+          if (Number(installation.exempt) !== current) changed[current].push(installation.id);
+        }
+        for (const [exempt, ids] of changed.entries()) {
+          if (!ids.length) continue;
+          await tx("installations")
+            .where({ tenant_id: this.tenant.id, license_id: l.id, active: 1 })
+            .whereIn("id", ids)
+            .update({ exempt });
+        }
+        if (active.length < 500) break;
+        after = active.at(-1)!.id;
+      }
       if (existing?.active) {
         check(
           existing.site_url === normalized,
@@ -214,14 +253,8 @@ export class Licenses {
         );
         return this.activationResult(l, existing);
       }
-      const count = await tx("installations")
-        .where({ tenant_id: this.tenant.id, license_id: l.id, active: 1, exempt: 0 })
-        .count<{ count: number | string }>({ count: "id" })
-        .first();
-      // COUNT without GROUP BY always returns one row, including zero matches,
-      // on every supported engine. Missing results must not imply free seats.
       check(
-        exempt || Number(count!.count) < l.site_allowance,
+        exempt || count < l.site_allowance,
         409,
         "site_limit",
         "The installation allowance has been reached. Deactivate another installation first.",
@@ -267,7 +300,12 @@ export class Licenses {
     );
     const l = await tx<License>("licenses").where({ tenant_id: this.tenant.id, id: i.license_id }).first();
     check(l, 401, "invalid_activation", "Activation token is invalid.");
-    return { installation: i, license: await this.effective(l, tx) };
+    const product = await tx("products").where({ tenant_id: this.tenant.id, id: l.product_id }).first("framework", "framework_config");
+    check(product, 401, "invalid_activation", "Activation product is invalid.");
+    return {
+      installation: { ...i, exempt: installationExempt(i.site_url, productActivationKind(product), this.exemptSuffixes) ? 1 : 0 },
+      license: await this.effective(l, tx),
+    };
   }
   async status(token: string) {
     const { license: l, installation: i } = await this.resolve(token);

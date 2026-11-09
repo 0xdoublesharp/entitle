@@ -8,7 +8,19 @@ import type { SellerSession } from "./platform-auth.ts";
 import type { BillingEvent } from "./billing.ts";
 import { hash, random, seal, unseal } from "./crypto.ts";
 import { check } from "./errors.ts";
-import { runQueue } from "./queue.ts";
+import {
+  assertQueueLease,
+  DeferredJob,
+  runQueue,
+  type WorkerQueueOptions,
+} from "./queue.ts";
+import {
+  workerTurn,
+  withWorkerTurn,
+  stripeWorkerHttpClient,
+  type WorkerTurn,
+  type WorkerFact,
+} from "./worker-continuation.ts";
 
 type PlatformConfig = Config & {
   stripeConnectClientId?: string;
@@ -61,6 +73,115 @@ interface CheckoutGuard {
 const terminal = (status: string) =>
   ["canceled", "incomplete_expired"].includes(status);
 
+interface PlatformEvidence {
+  invoice: Stripe.Invoice;
+  subscriptionId: string;
+  lines: Stripe.InvoiceLineItem[];
+  cashRevoked?: boolean;
+  creditApplied?: number;
+}
+interface PlatformTask {
+  kind:
+    | "price"
+    | "current"
+    | "selected"
+    | "subscriptions"
+    | "invoices"
+    | "lines"
+    | "payments"
+    | "charges"
+    | "charge"
+    | "disputes"
+    | "balances";
+  id?: string;
+  invoiceId?: string;
+  after?: string;
+  tier?: PlatformTier;
+}
+interface PlatformScan {
+  identity: string;
+  tenant: PlatformTenant;
+  revision: number;
+  prices: [string, PlatformTier][];
+  phase: "selection" | "evidence" | "ready";
+  head: number;
+  tail: number;
+  current?: Stripe.Subscription;
+  selected?: Stripe.Subscription;
+}
+interface PlatformChargeFact {
+  invoiceId: string;
+  id: string;
+  paid: boolean;
+  refunded: number;
+  disputed: boolean;
+}
+const platformSlot = "platform-reconcile";
+
+// Persist only the fields used by entitlement calculation, never provider
+// envelopes, metadata, customer contact details or checkout/payment secrets.
+function subscriptionFact(sub: Stripe.Subscription): Stripe.Subscription {
+  return {
+    id: sub.id,
+    customer: providerId(sub.customer),
+    status: sub.status,
+    livemode: sub.livemode,
+    created: sub.created,
+    items: {
+      data: sub.items.data.map((item) => ({ price: { id: item.price.id } })),
+    },
+  } as Stripe.Subscription;
+}
+function invoiceFact(invoice: Stripe.Invoice): Stripe.Invoice {
+  return {
+    id: invoice.id,
+    customer: providerId(invoice.customer),
+    parent: {
+      subscription_details: {
+        subscription: providerId(
+          invoice.parent?.subscription_details?.subscription,
+        ),
+      },
+    },
+    livemode: invoice.livemode,
+    status: invoice.status,
+    amount_paid: invoice.amount_paid,
+    amount_due: invoice.amount_due,
+    amount_remaining: invoice.amount_remaining,
+    total: invoice.total,
+    currency: invoice.currency,
+    created: invoice.created,
+    status_transitions: { paid_at: invoice.status_transitions?.paid_at },
+  } as Stripe.Invoice;
+}
+function lineFact(line: Stripe.InvoiceLineItem): Stripe.InvoiceLineItem {
+  const details = line.parent?.subscription_item_details;
+  const credited = details?.proration_details?.credited_items;
+  return {
+    id: line.id,
+    amount: line.amount,
+    period: { start: line.period.start, end: line.period.end },
+    pricing: {
+      price_details: { price: providerId(line.pricing?.price_details?.price) },
+    },
+    parent: details
+      ? {
+          subscription_item_details: {
+            proration: details.proration,
+            proration_details: credited
+              ? {
+                  credited_items: {
+                    invoice: credited.invoice,
+                    invoice_line_items: [...credited.invoice_line_items],
+                  },
+                }
+              : null,
+          },
+        }
+      : null,
+  } as Stripe.InvoiceLineItem;
+}
+
 export class PlatformBilling {
   readonly db: DB;
   readonly config: PlatformConfig;
@@ -83,6 +204,7 @@ export class PlatformBilling {
       apiVersion: "2026-09-30.endive",
       maxNetworkRetries: 2,
       timeout: 20000,
+      httpClient: stripeWorkerHttpClient(),
     }));
   }
   set stripe(client: Stripe) {
@@ -842,6 +964,501 @@ export class PlatformBilling {
       "Pro requires an active paid monthly recurring Stripe price.",
     );
   }
+  private async workerEvidence(tenantId: string, turn: WorkerTurn) {
+    const identity = hash(
+      JSON.stringify([
+        tenantId,
+        this.config.stripeSecret,
+        this.config.stripeLiveMode ?? false,
+        this.priceIds(),
+        this.config.graceDays ?? 7,
+        this.config.paidMaxProducts ?? 20,
+        this.config.paidStorageBytes ?? 1024 ** 3,
+      ]),
+    );
+    let state = await turn.state<PlatformScan | null>(platformSlot, null);
+    if (state) turn.array(state.prices);
+    const tenant = await this.db<PlatformTenant>("tenants")
+      .where({ id: tenantId })
+      .first();
+    check(tenant, 404, "tenant_not_found", "Tenant was not found.");
+    if (
+      state &&
+      (state.identity !== identity ||
+        state.revision !== Number(tenant.platform_billing_revision) ||
+        state.tenant.platform_customer_id !== tenant.platform_customer_id ||
+        (state.tenant.platform_subscription_id !==
+          tenant.platform_subscription_id &&
+          state.selected?.id !== tenant.platform_subscription_id))
+    ) {
+      await turn.reset(platformSlot);
+      throw new DeferredJob(Date.now() + 1000);
+    }
+    const save = async (
+      tasks: PlatformTask[] = [],
+      facts: WorkerFact[] = [],
+    ) => {
+      const queued = new Set<string>();
+      for (const task of tasks) {
+        const id = hash(JSON.stringify(task));
+        if (queued.has(id) || (await turn.fact(platformSlot, "queued", id)))
+          continue;
+        queued.add(id);
+        facts.push({ kind: "task", id: String(state!.tail++), value: task });
+        facts.push({ kind: "queued", id, value: true });
+      }
+      await turn.save(platformSlot, state, facts, state!.phase === "ready");
+    };
+    if (!state) {
+      const revision = tenant.platform_customer_id
+        ? await this.db.transaction(async (tx) => {
+            await lock(tx, "billing");
+            await assertQueueLease(tx);
+            await tx("tenants")
+              .where({ id: tenantId })
+              .increment("platform_billing_revision", 1);
+            return Number(
+              (await tx("tenants").where({ id: tenantId }).first())
+                .platform_billing_revision,
+            );
+          })
+        : Number(tenant.platform_billing_revision);
+      const prices = new Map<string, PlatformTier>();
+      if (this.config.platformPriceId)
+        prices.set(this.config.platformPriceId, "starter");
+      if (
+        this.config.platformProStripePriceId &&
+        !prices.has(this.config.platformProStripePriceId)
+      )
+        prices.set(this.config.platformProStripePriceId, "pro");
+      const history = await turn.rows<PriceHistory>(this.db<PriceHistory>(
+        "platform_price_history",
+      ).where({
+        tenant_id: tenantId,
+        livemode: Number(this.config.stripeLiveMode ?? false),
+      }));
+      for (const entry of history) prices.set(entry.price_id, entry.tier);
+      const established = new Set(history.map((entry) => entry.price_id));
+      const legacy = await turn.rows<PlatformGrant>(this.db<PlatformGrant>("platform_grants")
+        .where({ tenant_id: tenantId })
+        .select("price_id", "tier"));
+      state = {
+        identity,
+        tenant,
+        revision,
+        prices: [...prices],
+        phase: "selection",
+        head: 0,
+        tail: 0,
+      };
+      if (tenant.platform_customer_id)
+        await save([
+          ...legacy
+            .filter((grant) => !established.has(grant.price_id))
+            .map((grant) => ({
+              kind: "price" as const,
+              id: grant.price_id,
+              tier: grant.tier,
+            })),
+          tenant.platform_subscription_id
+            ? { kind: "current", id: tenant.platform_subscription_id }
+            : { kind: "subscriptions" },
+        ]);
+      else {
+        state.phase = "ready";
+        await save();
+      }
+    }
+    const next = (
+      task: PlatformTask,
+      page: { data: { id: string }[]; has_more: boolean },
+    ) => {
+      if (!page.has_more) return [];
+      const after = page.data.at(-1)?.id;
+      check(
+        after && after !== task.after,
+        502,
+        "platform_pagination",
+        "Provider pagination did not advance.",
+      );
+      return [{ ...task, after }];
+    };
+    while (state.phase !== "ready") {
+      if (state.head === state.tail) {
+        if (state.phase === "selection" && state.selected) {
+          state.phase = "evidence";
+          const stored = await turn.rows<PlatformGrant>(this.db<PlatformGrant>("platform_grants")
+            .where({ tenant_id: tenantId })
+            .select("subscription_id"));
+          await save(
+            [
+              ...new Set([
+                state.selected.id,
+                ...stored.map((grant) => grant.subscription_id),
+              ]),
+            ].map((id) => ({ kind: "invoices", id })),
+          );
+          continue;
+        }
+        state.phase = "ready";
+        await save();
+        break;
+      }
+      const task = await turn.fact<PlatformTask>(
+        platformSlot,
+        "task",
+        String(state.head),
+      );
+      check(
+        task,
+        500,
+        "platform_checkpoint",
+        "Platform worker checkpoint is incomplete.",
+      );
+      const facts: WorkerFact[] = [];
+      let tasks: PlatformTask[] = [];
+      const page = {
+        limit: 100,
+        ...(task.after ? { starting_after: task.after } : {}),
+      };
+      switch (task.kind) {
+        case "price": {
+          const price = await turn.read(async (options) =>
+            this.stripe.prices.retrieve(task.id!, {}, options),
+          );
+          this.mode(price.livemode);
+          await this.db.transaction(async (tx) => {
+            await lock(tx, "billing");
+            await assertQueueLease(tx);
+            await this.rememberPrice(tx, tenantId, task.id!, task.tier!);
+          });
+          const prices = new Map(state.prices);
+          prices.set(task.id!, task.tier!);
+          state.prices = [...prices];
+          turn.array(state.prices);
+          break;
+        }
+        case "current":
+        case "selected": {
+          const sub = await turn.read(async (options) =>
+            this.stripe.subscriptions.retrieve(task.id!, {}, options),
+          );
+          this.mode(sub.livemode);
+          check(
+            providerId(sub.customer) === state.tenant.platform_customer_id,
+            409,
+            "platform_customer_conflict",
+            "Subscription belongs to another platform customer.",
+          );
+          state.selected = subscriptionFact(sub);
+          if (task.kind === "current") {
+            state.current = state.selected;
+            if (terminal(sub.status)) tasks.push({ kind: "subscriptions" });
+          }
+          break;
+        }
+        case "subscriptions": {
+          const result = await turn.read(async (options) =>
+            this.stripe.subscriptions.list(
+              {
+                customer: state.tenant.platform_customer_id!,
+                status: "all",
+                ...page,
+              },
+              options,
+            ),
+          );
+          const prices = new Map(state.prices);
+          for (const candidate of result.data) {
+            const selected = state.selected;
+            if (
+              providerId(candidate.customer) ===
+                state.tenant.platform_customer_id &&
+              candidate.items.data.some((item) => prices.has(item.price.id)) &&
+              (!selected ||
+                (candidate.created ?? 0) > (selected.created ?? 0) ||
+                ((candidate.created ?? 0) === (selected.created ?? 0) &&
+                  candidate.id !== selected.id &&
+                  terminal(selected.status) &&
+                  !terminal(candidate.status)))
+            )
+              state.selected = subscriptionFact(candidate);
+          }
+          tasks = next(task, result);
+          if (
+            !result.has_more &&
+            state.selected &&
+            state.selected.id !== state.current?.id
+          )
+            tasks.push({ kind: "selected", id: state.selected.id });
+          break;
+        }
+        case "invoices": {
+          const result = await turn.read(async (options) =>
+            this.stripe.invoices.list(
+              { subscription: task.id!, ...page },
+              options,
+            ),
+          );
+          tasks = next(task, result);
+          for (const invoice of result.data) {
+            this.mode(invoice.livemode);
+            if (
+              providerId(invoice.customer) !==
+                state.tenant.platform_customer_id ||
+              providerId(invoice.parent?.subscription_details?.subscription) !==
+                task.id
+            )
+              continue;
+            facts.push({
+              kind: "invoice",
+              id: invoice.id,
+              value: { invoice: invoiceFact(invoice), subscriptionId: task.id },
+            });
+            if (invoice.status !== "paid") continue;
+            if (
+              invoice.amount_paid > 0 ||
+              (invoice.total !== undefined &&
+                invoice.amount_due === 0 &&
+                invoice.amount_remaining === 0)
+            )
+              tasks.push({ kind: "lines", id: invoice.id });
+            if (invoice.amount_paid > 0)
+              tasks.push({ kind: "payments", id: invoice.id });
+            else if (
+              invoice.total > 0 &&
+              invoice.amount_due === 0 &&
+              invoice.amount_remaining === 0
+            )
+              tasks.push({ kind: "balances", id: invoice.id });
+          }
+          break;
+        }
+        case "lines": {
+          const result = await turn.read(async (options) =>
+            this.stripe.invoices.listLineItems(task.id!, page, options),
+          );
+          tasks = next(task, result);
+          for (const line of result.data)
+            facts.push({
+              kind: "line",
+              id: hash(JSON.stringify([task.id, line.id])),
+              value: { invoiceId: task.id, line: lineFact(line) },
+            });
+          break;
+        }
+        case "payments": {
+          const result = await turn.read(async (options) =>
+            this.stripe.invoicePayments.list(
+              { invoice: task.id!, status: "paid", ...page },
+              options,
+            ),
+          );
+          tasks = next(task, result);
+          for (const payment of result.data) {
+            const intent = providerId(payment.payment.payment_intent);
+            const charge = providerId(payment.payment.charge);
+            if (intent)
+              tasks.push({ kind: "charges", invoiceId: task.id!, id: intent });
+            else if (charge)
+              tasks.push({ kind: "charge", invoiceId: task.id!, id: charge });
+          }
+          break;
+        }
+        case "charges":
+        case "charge": {
+          const result =
+            task.kind === "charges"
+              ? await turn.read(async (options) =>
+                  this.stripe.charges.list(
+                    { payment_intent: task.id!, ...page },
+                    options,
+                  ),
+                )
+              : {
+                  data: [
+                    await turn.read(async (options) =>
+                      this.stripe.charges.retrieve(task.id!, {}, options),
+                    ),
+                  ],
+                  has_more: false,
+                };
+          tasks = next(task, result);
+          for (const charge of result.data) {
+            this.mode(charge.livemode);
+            facts.push({
+              kind: "charge",
+              id: hash(JSON.stringify([task.invoiceId, charge.id])),
+              value: {
+                invoiceId: task.invoiceId!,
+                id: charge.id,
+                paid: charge.paid,
+                refunded: charge.amount_refunded,
+                disputed: charge.disputed,
+              } satisfies PlatformChargeFact,
+            });
+            if (charge.paid && charge.disputed)
+              tasks.push({
+                kind: "disputes",
+                invoiceId: task.invoiceId!,
+                id: charge.id,
+              });
+          }
+          break;
+        }
+        case "disputes": {
+          const result = await turn.read(async (options) =>
+            this.stripe.disputes.list({ charge: task.id!, ...page }, options),
+          );
+          tasks = next(task, result);
+          for (const dispute of result.data)
+            facts.push({
+              kind: "dispute",
+              id: hash(JSON.stringify([task.invoiceId, task.id, dispute.id])),
+              value: {
+                invoiceId: task.invoiceId,
+                chargeId: task.id,
+                status: dispute.status,
+              },
+            });
+          break;
+        }
+        case "balances": {
+          const result = await turn.read(async (options) =>
+            this.stripe.customers.listBalanceTransactions(
+              state.tenant.platform_customer_id!,
+              page,
+              options,
+            ),
+          );
+          tasks = next(task, result);
+          const invoice = await turn.fact<{ invoice: Stripe.Invoice }>(
+            platformSlot,
+            "invoice",
+            task.id!,
+          );
+          check(
+            invoice,
+            500,
+            "platform_checkpoint",
+            "Platform invoice checkpoint is incomplete.",
+          );
+          for (const transaction of result.data) {
+            if (
+              providerId(transaction.customer) !==
+                state.tenant.platform_customer_id ||
+              providerId(transaction.invoice) !== task.id ||
+              transaction.currency !== invoice.invoice.currency
+            )
+              continue;
+            this.mode(transaction.livemode);
+            if (
+              ["applied_to_invoice", "unapplied_from_invoice"].includes(
+                transaction.type,
+              )
+            )
+              facts.push({
+                kind: "balance",
+                id: hash(JSON.stringify([task.id, transaction.id])),
+                value: { invoiceId: task.id, amount: transaction.amount },
+              });
+          }
+          break;
+        }
+      }
+      state.head++;
+      await save(tasks, facts);
+    }
+    turn.beginApply();
+    const invoices = await turn.facts<{
+      invoice: Stripe.Invoice;
+      subscriptionId: string;
+    }>(platformSlot, "invoice");
+    const lines = await turn.facts<{
+      invoiceId: string;
+      line: Stripe.InvoiceLineItem;
+    }>(platformSlot, "line");
+    const charges = await turn.facts<PlatformChargeFact>(
+      platformSlot,
+      "charge",
+    );
+    const disputes = await turn.facts<{
+      invoiceId: string;
+      chargeId: string;
+      status: string;
+    }>(platformSlot, "dispute");
+    const balances = await turn.facts<{ invoiceId: string; amount: number }>(
+      platformSlot,
+      "balance",
+    );
+    const group = <T>(values: T[], key: (value: T) => string) => {
+      turn.work(values.length);
+      const result = new Map<string, T[]>();
+      for (const value of values) {
+        turn.work();
+        const id = key(value);
+        const entries = result.get(id) ?? [];
+        entries.push(value);
+        result.set(id, entries);
+      }
+      return result;
+    };
+    const invoiceLines = group(lines, (line) => line.invoiceId);
+    const invoiceCharges = group(
+      charges.filter((charge) => charge.paid),
+      (charge) => charge.invoiceId,
+    );
+    const chargeDisputes = group(disputes, (dispute) =>
+      JSON.stringify([dispute.invoiceId, dispute.chargeId]),
+    );
+    const invoiceBalances = group(balances, (balance) => balance.invoiceId);
+    const evidence: PlatformEvidence[] = invoices.map((entry) => {
+      turn.work();
+      const paidCharges = invoiceCharges.get(entry.invoice.id) ?? [];
+      turn.work(paidCharges.length + (invoiceLines.get(entry.invoice.id)?.length ?? 0) +
+        (invoiceBalances.get(entry.invoice.id)?.length ?? 0));
+      const refunded = paidCharges.reduce(
+        (sum, charge) => sum + charge.refunded,
+        0,
+      );
+      const disputed = paidCharges.some((charge) => {
+        turn.work();
+        if (!charge.disputed) return false;
+        const found =
+          chargeDisputes.get(JSON.stringify([entry.invoice.id, charge.id])) ??
+          [];
+        turn.work(found.length);
+        return (
+          !found.length ||
+          found.some(
+            (dispute) => !["won", "warning_closed"].includes(dispute.status),
+          )
+        );
+      });
+      return {
+        ...entry,
+        lines: (invoiceLines.get(entry.invoice.id) ?? []).map(
+          (line) => line.line,
+        ),
+        cashRevoked:
+          disputed ||
+          (refunded > 0 &&
+            refunded >=
+              Math.max(entry.invoice.amount_paid, entry.invoice.total ?? 0)),
+        creditApplied: (invoiceBalances.get(entry.invoice.id) ?? []).reduce(
+          (sum, balance) => sum + balance.amount,
+          0,
+        ),
+      };
+    });
+    return {
+      tenant: state.tenant,
+      revision: state.revision,
+      prices: new Map(state.prices),
+      sub: state.selected,
+      evidence,
+    };
+  }
   private async invoiceRevoked(invoice: Stripe.Invoice): Promise<boolean> {
     let refunded = 0,
       disputed = false;
@@ -897,6 +1514,7 @@ export class PlatformBilling {
     const details = line.parent?.subscription_item_details;
     const credited = details?.proration_details?.credited_items;
     if (line.amount >= 0 || !details?.proration || !credited) return [];
+    workerTurn()?.work(grants.size * Math.max(1, credited.invoice_line_items.length) + grants.size);
     const priceId = providerId(line.pricing?.price_details?.price);
     return [...grants.values()].filter(
       (grant) =>
@@ -916,7 +1534,9 @@ export class PlatformBilling {
     subscriptionId: string,
     prices: Map<string, PlatformTier>,
     grants: Map<string, PlatformGrant>,
+    appliedBalance?: number,
   ): Promise<boolean> {
+    workerTurn()?.work(lines.length * 2);
     const positive = lines
       .filter(
         (line) =>
@@ -928,6 +1548,7 @@ export class PlatformBilling {
     if (!positive || invoice.amount_due !== 0 || invoice.amount_remaining !== 0)
       return false;
     if (invoice.total > 0) {
+      if (appliedBalance !== undefined) return appliedBalance >= invoice.total;
       // This proves application, not the original cash provenance of the
       // customer's credit. Refund/dispute operations must inspect and remove
       // reusable credit, including proration/credit-note credit. Clearing a
@@ -962,70 +1583,82 @@ export class PlatformBilling {
   }
   async reconcile(tenantId: string): Promise<void> {
     this.external();
-    const tenant = await this.db<PlatformTenant>("tenants")
-      .where({ id: tenantId })
-      .first();
+    const turn = workerTurn();
+    const collected = turn
+      ? await this.workerEvidence(tenantId, turn)
+      : undefined;
+    const tenant =
+      collected?.tenant ??
+      (await this.db<PlatformTenant>("tenants")
+        .where({ id: tenantId })
+        .first());
     check(tenant, 404, "tenant_not_found", "Tenant was not found.");
     if (!tenant.platform_customer_id) return;
     // Claim before HTTP. A newer canonical snapshot owns the write even when an
     // older event's HTTP response arrives last. Provider calls never hold locks.
-    const revision = await this.db.transaction(async (tx) => {
-      await lock(tx, "billing");
-      await tx("tenants")
-        .where({ id: tenantId })
-        .increment("platform_billing_revision", 1);
-      return Number(
-        (await tx("tenants").where({ id: tenantId }).first())
-          .platform_billing_revision,
-      );
-    });
-    const prices = await this.knownPrices(tenantId);
-    const sub = await this.subscription(tenant, prices);
+    const revision =
+      collected?.revision ??
+      (await this.db.transaction(async (tx) => {
+        await lock(tx, "billing");
+        await assertQueueLease(tx);
+        await tx("tenants")
+          .where({ id: tenantId })
+          .increment("platform_billing_revision", 1);
+        return Number(
+          (await tx("tenants").where({ id: tenantId }).first())
+            .platform_billing_revision,
+        );
+      }));
+    const prices = collected?.prices ?? (await this.knownPrices(tenantId));
+    const sub = collected
+      ? collected.sub
+      : await this.subscription(tenant, prices);
     if (!sub) return;
     const subscriptionId = sub.id;
-    const stored = await this.db<PlatformGrant>("platform_grants").where({
+    const storedQuery = this.db<PlatformGrant>("platform_grants").where({
       tenant_id: tenantId,
     });
+    const stored = turn ? await turn.rows<PlatformGrant>(storedQuery) : await storedQuery;
+    turn?.records(prices.size);
+    turn?.work(stored.length);
     const subscriptions = new Set([
       subscriptionId,
       ...stored.map((g) => g.subscription_id),
     ]);
     const grants = new Map<string, PlatformGrant>();
-    const evidence: {
-      invoice: Stripe.Invoice;
-      subscriptionId: string;
-      lines: Stripe.InvoiceLineItem[];
-    }[] = [];
-    for (const selected of subscriptions) {
-      for await (const invoice of this.stripe.invoices.list({
-        subscription: selected,
-        limit: 100,
-      })) {
-        this.mode(invoice.livemode);
-        if (
-          providerId(invoice.customer) !== tenant.platform_customer_id ||
-          providerId(invoice.parent?.subscription_details?.subscription) !==
-            selected
-        )
-          continue;
-        const lines: Stripe.InvoiceLineItem[] = [];
-        if (
-          invoice.status === "paid" &&
-          (invoice.amount_paid > 0 ||
-            (invoice.total !== undefined &&
-              invoice.amount_due === 0 &&
-              invoice.amount_remaining === 0))
-        )
-          for await (const line of this.stripe.invoices.listLineItems(
-            invoice.id,
-            { limit: 100 },
-          ))
-            lines.push(line);
-        evidence.push({ invoice, subscriptionId: selected, lines });
+    const evidence: PlatformEvidence[] = collected?.evidence ?? [];
+    if (!collected)
+      for (const selected of subscriptions) {
+        for await (const invoice of this.stripe.invoices.list({
+          subscription: selected,
+          limit: 100,
+        })) {
+          this.mode(invoice.livemode);
+          if (
+            providerId(invoice.customer) !== tenant.platform_customer_id ||
+            providerId(invoice.parent?.subscription_details?.subscription) !==
+              selected
+          )
+            continue;
+          const lines: Stripe.InvoiceLineItem[] = [];
+          if (
+            invoice.status === "paid" &&
+            (invoice.amount_paid > 0 ||
+              (invoice.total !== undefined &&
+                invoice.amount_due === 0 &&
+                invoice.amount_remaining === 0))
+          )
+            for await (const line of this.stripe.invoices.listLineItems(
+              invoice.id,
+              { limit: 100 },
+            ))
+              lines.push(line);
+          evidence.push({ invoice, subscriptionId: selected, lines });
+        }
       }
-    }
     // Cash settlements first. Credit-only invoices may refer to their original
     // paid debits, including debits returned later by the paginated invoice API.
+    turn?.work(evidence.length * Math.max(1, Math.ceil(Math.log2(evidence.length + 1))));
     evidence.sort(
       (a, b) =>
         Number(b.invoice.amount_paid > 0) - Number(a.invoice.amount_paid > 0) ||
@@ -1033,19 +1666,36 @@ export class PlatformBilling {
     );
     const canonical = new Map(stored.map((grant) => [grant.id, grant]));
     const qualificationStarts = new Map<string, number>();
-    for (const { invoice } of evidence)
+    for (const { invoice } of evidence) {
+      turn?.work(stored.length);
       for (const previous of stored.filter(
         (grant) => grant.invoice_id === invoice.id,
       ))
         canonical.set(previous.id, { ...previous, revoked: 1 });
-    for (const { invoice, subscriptionId: selected, lines } of evidence) {
+    }
+    for (const {
+      invoice,
+      subscriptionId: selected,
+      lines,
+      cashRevoked,
+      creditApplied,
+    } of evidence) {
+      turn?.work(1 + stored.length + lines.length);
       const paid =
         invoice.status === "paid" &&
         (invoice.amount_paid > 0 ||
-          (await this.creditPaid(invoice, lines, selected, prices, canonical)));
+          (await this.creditPaid(
+            invoice,
+            lines,
+            selected,
+            prices,
+            canonical,
+            creditApplied,
+          )));
       const revoked =
         !paid ||
-        (invoice.amount_paid > 0 && (await this.invoiceRevoked(invoice)));
+        (invoice.amount_paid > 0 &&
+          (cashRevoked ?? (await this.invoiceRevoked(invoice))));
       for (const previous of stored.filter(
         (grant) => grant.invoice_id === invoice.id,
       )) {
@@ -1055,6 +1705,7 @@ export class PlatformBilling {
       }
       if (!paid) continue;
       for (const line of lines) {
+        turn?.work();
         const priceId = providerId(line.pricing?.price_details?.price);
         if (
           line.amount <= 0 ||
@@ -1091,9 +1742,11 @@ export class PlatformBilling {
     // Returning unused service as a linked proration credit ends that service
     // at the returned interval's start. Ordinary cancellation keeps paid time.
     for (const { invoice, subscriptionId: selected, lines } of evidence) {
+      turn?.work(1 + lines.length);
       if (invoice.status !== "paid") continue;
       for (const line of lines)
         for (const original of this.creditedGrants(line, selected, canonical)) {
+          turn?.work();
           const updated = {
             ...original,
             period_end: Math.min(
@@ -1104,12 +1757,18 @@ export class PlatformBilling {
           grants.set(updated.id, updated);
         }
     }
+    let obsolete = false;
     await this.db.transaction(async (tx) => {
+      await turn?.prepareTransaction(tx);
       await lock(tx, "billing");
+      await assertQueueLease(tx);
       const current = await tx<PlatformTenant>("tenants")
         .where({ id: tenantId })
         .first();
-      if (Number(current?.platform_billing_revision) !== revision) return;
+      if (Number(current?.platform_billing_revision) !== revision) {
+        obsolete = true;
+        return;
+      }
       check(
         current?.platform_customer_id === tenant.platform_customer_id &&
           (current.platform_subscription_id ===
@@ -1136,15 +1795,19 @@ export class PlatformBilling {
           created_at: Date.now(),
         });
       for (const grant of grants.values()) {
+        turn?.work();
         await this.rememberPrice(tx, tenantId, grant.price_id, grant.tier);
         await tx("platform_grants")
           .insert(grant)
           .onConflict(["tenant_id", "id"])
           .merge();
+        turn?.work();
       }
-      const all = await tx<PlatformGrant>("platform_grants").where({
+      const allQuery = tx<PlatformGrant>("platform_grants").where({
         tenant_id: tenantId,
       });
+      const all = turn ? await turn.rows<PlatformGrant>(allQuery) : await allQuery;
+      turn?.work(all.length * (5 + Math.max(1, Math.ceil(Math.log2(all.length + 1)))));
       const valid = all.filter((g) => !g.revoked);
       // Keep the latest past/current nonrevoked interval after expiry so an
       // unpaid renewal can retain pending events. A refund removes its evidence.
@@ -1199,7 +1862,12 @@ export class PlatformBilling {
               }
             : {}),
         });
+      turn?.work();
     });
+    if (obsolete && turn) {
+      await turn.reset(platformSlot);
+      throw new DeferredJob(Date.now() + 1000);
+    }
   }
   private async persist(event: PlatformEvent, kind: string) {
     await this.db.transaction(async (tx) => {
@@ -1243,6 +1911,71 @@ export class PlatformBilling {
   private async eventCustomer(
     event: PlatformEvent,
   ): Promise<string | undefined> {
+    const turn = workerTurn();
+    if (turn) {
+      const slot = "platform-customer";
+      const identity = hash(
+        JSON.stringify([
+          this.config.stripeSecret,
+          this.config.stripeLiveMode ?? false,
+          event.id,
+          event.type,
+          event.data.object.id,
+        ]),
+      );
+      const state = await turn.state(slot, {
+        identity,
+        phase: "start",
+        chargeId: null as string | null,
+        customerId: null as string | null,
+      });
+      if (state.identity !== identity) {
+        await turn.reset(slot);
+        throw new DeferredJob(Date.now() + 1000);
+      }
+      if (state.phase === "start") {
+        if (event.type.startsWith("charge.dispute.")) {
+          this.external();
+          const dispute = await turn.read(async (options) =>
+            this.stripe.disputes.retrieve(
+              String(event.data.object.id),
+              {},
+              options,
+            ),
+          );
+          state.chargeId = providerId(dispute.charge) ?? null;
+        } else if (event.type.startsWith("refund.")) {
+          this.external();
+          const refund = await turn.read(async (options) =>
+            this.stripe.refunds.retrieve(
+              String(event.data.object.id),
+              {},
+              options,
+            ),
+          );
+          state.chargeId = providerId(refund.charge) ?? null;
+        } else if (event.type.startsWith("charge."))
+          state.chargeId = String(event.data.object.id);
+        else
+          state.customerId =
+            providerId(
+              event.data.object.customer as string | { id: string } | undefined,
+            ) ?? null;
+        state.phase = state.chargeId ? "charge" : "done";
+        await turn.save(slot, state);
+      }
+      if (state.phase === "charge") {
+        this.external();
+        const charge = await turn.read(async (options) =>
+          this.stripe.charges.retrieve(state.chargeId!, {}, options),
+        );
+        this.mode(charge.livemode);
+        state.customerId = providerId(charge.customer) ?? null;
+        state.phase = "done";
+        await turn.save(slot, state);
+      }
+      return state.customerId ?? undefined;
+    }
     let chargeId: string | undefined;
     if (event.type.startsWith("charge.dispute.")) {
       this.external();
@@ -1268,49 +2001,89 @@ export class PlatformBilling {
     this.mode(charge.livemode);
     return providerId(charge.customer);
   }
-  async run(): Promise<void> {
-    await runQueue(this.db, "platform_work", async (job) => {
-      const { eventId } = unseal<{ eventId: string }>(
-        job.payload,
-        this.config.secret,
-      );
-      const stored = await this.db("platform_events")
-        .where({ id: eventId })
-        .first();
-      const event = unseal<PlatformEvent>(stored.payload, this.config.secret);
-      if (job.kind === "connect_account") {
-        const tenant = await this.db<Tenant>("tenants")
-          .where({ stripe_account_id: event.account! })
-          .first();
-        if (tenant) {
-          if (event.type === "account.application.deauthorized")
-            await this.db("tenants")
-              .where({ id: tenant.id })
-              .update({ stripe_status: "disconnected" });
-          else if (event.type === "account.updated") {
-            this.external();
-            const account = await this.stripe.accounts.retrieve(event.account!);
-            await this.db("tenants")
-              .where({ id: tenant.id })
-              .update({
-                stripe_status: account.charges_enabled
-                  ? "connected"
-                  : "restricted",
-              });
+  async run(worker?: WorkerQueueOptions): Promise<void> {
+    await runQueue(
+      this.db,
+      "platform_work",
+      async (job) => {
+        const handle = async () => {
+          const { eventId } = unseal<{ eventId: string }>(
+            job.payload,
+            this.config.secret,
+          );
+          const stored = await this.db("platform_events")
+            .where({ id: eventId })
+            .first();
+          const event = unseal<PlatformEvent>(
+            stored.payload,
+            this.config.secret,
+          );
+          if (job.kind === "connect_account") {
+            const tenant = await this.db<Tenant>("tenants")
+              .where({ stripe_account_id: event.account! })
+              .first();
+            if (tenant) {
+              let status: string | undefined;
+              if (event.type === "account.application.deauthorized")
+                status = "disconnected";
+              else if (event.type === "account.updated") {
+                this.external();
+                const turn = workerTurn();
+                const account = turn
+                  ? await turn.read(async (options) =>
+                      this.stripe.accounts.retrieve(
+                        event.account!,
+                        {},
+                        options,
+                      ),
+                    )
+                  : await this.stripe.accounts.retrieve(event.account!);
+                status = account.charges_enabled ? "connected" : "restricted";
+              }
+              if (status)
+                await this.db.transaction(async (tx) => {
+                  await assertQueueLease(tx);
+                  await tx("tenants")
+                    .where({ id: tenant.id, stripe_account_id: event.account! })
+                    .update({ stripe_status: status });
+                });
+            }
+          } else {
+            const customerId = await this.eventCustomer(event);
+            const tenant = customerId
+              ? await this.db<Tenant>("tenants")
+                  .where({ platform_customer_id: customerId })
+                  .first()
+              : undefined;
+            if (tenant) await this.reconcile(tenant.id);
           }
-        }
-      } else {
-        const customerId = await this.eventCustomer(event);
-        const tenant = customerId
-          ? await this.db<Tenant>("tenants")
-              .where({ platform_customer_id: customerId })
-              .first()
-          : undefined;
-        if (tenant) await this.reconcile(tenant.id);
-      }
-      await this.db("platform_events")
-        .where({ id: eventId })
-        .update({ processed_at: Date.now() });
-    });
+          await this.db.transaction(async (tx) => {
+            await assertQueueLease(tx);
+            await tx("platform_events")
+              .where({ id: eventId })
+              .update({ processed_at: Date.now() });
+          });
+        };
+        if (worker)
+          await withWorkerTurn(
+            {
+              db: this.db,
+              secret: this.config.secret,
+              job,
+              table: "platform_work",
+              budgetMs: worker.budgetMs,
+              maxRequests: worker.maxRequests,
+              onBeginApply: worker.onBeginApply,
+              maxFacts: worker.maxFacts, maxBytes: worker.maxBytes,
+              maxApplyRecords: worker.maxApplyRecords, maxApplyWork: worker.maxApplyWork, applyMs: worker.applyMs,
+            },
+            handle,
+          );
+        else await handle();
+      },
+      worker ? 1 : 20,
+      undefined,
+      worker,
+    );
   }
 }

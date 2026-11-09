@@ -7,12 +7,17 @@ import {
 import { sealPrivacyAttribution } from "./privacy-attribution.ts";
 import { recordBusinessEvent } from "./business-events.ts";
 import { randomUUID } from "node:crypto";
-import type { DB, License, Plan, Customer } from "./db.ts";
+import type { DB, License, Plan, Customer, Job } from "./db.ts";
 import { lock } from "./db.ts";
 import { hash, random, seal, unseal } from "./crypto.ts";
 import type { Licenses } from "./licensing.ts";
-import { check } from "./errors.ts";
-import { runQueue } from "./queue.ts";
+import { AppError, check } from "./errors.ts";
+import { DeferredJob, runQueue, assertQueueLease, type WorkerQueueOptions } from "./queue.ts";
+import { withWorkerTurn, workerTurn } from "./worker-continuation.ts";
+import {
+  requireTenantCapacity,
+  type PublicationPolicy,
+} from "./publication-policy.ts";
 export interface PaidGrant {
   id: string;
   invoiceId: string;
@@ -48,6 +53,7 @@ export interface BillingEvent {
 }
 export interface BillingPrivacyContext {
   stripeLiveMode: boolean;
+  purchasePolicy?: Readonly<PublicationPolicy>;
   /** Canonical provider attribution for events without a customer field. Called outside SQL transactions. */
   resolveCustomer?: (event: BillingEvent) => Promise<string | null>;
 }
@@ -59,6 +65,7 @@ export class Billing {
   licensing: Licenses;
   source: BillingSource;
   privacy: BillingPrivacyContext;
+  readonly purchasePolicy: Readonly<PublicationPolicy>;
   constructor(
     db: DB,
     licensing: Licenses,
@@ -69,8 +76,13 @@ export class Billing {
     this.licensing = licensing;
     this.source = source;
     this.privacy = privacy;
+    this.purchasePolicy = Object.freeze({
+      deploymentMode: privacy.purchasePolicy?.deploymentMode ?? "hosted",
+      graceDays: privacy.purchasePolicy?.graceDays,
+    });
   }
   async reconcile(subscriptionId: string) {
+    const turn = workerTurn();
     if (
       await completedSubscriptionClosure(
         this.db,
@@ -94,8 +106,15 @@ export class Billing {
     for (let attempt = 0; attempt < 8; attempt++) {
       const revision = await this.db("locks").where({ id: revisionId }).first();
       const s = await this.source.snapshot(subscriptionId);
+      if (turn) {
+        turn.beginApply();
+        turn.array(s.grants);
+        turn.array(s.invoices ?? []);
+      }
       const applied = await this.db.transaction(async (tx) => {
+        await turn?.prepareTransaction(tx);
         await lock(tx, "billing", this.licensing.tenant.id);
+        await assertQueueLease(tx);
         const acquired = await tx("locks")
           .where({ id: revisionId, version: revision.version })
           .increment("version", 1);
@@ -116,9 +135,11 @@ export class Billing {
           )
         )
           return true;
-        const plans = await tx<Plan>("plans").where({
+        const plansQuery = tx<Plan>("plans").where({
           tenant_id: this.licensing.tenant.id,
         });
+        const plans = turn ? await turn.rows<Plan>(plansQuery) : await plansQuery;
+        turn?.work(s.grants.length * Math.max(1, plans.length));
         const paid = s.grants.filter(
           (g) =>
             g.settled &&
@@ -133,7 +154,28 @@ export class Billing {
           .first();
         check(!l || l.provenance !== "complimentary", 409, "billing_provenance_conflict", "Stripe cannot reconcile complimentary entitlement.");
         if (!l && !paid.length) return true;
+        if (!l) {
+          // An open checkout reserves no authority to issue a new license.
+          // Existing subscriptions still reconcile renewals, refunds and disputes.
+          // A hold rolls back this apply; the sealed paid event stays unprocessed
+          // for recovery. It does not cancel or refund the provider payment.
+          try {
+            await requireTenantCapacity(
+              tx,
+              this.licensing.tenant.id,
+              this.purchasePolicy,
+            );
+          } catch (error) {
+            if (
+              error instanceof AppError &&
+              ["tenant_suspended", "tenant_capacity"].includes(error.code)
+            )
+              throw new DeferredJob(Date.now() + 60000, "tenant_authority");
+            throw error;
+          }
+        }
         for (const invoice of s.invoices ?? []) {
+          turn?.work();
           check(
             /^[a-z]{3}$/.test(invoice.currency) &&
               Number.isSafeInteger(invoice.paidMinor) &&
@@ -154,6 +196,7 @@ export class Billing {
             })
             .onConflict(["tenant_id", "invoice_id"])
             .merge(["currency", "paid_minor", "refunded_minor"]);
+          turn?.work();
         }
         let c = await tx<Customer>("customers")
           .where({
@@ -226,6 +269,7 @@ export class Billing {
           .where({ tenant_id: this.licensing.tenant.id, id: l.id })
           .increment("lock_version", 1);
         for (const g of paid) {
+          turn?.work(Math.max(1, plans.length));
           const p = plans.find((p) => p.stripe_price_id === g.priceId)!;
           check(
             p.product_id === l.product_id,
@@ -248,11 +292,15 @@ export class Billing {
               paid_at: g.paidAt,
             });
         }
-        const grants = await tx("grants")
+        const grantsQuery = tx("grants")
           .where({ tenant_id: this.licensing.tenant.id, license_id: l.id })
           .orderBy("period_start", "desc")
           .orderBy("paid_at", "desc")
           .orderBy("id", "desc");
+        const grants = turn
+          ? await turn.rows<{ id: string; plan_id: string; period_end: number }>(grantsQuery)
+          : await grantsQuery;
+        turn?.work(grants.length + plans.length);
         const current = grants[0];
         const p = current
           ? plans.find((p) => p.id === current.plan_id)
@@ -303,6 +351,7 @@ export class Billing {
             l.id,
             "refund",
           );
+        turn?.work();
         return true;
       });
       if (applied) return;
@@ -456,51 +505,62 @@ export class Billing {
   }
   async run(
     resolveSubscription: (event: BillingEvent) => Promise<string | null>,
+    worker?: WorkerQueueOptions,
   ) {
+    const handle = async (job: Job) => {
+      if (job.kind === "reconcile") {
+        const { subscriptionId } = unseal<{ subscriptionId: string }>(
+          job.payload,
+          this.licensing.secret,
+        );
+        await this.reconcile(subscriptionId);
+        return;
+      }
+      const { eventId } = unseal<{ eventId: string }>(job.payload, this.licensing.secret);
+      const stored = await this.db("billing_events")
+        .where({ tenant_id: this.licensing.tenant.id, id: eventId }).first();
+      const event = unseal<BillingEvent>(stored.payload, this.licensing.secret);
+      const subscription = await resolveSubscription(event);
+      if (subscription) await this.reconcile(subscription);
+      await this.db.transaction(async (tx) => {
+        await assertQueueLease(tx);
+        await tx("billing_events")
+          .where({ tenant_id: this.licensing.tenant.id, id: eventId })
+          .update({ processed_at: Date.now() });
+      });
+    };
     await runQueue(
       this.db,
       "work",
       async (job) => {
-        if (job.kind === "reconcile") {
-          const { subscriptionId } = unseal<{ subscriptionId: string }>(
-            job.payload,
-            this.licensing.secret,
-          );
-          await this.reconcile(subscriptionId);
-          return;
-        }
-        const { eventId } = unseal<{ eventId: string }>(
-          job.payload,
-          this.licensing.secret,
-        );
-        const stored = await this.db("billing_events")
-          .where({ tenant_id: this.licensing.tenant.id, id: eventId })
-          .first();
-        const event = unseal<BillingEvent>(
-          stored.payload,
-          this.licensing.secret,
-        );
-        const subscription = await resolveSubscription(event);
-        if (subscription) await this.reconcile(subscription);
-        await this.db("billing_events")
-          .where({ tenant_id: this.licensing.tenant.id, id: eventId })
-          .update({ processed_at: Date.now() });
+        if (worker) await withWorkerTurn({
+          db: this.db, secret: this.licensing.secret, job, table: "work",
+          tenantId: this.licensing.tenant.id,
+          budgetMs: worker.budgetMs, maxRequests: worker.maxRequests,
+          maxFacts: worker.maxFacts, maxBytes: worker.maxBytes,
+          maxApplyRecords: worker.maxApplyRecords, maxApplyWork: worker.maxApplyWork, applyMs: worker.applyMs,
+          onBeginApply: worker.onBeginApply,
+        }, () => handle(job));
+        else await handle(job);
       },
-      20,
+      worker ? 1 : 20,
       this.licensing.tenant.id,
+      worker,
     );
   }
   async enqueueReconcile(subscriptionIds: string[]) {
     for (const subscriptionId of new Set(subscriptionIds))
       await this.db.transaction(async (tx) => {
         // Serialize scheduling with worker claims on all supported engines.
-        // Keep one reusable job without changing a pending retry or live lease.
+        // Keep one reusable job without changing pending retries, live leases,
+        // or resource-limit holds that require explicit operator recovery.
         await lock(tx, "work", this.licensing.tenant.id);
         const id = `reconcile:${hash(subscriptionId)}`;
         const existing = await tx("work")
           .where({ tenant_id: this.licensing.tenant.id, id })
           .first();
-        if (existing && ["pending", "running"].includes(existing.state)) return;
+        if (existing && (["pending", "running"].includes(existing.state) ||
+          (existing.state === "failed" && existing.last_error === "resource_limit"))) return;
         const row = {
           tenant_id: this.licensing.tenant.id,
           id,

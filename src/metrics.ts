@@ -1,10 +1,15 @@
 import type { DB, License, Tenant } from "./db.ts";
 import { check } from "./errors.ts";
-import { effectiveLicense, entitlementEnd } from "./licensing.ts";
+import { effectiveLicense, entitlementEnd, installationExempt, productActivationKind } from "./licensing.ts";
 
-export async function tenantMetrics(db: DB, tenant: Tenant, now = Date.now()) {
+export async function tenantMetrics(db: DB, tenant: Tenant, now = Date.now(), exemptSuffixes: readonly string[] = []) {
   const licenses = await db<License>("licenses").where({ tenant_id: tenant.id });
-  const installations = await db("installations").where({ tenant_id: tenant.id, active: 1 });
+  const installations = (await db("installations")
+    .join("licenses", function () { this.on("licenses.id", "=", "installations.license_id").andOn("licenses.tenant_id", "=", "installations.tenant_id"); })
+    .join("products", function () { this.on("products.id", "=", "licenses.product_id").andOn("products.tenant_id", "=", "licenses.tenant_id"); })
+    .where({ "installations.tenant_id": tenant.id, "installations.active": 1 })
+    .select("installations.*", "products.framework", "products.framework_config"))
+    .map((installation) => ({ ...installation, exempt: installationExempt(installation.site_url, productActivationKind(installation), exemptSuffixes) }));
   const releases = await db("releases").where({ tenant_id: tenant.id });
   const reservations = await db("upload_reservations").where({ tenant_id: tenant.id });
   const entitled = licenses.filter(l => entitlementEnd(l) > now && !l.revoked && !l.refund_revoked && !l.suspended);

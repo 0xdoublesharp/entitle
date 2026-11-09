@@ -2,7 +2,7 @@ import { appUrl } from "../packages/shared/app-path.ts";
 import { randomUUID } from "node:crypto";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import type { Config } from "./config.ts";
-import type { DB, Job, Tenant } from "./db.ts";
+import type { DB, Job, Tenant, Tx } from "./db.ts";
 import { lock } from "./db.ts";
 import { csrf, equal, hash, random, seal, unseal } from "./crypto.ts";
 import { check } from "./errors.ts";
@@ -236,6 +236,29 @@ export class PlatformAuth {
       "Verify your email and sign in again.",
     );
     return { user, csrfToken, sessionHash: session.id as string };
+  }
+  publicationAuthorization(req: FastifyRequest, tenantId: string) {
+    if (req.headers.authorization === undefined) return undefined;
+    const keyHash = hash(req.headers.authorization.slice(7));
+    return async (tx: Tx) => {
+      // Revocation takes the same lock. Keep it until the publication commits,
+      // acquiring it before publication's schema and tenant-row locks.
+      await lock(tx, "auth");
+      const key = await tx("tenant_api_keys")
+        .where({ tenant_id: tenantId, key_hash: keyHash })
+        .whereNull("revoked_at")
+        .andWhere("expires_at", ">", Date.now())
+        .first();
+      check(key, 403, "tenant_denied", "Tenant credentials are invalid.");
+      let scopes: unknown;
+      try { scopes = JSON.parse(key.scopes as string); } catch { scopes = []; }
+      check(
+        Array.isArray(scopes) && scopes.includes("releases:write"),
+        403,
+        "scope_denied",
+        "This API key does not permit that operation.",
+      );
+    };
   }
   async tenant(
     req: FastifyRequest,

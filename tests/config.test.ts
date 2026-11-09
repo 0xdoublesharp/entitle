@@ -1,10 +1,53 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { loadConfig } from "../src/config.ts";
+import { buildApp } from "../src/app.ts";
+import type { DB } from "../src/db.ts";
 const credentials = {
   APP_SECRET: "01".repeat(32),
   OPERATOR_TOKEN: "operator-".repeat(5),
 };
+
+test("billing worker limits accept bounded recovery settings and reject unsafe environment values", () => {
+  assert.deepEqual(loadConfig(credentials).billingWorker, {
+    maxFacts: 10000, maxBytes: 16 * 1048576, maxApplyRecords: 3000,
+    maxApplyWork: 1000000, applyMs: 5000,
+  });
+  const settings = {
+    BILLING_WORKER_MAX_FACTS: "50000", BILLING_WORKER_MAX_MIB: "64",
+    BILLING_WORKER_MAX_APPLY_RECORDS: "20000", BILLING_WORKER_MAX_APPLY_WORK: "10000000",
+    BILLING_WORKER_APPLY_MS: "30000",
+  };
+  assert.deepEqual(loadConfig({ ...credentials, ...settings }).billingWorker, {
+    maxFacts: 50000, maxBytes: 64 * 1048576, maxApplyRecords: 20000,
+    maxApplyWork: 10000000, applyMs: 30000,
+  });
+  for (const [name, ceiling] of Object.entries(settings))
+    for (const value of ["0", "-1", "1.5", "Infinity", "NaN", String(Number(ceiling) + 1)])
+      assert.throws(() => loadConfig({ ...credentials, [name]: value }), Error, `${name}=${value}`);
+});
+
+test("programmatic billing worker limits fail before the app reads its database", async () => {
+  const config = loadConfig(credentials);
+  const db = (() => { throw Error("Unexpected database access"); }) as unknown as DB;
+  for (const limits of [{ maxFacts: 0 }, { maxBytes: Infinity }, { maxApplyRecords: 20001 },
+    { maxApplyWork: NaN }, { applyMs: 30001 }]) {
+    await assert.rejects(buildApp({ ...config, billingWorker: limits }, db), /billing worker .* limit/);
+    await assert.rejects(buildApp(config, db, undefined, { billingWorker: limits }), /billing worker .* limit/);
+  }
+});
+
+test("the published example operator token cannot authorize a deployment", () => {
+  const example = readFileSync(new URL("../.env.example", import.meta.url), "utf8");
+  const token = /^OPERATOR_TOKEN=(.+)$/m.exec(example)?.[1];
+  assert.ok(token);
+  assert.throws(
+    () => loadConfig({ ...credentials, OPERATOR_TOKEN: token }),
+    /OPERATOR_TOKEN.*placeholder/i,
+  );
+  assert.equal(loadConfig(credentials).operatorToken, credentials.OPERATOR_TOKEN);
+});
 
 test("a public origin cannot contain paths, URL credentials, query strings or fragments", () => {
   for (const origin of [
