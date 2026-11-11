@@ -7,6 +7,13 @@ client to start that command in the checkout and provide `PUBLIC_ORIGIN`,
 Platform tools require the independent `OPERATOR_TOKEN`. Do not put credentials
 in tool arguments or client configuration committed to source control.
 
+For CI publishing, use `ENTITLE_OIDC_PUBLISHER_ID` instead of a tenant key.
+GitHub Actions retrieves its identity automatically; other providers supply
+`ENTITLE_OIDC_TOKEN` or a private `ENTITLE_OIDC_TOKEN_FILE`. The release and asset
+publishing tools use the same scoped exchange as the CLI. Passkey/security-key
+login, publisher trust and email fallback controls are described in the
+[OIDC and passwordless guide](oidc-publishing.md#http-cli-and-mcp).
+
 The server advertises named tools for the publisher and platform CLI commands,
 plus `entitle_seller_request` and `entitle_operator_request` for JSON API calls.
 The typed `entitle_op_...` tools accept structured fields for license issuance
@@ -58,3 +65,5 @@ The server is a local stdio process, not a remote hosted MCP endpoint. Owner
 verification and Stripe authorization remain interactive.
 Use the [CLI reference](cli.md#other-api-operations) and [API reference](api.md)
 for credentials, endpoint details and restrictions.
+
+See [capability-specific authentication and recovery](authentication-policy.md) for hardware approvals, restricted recovery operations and local operator recovery.

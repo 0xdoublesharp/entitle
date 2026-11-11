@@ -192,6 +192,9 @@ const fetcher: typeof fetch = async (input, init = {}) => {
       ],
       localMode: true,
     });
+  if (call.path.endsWith("/account/reauth/options")) return Response.json({ challengeId: "challenge", options: { challenge: "nonce" } });
+  if (call.path.endsWith("/account/reauth/verify")) return Response.json({ verification: "verified-grant" });
+  if (call.path.endsWith("/account/recovery/status")) return denied(403, "No active recovery");
   if (call.path.endsWith("/account/verification/consume"))
     return Response.json({ verification: "verified-grant" });
   if (call.path.endsWith("/account/sessions"))
@@ -281,9 +284,31 @@ async function mount(path = "/seller", configure?: () => void) {
       : ui.mountSiteApp("#app", fetcher);
   await flush();
 }
-beforeEach(() => dom.sessionStorage.clear());
+beforeEach(() => {
+  dom.sessionStorage.clear();
+  Object.defineProperty(globalThis, "PublicKeyCredential", { configurable: true, value: { parseRequestOptionsFromJSON: (value: unknown) => value } });
+  Object.defineProperty(dom.navigator, "credentials", { configurable: true, value: { get: async () => ({ toJSON: () => ({ id: "credential", response: {} }) }) } });
+});
 afterEach(() => app?.unmount());
 after(() => dom.happyDOM.close());
+test("seller sign-in uses WebAuthn and retains the email-link fallback", async () => {
+  Object.defineProperty(globalThis, "PublicKeyCredential", { configurable: true, value: { parseRequestOptionsFromJSON: (value: unknown) => value } });
+  Object.defineProperty(dom.navigator, "credentials", { configurable: true, value: { get: async () => ({ toJSON: () => ({ id: "credential", response: {} }) }) } });
+  try {
+    await mount("/seller", () => {
+      signed = false;
+      routes.set("POST /api/v1/platform/auth/passkey/options", () => Response.json({ options: { challenge: "nonce" } }));
+      routes.set("POST /api/v1/platform/auth/passkey/verify", call => {
+        assert.deepEqual(call.body, { response: { id: "credential", response: {} } });
+        signed = true; return Response.json({ ok: true });
+      });
+    });
+    assert.ok(button("Email seller sign-in link"));
+    await click("Sign in with a passkey or security key");
+    assert.ok(calls.some(call => call.path.endsWith("/auth/passkey/verify")));
+    assert.match(text(), /Alpha plugins/);
+  } finally { Reflect.deleteProperty(globalThis, "PublicKeyCredential"); }
+});
 test("empty product creation starts complimentary-first and keeps paid plans opt-in", async () => {
   await mount("/seller", () => {
     tenants = [tenant, { ...tenant, id: "tenant-b", slug: "beta", name: "Beta apps" }];
@@ -393,8 +418,7 @@ test("workspace manager archives, restores and removes an empty workspace with f
   await input("#workspace-view", "active", "change");
   await click("Check removal");
   await input("#workspace-remove-slug", tenant.slug);
-  await click("Email removal verification");
-  await input("#workspace-remove-token", "email-proof");
+  assert.equal((button("Review permanent removal") as unknown as HTMLButtonElement).disabled, false);
   await submit("#workspace-remove-form");
   await click("Permanently remove workspace");
   const removed = calls.find((call) => call.path.endsWith("/tenant-a/remove"))!;
@@ -444,7 +468,7 @@ test("archived workspace and sandbox views explain retained history and preserve
   assert.equal(el("h1").textContent, "Overview");
   assert.ok(calls.some((call) => call.path.endsWith("/alpha/seller/overview")));
 });
-test("workspace removal accepts its emailed fragment and leaves an empty account usable", async () => {
+test("workspace removal requires hardware despite an email fragment and leaves an empty account usable", async () => {
   await mount("/seller#account-verification=email-removal-proof", () => {
     routes.set("GET /api/v1/platform/tenants/tenant-a/removal", () =>
       Response.json({ removable: true, blockers: [] }),
@@ -456,16 +480,8 @@ test("workspace removal accepts its emailed fragment and leaves an empty account
   });
   await click("Workspaces");
   await click("Check removal");
-  await input(
-    'select[aria-label="Verification purpose"]',
-    "workspace_remove",
-    "change",
-  );
-  await click("Continue with verification link");
-  assert.equal(
-    el<HTMLInputElement>("#workspace-remove-token").value,
-    "email-removal-proof",
-  );
+  assert.equal(dom.document.querySelector('option[value="workspace_remove"]'), null);
+  assert.match(text(), /independently provisioned hardware key/);
   await input("#workspace-remove-slug", "alpha");
   await submit("#workspace-remove-form");
   await click("Permanently remove workspace");
@@ -1420,7 +1436,6 @@ test("ZIP publication bounds files before upload and sends metadata and raw byte
   file.dispatchEvent(
     new dom.Event("change", { bubbles: true }) as unknown as Event,
   );
-  await input("#release-verification-token", "release-mail-proof");
   await submit("#release-upload");
   const c = calls.find((c) => c.path.endsWith("/seller/releases/plugin/1.2.3"));
   assert.ok(c);
@@ -1447,8 +1462,8 @@ test("ZIP publication bounds files before upload and sends metadata and raw byte
     "verified-grant",
   );
   assert.deepEqual(
-    calls.find((call) => call.path.endsWith("/verification/consume"))?.body,
-    { purpose: "release_publish", token: "release-mail-proof" },
+    calls.find((call) => call.path.endsWith("/reauth/options"))?.body,
+    { action: "account.privileged", purpose: "release_publish", path: "/api/v1/tenants/alpha/seller/releases/plugin/1.2.3" },
   );
   Object.defineProperty(file, "files", {
     configurable: true,
@@ -2062,7 +2077,6 @@ test("native upload accepts a 50 MiB Electron asset under its separate 100 MiB l
   file.dispatchEvent(
     new dom.Event("change", { bubbles: true }) as unknown as Event,
   );
-  await input("#release-verification-token", "release-mail-proof");
   await submit("#release-upload");
   assert.equal(reads, 1);
   assert.ok(calls.find((call) => call.path.endsWith("/assets/plugin/2.0.0")));
@@ -2820,19 +2834,17 @@ test("new seller panels load only on navigation and use the existing confirmatio
     "/api/v1/tenants/alpha/seller/webhooks/hook",
   );
 });
-test("API key email proof is purpose-specific, consumed once, and sent as an action header", async () => {
+test("API key hardware proof binds the action path and is sent as an action header", async () => {
   await mount();
   await click("API keys");
-  await click("Email API key verification");
-  assert.deepEqual(calls.at(-1)?.body, { purpose: "api_keys" });
-  await input("#key-verification-token", "email-proof");
   await input("#key-name", "Verified key");
   routes.set("POST /api/v1/tenants/alpha/seller/keys", () =>
     Response.json({ token: "one-time" }),
   );
   await submit("#key-create");
-  const proof = calls.find((c) => c.path.endsWith("/verification/consume"))!;
-  assert.deepEqual(proof.body, { purpose: "api_keys", token: "email-proof" });
+  const proof = calls.find((c) => c.path.endsWith("/reauth/options"))!;
+  assert.deepEqual(proof.body, { action: "account.privileged", purpose: "api_keys", path: "/api/v1/tenants/alpha/seller/keys" });
+  assert.equal(calls.some(c => c.path.endsWith("/verification/consume")), false);
   const action = calls.find(
     (c) => c.path.endsWith("/keys") && c.init.method === "POST",
   )!;
@@ -2840,7 +2852,7 @@ test("API key email proof is purpose-specific, consumed once, and sent as an act
     new Headers(action.init.headers).get("x-account-verification"),
     "verified-grant",
   );
-  assert.equal(el<HTMLInputElement>("#key-verification-token").value, "");
+  assert.equal(dom.document.querySelector("#key-verification-token"), null);
 });
 test("verification fragments are removed and require an explicit action purpose", async () => {
   await mount("/seller#account-verification=api-proof");
@@ -2851,10 +2863,7 @@ test("verification fragments are removed and require an explicit action purpose"
     false,
   );
   assert.doesNotMatch(text(), /Choose the action you requested below/);
-  assert.equal(
-    el<HTMLInputElement>("#key-verification-token").value,
-    "api-proof",
-  );
+  assert.equal(dom.document.querySelector("#key-verification-token"), null);
   for (const purpose of ["recovery_codes", "tenant_transfer"]) {
     routes.set("GET /api/v1/platform/account/sessions", () =>
       Response.json({ sessions: [] }),
@@ -3243,76 +3252,31 @@ test("global security works before the first workspace and panel session expiry 
   assert.match(text(), /Sign in to sell/);
   assert.doesNotMatch(text(), /buyer@example.test/);
 });
-test("signed-out recovery binds a browser and reloads the seller session", async () => {
+test("signed-out recovery binds a browser and keeps ordinary account data restricted", async () => {
+  let recovering = false;
   await mount("/seller", () => {
     signed = false;
-    routes.set("POST /api/v1/platform/account/recovery/consume", () => {
-      signed = true;
-      return Response.json({ ok: true });
-    });
+    routes.set("POST /api/v1/platform/account/recovery/consume", () => { recovering = true; return Response.json({ ok: true, recoveryRestricted: true }); });
+    routes.set("GET /api/v1/platform/account/recovery/status", () => recovering ? Response.json({ id: "flow", mode: "ordinary", csrfToken: "recovery-csrf", channelVerified: false }) : denied(403));
   });
-  const details = el<HTMLDetailsElement>(".account-recovery");
-  details.open = true;
-  details.dispatchEvent(new dom.Event("toggle") as unknown as Event);
-  await flush();
-  await input("#recovery-email", "seller@example.test");
-  await input("#recovery-code", "offline-code");
-  await submit("#account-recovery");
-  assert.match(text(), /Alpha plugins/);
+  const details = el<HTMLDetailsElement>(".account-recovery"); details.open = true;
+  details.dispatchEvent(new dom.Event("toggle") as unknown as Event); await flush();
+  await input("#recovery-email", "seller@example.test"); await input("#recovery-code", "offline-code"); await submit("#account-recovery");
+  assert.match(text(), /Recovery access is restricted/); assert.doesNotMatch(text(), /Alpha plugins/);
+  assert.ok(button("Send recovery confirmation email"));
 });
-test("release publication requests its own proof and includes both new API-key scopes", async () => {
-  await mount();
-  await click("Releases");
-  await click("Email release verification");
-  assert.deepEqual(calls.at(-1)?.body, { purpose: "release_publish" });
-  dom.location.hash = "#account-verification=publication-proof";
-  dom.dispatchEvent(new dom.Event("hashchange"));
-  await flush();
-  await input(
-    '[aria-label="Verification purpose"]',
-    "release_publish",
-    "change",
-  );
-  await click("Continue with verification link");
-  assert.doesNotMatch(text(), /Choose the action you requested below/);
-  assert.equal(
-    el<HTMLInputElement>("#release-verification-token").value,
-    "publication-proof",
-  );
-  const scopes = [
-    ...dom.document.querySelectorAll('#key-create input[type="checkbox"]'),
-  ].map((n) => (n as unknown as HTMLInputElement).value);
-  assert.equal(scopes.length, 7);
-  assert.ok(scopes.includes("operations:write"));
-  assert.ok(scopes.includes("data:export"));
-  dom.location.hash = "#account-verification=";
-  dom.dispatchEvent(new dom.Event("hashchange"));
-  await flush();
-  assert.equal(dom.location.hash, "");
+test("release publication uses hardware approval and includes both new API-key scopes", async () => {
+  await mount(); await click("Releases");
+  assert.match(text(), /fresh hardware verification/);
+  const scopes = [...dom.document.querySelectorAll('#key-create input[type="checkbox"]')].map(n => (n as unknown as HTMLInputElement).value);
+  assert.equal(scopes.length, 7); assert.ok(scopes.includes("operations:write")); assert.ok(scopes.includes("data:export"));
 });
-test("failed publication verification clears its token and never sends release bytes", async () => {
-  await mount("/seller", () =>
-    routes.set("POST /api/v1/platform/account/verification/consume", () =>
-      denied(403, "A fresh publication verification is required."),
-    ),
-  );
-  await input("#release-verification-token", "wrong-proof");
+test("failed hardware verification never sends release bytes", async () => {
+  await mount("/seller", () => routes.set("POST /api/v1/platform/account/reauth/verify", () => denied(403, "Fresh hardware verification is required.")));
   await input("#release-version", "9.0.0");
-  const file = el<HTMLInputElement>("#release-file");
-  Object.defineProperty(file, "files", {
-    configurable: true,
-    value: [new dom.File(["PKfixture"], "plugin.zip")],
-  });
-  file.dispatchEvent(
-    new dom.Event("change", { bubbles: true }) as unknown as Event,
-  );
-  await submit("#release-upload");
-  assert.match(text(), /fresh publication verification/);
-  assert.equal(
-    calls.some((c) => c.path.endsWith("/seller/releases/plugin/9.0.0")),
-    false,
-  );
-  assert.equal(el<HTMLInputElement>("#release-verification-token").value, "");
+  const file = el<HTMLInputElement>("#release-file"); Object.defineProperty(file, "files", { configurable: true, value: [new dom.File(["PKfixture"], "plugin.zip")] });
+  file.dispatchEvent(new dom.Event("change", { bubbles: true }) as unknown as Event); await submit("#release-upload");
+  assert.match(text(), /hardware verification is required/); assert.equal(calls.some(c => c.path.endsWith("/seller/releases/plugin/9.0.0")), false);
 });
 test("server-confirmed sandbox identity stays visible across seller pages without extra dashboard requests", async () => {
   await mount("/seller", () => {

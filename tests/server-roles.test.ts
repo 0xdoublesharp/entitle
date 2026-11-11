@@ -376,7 +376,7 @@ test("explicit migrate dispatch applies once, closes DB, and never builds/listen
   assert.equal(ctl.signals.listenerCount("SIGTERM"), 0);
   const inspect = createDb(c.databaseUrl);
   try {
-    assert.equal((await inspect("knex_migrations")).length, 18);
+    assert.equal((await inspect("knex_migrations")).length, 21);
   } finally {
     await inspect.destroy();
   }
@@ -580,7 +580,7 @@ test("start launcher dispatches migrate through the runtime entry", async () => 
     assert.doesNotMatch(output, /listening/i);
     const db = createDb(`sqlite:${data}/db.sqlite`);
     try {
-      assert.equal((await db("knex_migrations")).length, 18);
+      assert.equal((await db("knex_migrations")).length, 21);
     } finally {
       await db.destroy();
     }

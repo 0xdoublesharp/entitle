@@ -1,10 +1,11 @@
+import { hardwareHeaders } from "./helpers/oidc.ts";
 import test, { type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { migrate, createTenant, type Tenant } from "../src/db.ts";
 import { loadConfig, type Config } from "../src/config.ts";
-import { hash, csrf, unseal } from "../src/crypto.ts";
+import { hash, csrf } from "../src/crypto.ts";
 import { zipBytes } from "./helpers/zip.ts";
 import { buildApp } from "../src/app.ts";
 import { InMemoryArtifactStore } from "../src/storage.ts";
@@ -906,39 +907,8 @@ test("the shared worker returns while a tenant webhook is slow, and shutdown dra
   }
 });
 
-async function publicationHeaders(f: Awaited<ReturnType<typeof fixture>>) {
-  const before = (
-    await f
-      .db("platform_emails")
-      .where({ kind: "account_verification" })
-      .select("id")
-  ).map((row) => row.id);
-  const requested = await f.app.inject({
-    method: "POST",
-    url: "/api/v1/platform/account/verification/request",
-    payload: { purpose: "release_publish" },
-    headers: f.headers,
-  });
-  assert.equal(requested.statusCode, 200, requested.body);
-  const job = await f
-    .db("platform_emails")
-    .where({ kind: "account_verification" })
-    .whereNotIn("id", before)
-    .first();
-  const token = /#account-verification=([A-Za-z0-9_-]+)/.exec(
-    unseal<{ text: string }>(job.payload, f.config.secret).text,
-  )![1]!;
-  const result = await f.app.inject({
-    method: "POST",
-    url: "/api/v1/platform/account/verification/consume",
-    payload: { purpose: "release_publish", token },
-    headers: f.headers,
-  });
-  assert.equal(result.statusCode, 200, result.body);
-  return {
-    ...f.headers,
-    "x-account-verification": result.json().verification as string,
-  };
+async function publicationHeaders(f: Awaited<ReturnType<typeof fixture>>, path: string) {
+  return hardwareHeaders(f, f.headers, path, "release_publish");
 }
 
 test("browser publication requires a purpose-bound proof before receiving WordPress or native bytes", async (t) => {
@@ -971,8 +941,8 @@ test("browser publication requires a purpose-bound proof before receiving WordPr
     },
   });
   assert.equal(missing.statusCode, 403, missing.body);
-  assert.equal(missing.json().error.code, "verification_required");
-  const proof = await publicationHeaders(f);
+  assert.equal(missing.json().error.code, "reauth_required");
+  const proof = await publicationHeaders(f, url);
   const publication = await f.app.inject({
     method: "POST",
     url,
@@ -1008,7 +978,7 @@ test("browser publication requires a purpose-bound proof before receiving WordPr
     url: f.base + "/assets/browser-native/1.0.0",
     payload: Buffer.from("native artifact"),
     headers: {
-      ...(await publicationHeaders(f)),
+      ...(await publicationHeaders(f, f.base + "/assets/browser-native/1.0.0")),
       "content-type": "application/octet-stream",
       "x-release-metadata": Buffer.from(
         JSON.stringify({

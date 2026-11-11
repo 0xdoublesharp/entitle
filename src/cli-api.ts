@@ -9,6 +9,7 @@ import {
   loadBuyerSession,
 } from "./agent-session.ts";
 import { readRegularFile } from "./cli-files.ts";
+import { oidcPublishingToken } from "./oidc-client.ts";
 
 // This escape hatch deliberately accepts only paths on the configured origin.
 export async function genericApi(
@@ -22,6 +23,8 @@ export async function genericApi(
   const privateValues: string[] = [];
   const log = (message: string) => {
     for (const secret of [
+      env.ENTITLE_OIDC_TOKEN,
+      env.ACTIONS_ID_TOKEN_REQUEST_TOKEN,
       env.TENANT_API_KEY,
       env.OPERATOR_TOKEN,
       env.ENTITLE_AUTHORIZATION,
@@ -113,12 +116,20 @@ export async function genericApi(
       !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(env.TENANT_SLUG)
     )
       throw Error("A valid TENANT_SLUG is required.");
+    if (env.ENTITLE_OIDC_PUBLISHER_ID) {
+      if (method !== "POST" || !/^\/(?:releases|assets)\/[a-z0-9-]+\/[A-Za-z0-9.+-]+$/.test(pathname))
+        throw Error("OIDC credentials permit release and asset publishing only.");
+      const token = await oidcPublishingToken(env);
+      privateValues.push(token);
+      headers.authorization = `Bearer ${token}`;
+    } else {
     if (
       !env.TENANT_API_KEY ||
       !/^DE-TK-[A-Za-z0-9_-]{43}$/.test(env.TENANT_API_KEY)
     )
       throw Error("A valid TENANT_API_KEY is required.");
     headers.authorization = `Bearer ${env.TENANT_API_KEY}`;
+    }
     prefix = `/api/v1/tenants/${env.TENANT_SLUG}/seller`;
   } else if (operator) {
     if (!env.OPERATOR_TOKEN || env.OPERATOR_TOKEN.length < 32)

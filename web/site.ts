@@ -19,6 +19,7 @@ import { type Tenant, workspaceArchived } from "../packages/shared/tenant.ts";
 import { WorkspaceManager } from "./workspaces.ts";
 import { site } from "../packages/shared/site.ts";
 import { SellerFeaturePanel, verifiedRequest } from "./features.ts";
+import { hardwareVerification, passkeyCeremony } from "./oidc.ts";
 import type { EmailChangeDraft } from "./features.ts";
 import { appHeader } from "./chrome.ts";
 import { applicationHref } from "./navigation.ts";
@@ -291,7 +292,7 @@ export function mountSellerApp(
           emailChange = ref<EmailChangeDraft | null>(null),
           proofRound = ref(0),
           panelProof = ref<{ page: SellerPage; token: string } | null>(null),
-          proofPurpose = ref("api_keys");
+          proofPurpose = ref("security_enroll");
         const hosted = ref(true),
           applicationFeePercent = ref(0);
         const seller = ref<Seller | null>(null),
@@ -379,8 +380,6 @@ export function mountSellerApp(
           "release-min-php": "",
           "release-min-free": "",
           "release-tested": "",
-          "key-verification-token": "",
-          "release-verification-token": "",
           "key-name": "",
           "key-expiry": "90",
           "config-product": "",
@@ -490,9 +489,7 @@ export function mountSellerApp(
           prices.value = [];
           includePaidPlan.value = false;
           secret.value = "";
-          fields.value["key-verification-token"] = "";
-          fields.value["release-verification-token"] = "";
-          fields.value["workspace-verification-token"] = "";
+
           selected.value = "";
           fields.value["tenant-name"] = "";
           fields.value["tenant-slug"] = "";
@@ -537,9 +534,7 @@ export function mountSellerApp(
           keys.value = [];
           prices.value = [];
           secret.value = "";
-          fields.value["key-verification-token"] = "";
-          fields.value["release-verification-token"] = "";
-          fields.value["workspace-verification-token"] = "";
+
           if (!seller.value || !selected.value) return;
           const api = tenantApi();
           try {
@@ -601,6 +596,14 @@ export function mountSellerApp(
           try {
             value = await platform.get<Seller>("/me");
           } catch (failure) {
+            if (
+              failure instanceof ApiError &&
+              failure.code === "recovery_restricted"
+            ) {
+              clearSession();
+              recoveryOpen.value = true;
+              return;
+            }
             if (!(failure instanceof ApiError) || failure.status !== 401)
               throw failure;
             clearSession();
@@ -928,34 +931,58 @@ export function mountSellerApp(
             clearSession();
           });
         const closeMobileTools = () => {
-          document.querySelector<HTMLDetailsElement>(".seller-mobile-tools")?.removeAttribute("open");
+          document
+            .querySelector<HTMLDetailsElement>(".seller-mobile-tools")
+            ?.removeAttribute("open");
         };
         const mobileTools = () =>
-          h("details", {
-            class: "seller-mobile-tools",
-            onKeydown: (event: KeyboardEvent) => {
-              if (event.key !== "Escape") return;
-              event.preventDefault();
-              const menu = event.currentTarget as HTMLDetailsElement;
-              menu.open = false;
-              menu.querySelector("summary")?.focus();
+          h(
+            "details",
+            {
+              class: "seller-mobile-tools",
+              onKeydown: (event: KeyboardEvent) => {
+                if (event.key !== "Escape") return;
+                event.preventDefault();
+                const menu = event.currentTarget as HTMLDetailsElement;
+                menu.open = false;
+                menu.querySelector("summary")?.focus();
+              },
             },
-          }, [
-            h("summary", { "aria-label": "Workspace and account actions" }, "More"),
-            h("div", { class: "seller-mobile-tools-content" }, [
-              h("p", { class: "seller-account-email" }, seller.value!.user.email),
-              btn("Refresh dashboard", () => {
-                closeMobileTools();
-                void run(dashboard);
-              }, busy.value),
-              btn("New workspace", () => {
-                closeMobileTools();
-                workspaceCreateOpen.value = true;
-                void nextTick(() => document.getElementById("tenant-name")?.focus());
-              }, busy.value),
-              btn("Sign out", signOut, busy.value),
-            ]),
-          ]);
+            [
+              h(
+                "summary",
+                { "aria-label": "Workspace and account actions" },
+                "More",
+              ),
+              h("div", { class: "seller-mobile-tools-content" }, [
+                h(
+                  "p",
+                  { class: "seller-account-email" },
+                  seller.value!.user.email,
+                ),
+                btn(
+                  "Refresh dashboard",
+                  () => {
+                    closeMobileTools();
+                    void run(dashboard);
+                  },
+                  busy.value,
+                ),
+                btn(
+                  "New workspace",
+                  () => {
+                    closeMobileTools();
+                    workspaceCreateOpen.value = true;
+                    void nextTick(() =>
+                      document.getElementById("tenant-name")?.focus(),
+                    );
+                  },
+                  busy.value,
+                ),
+                btn("Sign out", signOut, busy.value),
+              ]),
+            ],
+          );
         const workspaceControls = () =>
           h(
             "section",
@@ -1115,29 +1142,10 @@ export function mountSellerApp(
             h("dd", String(value)),
           ]);
         const keyVerification = () =>
-          h("div", { class: "verification-proof" }, [
-            h(
-              "p",
-              "API key changes require a fresh email verification token for purpose api_keys. Each token approves one action.",
-            ),
-            btn(
-              "Email API key verification",
-              () =>
-                void run(async () => {
-                  await platform.post("/account/verification/request", {
-                    purpose: "api_keys",
-                  });
-                  notice.value =
-                    "Check your email for the API key verification token.";
-                }),
-              busy.value,
-            ),
-            field(
-              "key-verification-token",
-              "API key email verification token",
-              "password",
-            ),
-          ]);
+          h(
+            "p",
+            "API key changes require fresh hardware verification. Keep two independent keys provisioned with your Entitle operator.",
+          );
         const renderKeyList = () =>
           h(
             "ul",
@@ -1161,9 +1169,8 @@ export function mountSellerApp(
                         `Revoke API key ${key.name}?`,
                         "Confirm revoke API key",
                         async () => {
-                          const proof =
-                            fields.value["key-verification-token"] || "";
-                          fields.value["key-verification-token"] = "";
+                          const proof = "";
+
                           await verifiedRequest(
                             platform,
                             tenantApi(),
@@ -1255,7 +1262,7 @@ export function mountSellerApp(
               title: "Publish a release",
               location: "Products & sales → Releases",
               description:
-                "Upload a versioned package or release asset for your product. Publication requires a fresh emailed verification link, so keep your inbox handy.",
+                "Upload a versioned package or release asset for your product. Publication requires fresh hardware verification.",
               action: "Publish your first release",
               complete:
                 !!product &&
@@ -2063,14 +2070,32 @@ export function mountSellerApp(
                 `Plugins and apps published by ${data.tenant.name}. Each product has its own plans, licenses, releases and client configuration.`,
               ),
               !data.products.length &&
-                h("section", { class: "product-empty-state", "aria-label": "Add your first product" }, [
-                  h("h3", "No products yet"),
-                  h("p", "Add your first plugin or app. You can issue complimentary licenses without Stripe."),
-                  btn("Create product", () => {
-                    (document.getElementById("product-create-disclosure") as HTMLDetailsElement).open = true;
-                    document.getElementById("product-name")!.focus();
-                  }, busy.value),
-                ]),
+                h(
+                  "section",
+                  {
+                    class: "product-empty-state",
+                    "aria-label": "Add your first product",
+                  },
+                  [
+                    h("h3", "No products yet"),
+                    h(
+                      "p",
+                      "Add your first plugin or app. You can issue complimentary licenses without Stripe.",
+                    ),
+                    btn(
+                      "Create product",
+                      () => {
+                        (
+                          document.getElementById(
+                            "product-create-disclosure",
+                          ) as HTMLDetailsElement
+                        ).open = true;
+                        document.getElementById("product-name")!.focus();
+                      },
+                      busy.value,
+                    ),
+                  ],
+                ),
               !prices.value.length &&
                 h(
                   "p",
@@ -2191,8 +2216,13 @@ export function mountSellerApp(
                       " Include annual paid plan",
                     ]),
                   ]),
-                  includePaidPlan.value && localMode.value &&
-                    h("p", { class: "notice product-price-note" }, "Local fixture prices. These are simulated, not live Stripe prices."),
+                  includePaidPlan.value &&
+                    localMode.value &&
+                    h(
+                      "p",
+                      { class: "notice product-price-note" },
+                      "Local fixture prices. These are simulated, not live Stripe prices.",
+                    ),
                   includePaidPlan.value && field("plan-name", "Plan name"),
                   includePaidPlan.value &&
                     field(
@@ -2321,13 +2351,14 @@ export function mountSellerApp(
                   const uploadApi = tenantApi();
                   const uploadPath = `/${framework === "wordpress" ? "releases" : "assets"}/${encodeURIComponent(releaseProduct()!.slug)}/${encodeURIComponent(fields.value["release-version"]!)}`;
                   const uploadBody = await file.value.arrayBuffer();
-                  const proof =
-                    fields.value["release-verification-token"] || "";
-                  fields.value["release-verification-token"] = "";
-                  const grant = await platform.post<{ verification: string }>(
-                    "/account/verification/consume",
-                    { purpose: "release_publish", token: proof },
-                  );
+
+                  const grant = {
+                    verification: await hardwareVerification(platform, {
+                      action: "account.privileged",
+                      purpose: "release_publish",
+                      path: `${uploadApi.basePath}${uploadPath}`,
+                    }),
+                  };
                   await uploadApi.request(uploadPath, {
                     method: "POST",
                     headers: {
@@ -2347,24 +2378,7 @@ export function mountSellerApp(
                 [
                   h(
                     "p",
-                    "Browser publication requires a fresh email token for purpose release_publish. Scoped API keys can publish from CI.",
-                  ),
-                  btn(
-                    "Email release verification",
-                    () =>
-                      void run(async () => {
-                        await platform.post("/account/verification/request", {
-                          purpose: "release_publish",
-                        });
-                        notice.value =
-                          "Check your email for the release publication token.";
-                      }),
-                    busy.value,
-                  ),
-                  field(
-                    "release-verification-token",
-                    "Release publication email verification token",
-                    "password",
+                    "Browser publication requires fresh hardware verification. Use trusted OIDC publishers from CI.",
                   ),
                   select(
                     "release-product",
@@ -2807,8 +2821,8 @@ export function mountSellerApp(
               form(
                 "key-create",
                 async () => {
-                  const proof = fields.value["key-verification-token"] || "";
-                  fields.value["key-verification-token"] = "";
+                  const proof = "";
+
                   const result = await verifiedRequest<{ token: string }>(
                     platform,
                     tenantApi(),
@@ -3088,7 +3102,28 @@ export function mountSellerApp(
                   ? section("Sign in to sell", [
                       h(
                         "p",
-                        "Create your seller account or sign in with an email link.",
+                        "Sign in with a passkey or security key, or use an email link to create an account or sign in.",
+                      ),
+                      btn(
+                        "Sign in with a passkey or security key",
+                        () =>
+                          void run(async () => {
+                            const started = await platform.post<{
+                              options: unknown;
+                            }>("/auth/passkey/options", {}, false);
+                            const response = await passkeyCeremony(
+                              "get",
+                              started.options,
+                            );
+                            await platform.post(
+                              "/auth/passkey/verify",
+                              { response },
+                              false,
+                            );
+                            clearSession();
+                            await session();
+                          }, false),
+                        busy.value,
                       ),
                       form(
                         "seller-login",
@@ -3107,6 +3142,7 @@ export function mountSellerApp(
                         "details",
                         {
                           class: "account-recovery",
+                          open: recoveryOpen.value,
                           onToggle: (event: Event) => {
                             recoveryOpen.value = (
                               event.target as HTMLDetailsElement
@@ -3314,8 +3350,8 @@ export function mountSellerApp(
                               [
                                 h(
                                   "option",
-                                  { value: "api_keys" },
-                                  "API key change",
+                                  { value: "security_enroll" },
+                                  "Add a passkey or security key",
                                 ),
                                 h(
                                   "option",
@@ -3324,52 +3360,26 @@ export function mountSellerApp(
                                 ),
                                 h(
                                   "option",
-                                  { value: "release_publish" },
-                                  "Publish a release",
-                                ),
-                                h(
-                                  "option",
                                   { value: "tenant_transfer" },
                                   "Tenant export",
-                                ),
-                                h(
-                                  "option",
-                                  { value: "workspace_remove" },
-                                  "Workspace removal",
                                 ),
                               ],
                             ),
                             btn(
                               "Continue with verification link",
                               () => {
-                                if (proofPurpose.value === "api_keys") {
-                                  fields.value["key-verification-token"] =
-                                    accountProof.value;
-                                  activePage.value = "keys";
-                                } else if (
-                                  proofPurpose.value === "workspace_remove"
-                                ) {
-                                  fields.value["workspace-verification-token"] =
-                                    accountProof.value;
-                                  activePage.value = "workspaces";
-                                } else if (
-                                  proofPurpose.value === "release_publish"
-                                ) {
-                                  fields.value["release-verification-token"] =
-                                    accountProof.value;
-                                  activePage.value = "releases";
-                                } else {
-                                  const page =
-                                    proofPurpose.value === "recovery_codes"
-                                      ? "security"
-                                      : "export";
-                                  panelProof.value = {
-                                    page,
-                                    token: accountProof.value,
-                                  };
-                                  proofRound.value++;
-                                  activePage.value = page;
-                                }
+                                const page = [
+                                  "recovery_codes",
+                                  "security_enroll",
+                                ].includes(proofPurpose.value)
+                                  ? "security"
+                                  : "export";
+                                panelProof.value = {
+                                  page,
+                                  token: accountProof.value,
+                                };
+                                proofRound.value++;
+                                activePage.value = page;
                                 accountProof.value = "";
                                 notice.value = "";
                               },
@@ -3392,10 +3402,6 @@ export function mountSellerApp(
                                 tenants: seller.value.tenants,
                                 platform,
                                 busy: busy.value,
-                                initialToken:
-                                  fields.value[
-                                    "workspace-verification-token"
-                                  ] || "",
                                 execute: (action: () => Promise<void>) => {
                                   void run(action);
                                 },
@@ -3415,10 +3421,6 @@ export function mountSellerApp(
                                   selected.value = slug;
                                   activePage.value = "overview";
                                   void run(dashboard);
-                                },
-                                onTokenUsed: () => {
-                                  fields.value["workspace-verification-token"] =
-                                    "";
                                 },
                               }),
                             ],

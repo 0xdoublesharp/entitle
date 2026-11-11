@@ -2,6 +2,7 @@ import { resolve } from "node:path";
 import { z } from "zod";
 import { normalizeAppBasePath } from "../packages/shared/app-path.ts";
 import type { WorkerResourceLimits } from "./queue.ts";
+import { defaultOidcProviders, oidcProvidersSchema, type OidcProvider } from "./oidc-schema.ts";
 export type ServerRole = "all" | "api" | "worker" | "migrate";
 export type DeploymentSlot = "blue" | "green";
 
@@ -37,6 +38,7 @@ export const freeLicenseOffersSchema = z.array(z.object({
 export type FreeLicenseOffer = z.infer<typeof freeLicenseOffersSchema>[number];
 
 export interface Config {
+  oidcProviders?: OidcProvider[];
   billingWorker?: WorkerResourceLimits;
   freeLicenseOffers?: FreeLicenseOffer[];
   serverRole?: ServerRole;
@@ -444,6 +446,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       );
   }
   return {
+    oidcProviders: oidcProvidersSchema.parse(JSON.parse(env.OIDC_PROVIDERS ?? JSON.stringify(defaultOidcProviders))),
     freeLicenseOffers: freeLicenseOffersSchema.parse(JSON.parse(env.FREE_LICENSE_OFFERS ?? "[]")),
     serverRole,
     ...(deploymentSlot === undefined ? {} : { deploymentSlot }),

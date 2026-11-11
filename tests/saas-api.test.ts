@@ -1,3 +1,4 @@
+import { hardwareHeaders } from "./helpers/oidc.ts";
 import { isolatedDatabase } from "./helpers/database.ts";
 import test, { type TestContext } from "node:test";
 import assert from "node:assert/strict";
@@ -157,7 +158,7 @@ for (const framework of ["wordpress", "generic"] as const) {
       assert.equal((await f.post("/api/v1/operator/tenants/primary/owner", {
         email: "owner@example.test",
       }, f.operator)).statusCode, 200);
-      const revokeHeaders = await verifiedHeaders(f, browser);
+      const revokeHeaders = await verifiedHeaders(f, browser, `${prefix}/seller/keys/${key.id}/revoke`);
       const original = f.store.get.bind(f.store);
       t.mock.method(f.store, "get", async (...args: Parameters<typeof original>) => {
         const bytes = await original(...args);
@@ -237,42 +238,8 @@ async function seller(f: Fixture, email = "owner@example.test") {
     "x-csrf-token": me.json().csrfToken as string,
   };
 }
-async function verifiedHeaders(
-  f: Fixture,
-  browser: Record<string, string>,
-  purpose = "api_keys",
-) {
-  const previous = (
-    await f
-      .db("platform_emails")
-      .where({ kind: "account_verification" })
-      .select("id")
-  ).map((row) => row.id);
-  const requested = await f.post(
-    "/api/v1/platform/account/verification/request",
-    { purpose },
-    browser,
-  );
-  assert.equal(requested.statusCode, 200, requested.body);
-  const job = await f
-    .db("platform_emails")
-    .where({ kind: "account_verification" })
-    .whereNotIn("id", previous)
-    .first();
-  const token = /#account-verification=([A-Za-z0-9_-]+)/.exec(
-    unseal<Message>(job.payload, f.config.secret).text,
-  )![1]!;
-  const consumed = await f.post(
-    "/api/v1/platform/account/verification/consume",
-    { purpose, token },
-    browser,
-  );
-  assert.equal(consumed.statusCode, 200, consumed.body);
-  return {
-    ...browser,
-    "x-account-verification": consumed.json().verification as string,
-  };
-}
+async function verifiedHeaders(f: Fixture, browser: Record<string,string>, path = `${prefix}/seller/keys`) { return hardwareHeaders(f, browser, path); }
+
 async function merchant(f: Fixture, slug = "merchant") {
   return createTenant(f.db, {
     id: randomUUID(),
@@ -431,12 +398,12 @@ test("CLI owner sign-in, verification and API key creation honor real session bi
   assert.equal(await runCli(["workspace-create",workspace],ownerEnv,io),0,lines.join("\n"));
   const purpose=`${f.root}/purpose.json`;
   await writeFile(purpose,JSON.stringify({purpose:"api_keys"}));
-  assert.equal(await runCli(["owner-verification-request",purpose],ownerEnv,io),0,lines.join("\n"));
-  const email=await f.db("platform_emails").where({kind:"account_verification"}).first();
-  const verification=/#account-verification=([A-Za-z0-9_-]+)/.exec(unseal<Message>(email.payload,f.config.secret).text)![1]!;
-  const input=`${f.root}/verification.json`,proof=`${f.root}/proof.json`;
-  await writeFile(input,JSON.stringify({purpose:"api_keys",token:verification}),{mode:0o600});
-  assert.equal(await runCli(["owner-verification-consume",input,proof],ownerEnv,io),0,lines.join("\n"));
+  assert.equal(await runCli(["owner-verification-request",purpose],ownerEnv,io),1,"Email cannot approve privileged API keys");
+  const saved = JSON.parse(await readFile(sessionFile, "utf8"));
+  const browser = { origin, cookie: saved.cookie, "x-csrf-token": csrf(saved.cookie.split("=")[1], f.config.secret) };
+  const approved = await verifiedHeaders(f, browser, "/api/v1/tenants/cli-workspace/seller/keys");
+  const proof=`${f.root}/proof.json`;
+  await writeFile(proof,JSON.stringify({verification:approved["x-account-verification"]}),{mode:0o600});
   const keyFile=`${f.root}/key.json`;
   await writeFile(keyFile,JSON.stringify({name:"Agent",scopes:["read"]}));
   assert.equal(await runCli(["owner-key-create",keyFile],{...ownerEnv,ENTITLE_VERIFICATION_FILE:proof},io),0,lines.join("\n"));
@@ -1138,7 +1105,7 @@ test("seller keys enforce scope, expiry, tenant ownership, and interactive-only 
       await f.post(
         `${prefix}/seller/keys/${defaults.json().id}/revoke`,
         {},
-        await verifiedHeaders(f, browser),
+        await verifiedHeaders(f, browser, `${prefix}/seller/keys/${defaults.json().id}/revoke`),
       )
     ).statusCode,
     200,

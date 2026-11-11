@@ -11,6 +11,11 @@ releases. WordPress has first-class support alongside Joomla, Electron, Tauri,
 Sparkle, JetBrains and generic clients. Expiration limits new downloads and
 updates; installed software keeps working.
 
+[Publish from CI with OIDC](docs/oidc-publishing.md) using GitHub Actions or an
+operator-enabled provider. Manage trust with passkey or FIDO2 security-key
+verification, sign in with your keys, and choose whether email-link fallback is
+available for your account.
+
 ## Choose how to run it
 
 |                | Hosted publisher                                                       | Self-hosted publisher                                                               |

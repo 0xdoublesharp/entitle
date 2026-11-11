@@ -453,3 +453,10 @@ unlock/download while the offer remains configured. Per-IP request limits and
 an atomic UTC daily issuance limit bound signup volume. Duplicate requests do
 not consume another issuance; SMTP delivery remains an outbox operation. The
 normal activation/update endpoints accept the emailed key unchanged.
+
+## OIDC publishing and strong reauthentication
+
+See [OIDC publishing](oidc-publishing.md#http-cli-and-mcp) for trusted-publisher,
+passkey/security-key enrollment, reauthentication and CI token exchange routes.
+
+See [capability-specific authentication and recovery](authentication-policy.md) for hardware approvals, restricted recovery operations and local operator recovery.

@@ -19,10 +19,13 @@ import type { PlatformBilling } from "./platform-billing.ts";
 import { AppError, check } from "./errors.ts";
 import { hash } from "./crypto.ts";
 import { tenantMetrics } from "./metrics.ts";
-import { AccountManagement } from "./account-management.ts";
 import { validateAssetMetadata } from "./package-validation.ts";
 import { frameworks, validateFrameworkConfig } from "./frameworks.ts";
-import { complimentaryInput, installationExempt, productActivationKind } from "./licensing.ts";
+import {
+  complimentaryInput,
+  installationExempt,
+  productActivationKind,
+} from "./licensing.ts";
 import { stripeConfigured } from "./config.ts";
 const slug = z
     .string()
@@ -56,6 +59,7 @@ export async function sellerRoutes(
     );
     const mutation = !["GET", "HEAD", "OPTIONS"].includes(req.method);
     const interactive =
+      route.includes("/oidc/publishers") ||
       route.includes("/keys") ||
       route.includes("/stripe/") ||
       route.includes("/platform/") ||
@@ -89,24 +93,30 @@ export async function sellerRoutes(
         "tenant_suspended",
         "This publisher's service is suspended.",
       );
-    if (mutation && (route.endsWith("/keys") || route.includes("/keys/:id/")))
-      await new AccountManagement(s.db, auth).requireStepUp(req, "api_keys");
-    if (
-      mutation &&
-      !req.headers.authorization &&
-      (route.endsWith("/releases/:product/:version") ||
-        route.endsWith("/assets/:product/:version"))
-    )
-      await new AccountManagement(s.db, auth).requireStepUp(
-        req,
-        "release_publish",
-      );
+    if (mutation && !req.headers.authorization) {
+      const purpose =
+        route.endsWith("/keys") || route.includes("/keys/:id/")
+          ? "api_keys"
+          : route.endsWith("/releases/:product/:version") ||
+              route.endsWith("/assets/:product/:version")
+            ? "release_publish"
+            : null;
+      if (purpose) {
+        const preflight = await auth.capabilityAuthorization(
+          req,
+          purpose,
+          false,
+        );
+        await s.db.transaction(preflight);
+      }
+    }
     const capacity =
       mutation &&
       (route.endsWith("/products") ||
         route.endsWith("/releases/:product/:version") ||
         route.endsWith("/assets/:product/:version") ||
-        route.includes("/local/") || route.endsWith("/licenses/complimentary"));
+        route.includes("/local/") ||
+        route.endsWith("/licenses/complimentary"));
     if (capacity && s.config.deploymentMode === "hosted")
       check(
         tenantAvailable(
@@ -126,6 +136,19 @@ export async function sellerRoutes(
   ) {
     const { db, tenant } = context(req);
     const header = req.headers.authorization;
+    const publisherId = auth.oidcActors.get(req);
+    if (publisherId) {
+      await db("audit_events").insert({
+        id: randomUUID(),
+        tenant_id: tenant.id,
+        actor_type: "oidc",
+        actor_id: publisherId,
+        action,
+        details: JSON.stringify(details),
+        created_at: Date.now(),
+      });
+      return;
+    }
     const key = header
       ? await db("tenant_api_keys")
           .where({ tenant_id: tenant.id, key_hash: hash(header.slice(7)) })
@@ -203,30 +226,102 @@ export async function sellerRoutes(
         ...r,
         withdrawn: !!r.withdrawn,
       })),
-      metrics: await tenantMetrics(db, tenant, undefined, config.exemptSuffixes),
+      metrics: await tenantMetrics(
+        db,
+        tenant,
+        undefined,
+        config.exemptSuffixes,
+      ),
       sandbox:
         (await new PublisherSandboxes(db, config).describe(tenant.id)) ?? null,
     };
   });
   app.get("/licenses/:id", async (req) => {
     const { db, tenant, config } = context(req);
-    const { id } = z.object({ id: z.string().min(1).max(64) }).parse(req.params);
-    const { after, limit } = z.object({ after: z.string().min(1).max(64).optional(), limit: z.coerce.number().int().min(1).max(500).default(100) }).strict().parse(req.query);
+    const { id } = z
+      .object({ id: z.string().min(1).max(64) })
+      .parse(req.params);
+    const { after, limit } = z
+      .object({
+        after: z.string().min(1).max(64).optional(),
+        limit: z.coerce.number().int().min(1).max(500).default(100),
+      })
+      .strict()
+      .parse(req.query);
     const license = await db("licenses")
-      .join("customers", function () { this.on("customers.id", "=", "licenses.customer_id").andOn("customers.tenant_id", "=", "licenses.tenant_id"); })
-      .join("products", function () { this.on("products.id", "=", "licenses.product_id").andOn("products.tenant_id", "=", "licenses.tenant_id"); })
-      .leftJoin("plans", function () { this.on("plans.id", "=", "licenses.plan_id").andOn("plans.tenant_id", "=", "licenses.tenant_id"); })
+      .join("customers", function () {
+        this.on("customers.id", "=", "licenses.customer_id").andOn(
+          "customers.tenant_id",
+          "=",
+          "licenses.tenant_id",
+        );
+      })
+      .join("products", function () {
+        this.on("products.id", "=", "licenses.product_id").andOn(
+          "products.tenant_id",
+          "=",
+          "licenses.tenant_id",
+        );
+      })
+      .leftJoin("plans", function () {
+        this.on("plans.id", "=", "licenses.plan_id").andOn(
+          "plans.tenant_id",
+          "=",
+          "licenses.tenant_id",
+        );
+      })
       .where({ "licenses.tenant_id": tenant.id, "licenses.id": id })
-      .first("licenses.id", "licenses.customer_id", "licenses.product_id", "licenses.site_allowance", "licenses.paid_through", "licenses.billing_status", "licenses.provenance", "licenses.expires_at", "licenses.internal_note", "licenses.issued_at", "licenses.revoked", "licenses.refund_revoked", "licenses.suspended", {product_name:"products.name",plan_name:"plans.name",customer_email:"customers.email"});
+      .first(
+        "licenses.id",
+        "licenses.customer_id",
+        "licenses.product_id",
+        "licenses.site_allowance",
+        "licenses.paid_through",
+        "licenses.billing_status",
+        "licenses.provenance",
+        "licenses.expires_at",
+        "licenses.internal_note",
+        "licenses.issued_at",
+        "licenses.revoked",
+        "licenses.refund_revoked",
+        "licenses.suspended",
+        {
+          product_name: "products.name",
+          plan_name: "plans.name",
+          customer_email: "customers.email",
+        },
+      );
     check(license, 404, "not_found", "License not found.");
-    const product = await db("products").where({ tenant_id: tenant.id, id: license.product_id }).first("framework", "framework_config");
+    const product = await db("products")
+      .where({ tenant_id: tenant.id, id: license.product_id })
+      .first("framework", "framework_config");
     check(product, 404, "not_found", "Product not found.");
     const kind = productActivationKind(product);
-    const query = db("installations").where({ tenant_id:tenant.id, license_id:id }).orderBy("id").limit(limit+1).select("id","site_url","label","active","exempt");
+    const query = db("installations")
+      .where({ tenant_id: tenant.id, license_id: id })
+      .orderBy("id")
+      .limit(limit + 1)
+      .select("id", "site_url", "label", "active", "exempt");
     if (after) query.andWhere("id", ">", after);
-    const rows=await query;
-    const page=rows.slice(0,limit);
-    return {license:{...license,plan_name:license.plan_name??"Complimentary",expires_at:license.expires_at===null?null:Number(license.expires_at),paid_through:Number(license.paid_through),revoked:!!license.revoked||!!license.refund_revoked,suspended:!!license.suspended},installations:page.map((item)=>({...item,active:!!item.active,exempt:installationExempt(item.site_url,kind,config.exemptSuffixes)})),nextCursor:rows.length>limit?page.at(-1)!.id:null};
+    const rows = await query;
+    const page = rows.slice(0, limit);
+    return {
+      license: {
+        ...license,
+        plan_name: license.plan_name ?? "Complimentary",
+        expires_at:
+          license.expires_at === null ? null : Number(license.expires_at),
+        paid_through: Number(license.paid_through),
+        revoked: !!license.revoked || !!license.refund_revoked,
+        suspended: !!license.suspended,
+      },
+      installations: page.map((item) => ({
+        ...item,
+        active: !!item.active,
+        exempt: installationExempt(item.site_url, kind, config.exemptSuffixes),
+      })),
+      nextCursor: rows.length > limit ? page.at(-1)!.id : null,
+    };
   });
   app.get("/prices", async (req) => {
     const { tenant, stripe, config, reads } = context(req);
@@ -242,7 +337,12 @@ export async function sellerRoutes(
           interval: "year",
         })),
       };
-    check(stripeConfigured(config), 503, "billing_unavailable", "Stripe billing is not configured.");
+    check(
+      stripeConfigured(config),
+      503,
+      "billing_unavailable",
+      "Stripe billing is not configured.",
+    );
     check(
       config.deploymentMode === "standalone" || tenant.stripe_account_id,
       409,
@@ -318,7 +418,12 @@ export async function sellerRoutes(
       .strict()
       .parse(req.body);
     if (!config.localBilling && input.plans.length) {
-      check(stripeConfigured(config), 503, "billing_unavailable", "Stripe billing is not configured.");
+      check(
+        stripeConfigured(config),
+        503,
+        "billing_unavailable",
+        "Stripe billing is not configured.",
+      );
       check(
         config.deploymentMode === "standalone" || tenant.stripe_account_id,
         409,
@@ -486,8 +591,17 @@ export async function sellerRoutes(
     const { db, tenant, licensing } = context(req);
     const input = complimentaryInput.parse(req.body);
     const header = req.headers.authorization;
-    const key = header ? await db("tenant_api_keys").where({ tenant_id: tenant.id, key_hash: hash(header.slice(7)) }).first("id") : undefined;
-    const actor = key ? { type: "api_key" as const, id: key.id as string } : { type: "seller" as const, id: (await auth.seller(req, false)).user.id };
+    const key = header
+      ? await db("tenant_api_keys")
+          .where({ tenant_id: tenant.id, key_hash: hash(header.slice(7)) })
+          .first("id")
+      : undefined;
+    const actor = key
+      ? { type: "api_key" as const, id: key.id as string }
+      : {
+          type: "seller" as const,
+          id: (await auth.seller(req, false)).user.id,
+        };
     return licensing.issueComplimentary(input, actor);
   });
   app.post("/licenses/:id/revoke", async (req) => {
@@ -563,11 +677,14 @@ export async function sellerRoutes(
         try {
           const file = join(directory, "release.zip");
           await writeFile(file, req.body, { mode: 0o600, flag: "wx" });
-          const release = await releases.publish({
-            ...params,
-            ...metadata,
-            file,
-          }, auth.publicationAuthorization(req, context(req).tenant.id));
+          const release = await releases.publish(
+            {
+              ...params,
+              ...metadata,
+              file,
+            },
+            await auth.publicationAuthorization(req, context(req).tenant.id),
+          );
           await audit(req, "release.published", {
             release_id: release.id,
             product_id: release.product_id,
@@ -711,11 +828,14 @@ export async function sellerRoutes(
               input.off("error", failed);
               input.off("aborted", aborted);
             }
-            const result = await artifacts.publish({
-              ...params,
-              ...metadata,
-              file,
-            }, auth.publicationAuthorization(req, tenant.id));
+            const result = await artifacts.publish(
+              {
+                ...params,
+                ...metadata,
+                file,
+              },
+              await auth.publicationAuthorization(req, tenant.id),
+            );
             await audit(req, "asset.published", {
               release_id: result.release.id,
               asset_id: result.asset.id,
@@ -766,6 +886,7 @@ export async function sellerRoutes(
         ...(b.scopes ? { scopes: b.scopes } : {}),
         ...(b.expiresInDays ? { expiresInDays: b.expiresInDays } : {}),
       },
+      await auth.capabilityAuthorization(req, "api_keys"),
     );
   });
   app.post("/keys/:id/revoke", async (req) => {
@@ -775,6 +896,7 @@ export async function sellerRoutes(
       await auth.seller(req, true),
       context(req).tenant.id,
       id,
+      await auth.capabilityAuthorization(req, "api_keys"),
     );
     return { ok: true };
   });
@@ -799,7 +921,12 @@ export async function sellerRoutes(
     return payments.portal(context(req).tenant);
   });
   app.post("/reconcile", async (req) => {
-    check(context(req).config.localBilling || stripeConfigured(context(req).config), 503, "billing_unavailable", "Stripe billing is not configured.");
+    check(
+      context(req).config.localBilling || stripeConfigured(context(req).config),
+      503,
+      "billing_unavailable",
+      "Stripe billing is not configured.",
+    );
     const { stripe, billing } = context(req),
       input = z
         .object({ subscriptionId: z.string().min(1).max(150).optional() })

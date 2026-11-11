@@ -1,5 +1,8 @@
 import { appUrl } from "../packages/shared/app-path.ts";
-import { accountVerificationEmail, emailChangeEmail } from "./transactional-email.ts";
+import {
+  accountVerificationEmail,
+  emailChangeEmail,
+} from "./transactional-email.ts";
 import type { Message } from "./email.ts";
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
@@ -18,7 +21,15 @@ import { recordBusinessEvent } from "./business-events.ts";
 import { outboundEventTypes } from "./outbound-webhooks.ts";
 import { workerContinuationScope, workerTurn } from "./worker-continuation.ts";
 
+import {
+  currentAuthSession,
+  consumeCapabilityProof,
+  privilegedPurposes,
+} from "./auth-policy.ts";
+import { beginRecovery } from "./auth-recovery.ts";
+
 export const sensitivePurposes = [
+  "security_enroll",
   "recovery_codes",
   "billing",
   "api_keys",
@@ -67,7 +78,7 @@ export class AccountManagement {
     this.auth = auth;
     this.recoveryCookieName = `${auth.config.production ? "__Host-" : ""}de-account-recovery`;
   }
-  private async throttle(scope: string, max: number, windowMs: number) {
+  async throttle(scope: string, max: number, windowMs: number) {
     const allowed = await this.db.transaction(async (tx) => {
       await lock(tx, "auth");
       const now = Date.now();
@@ -117,6 +128,7 @@ export class AccountManagement {
         "seller_login_required",
         "Sign in again.",
       );
+      await currentAuthSession(tx, session);
       return action(tx, { ...session, user });
     });
   }
@@ -175,7 +187,11 @@ export class AccountManagement {
       return { ok: true };
     });
   }
-  private async send(tx: Tx, kind: string, message: Omit<Message, "messageId">) {
+  private async send(
+    tx: Tx,
+    kind: string,
+    message: Omit<Message, "messageId">,
+  ) {
     const id = randomUUID();
     await tx("platform_emails").insert({
       id,
@@ -191,6 +207,12 @@ export class AccountManagement {
     });
   }
   async requestVerification(req: FastifyRequest, purpose: SensitivePurpose) {
+    check(
+      !(privilegedPurposes as readonly string[]).includes(purpose),
+      403,
+      "hardware_required",
+      "Use hardware reauthentication for this action.",
+    );
     const session = await this.auth.seller(req, true);
     await this.throttle(`verification-request:${session.user.id}`, 5, 3600000);
     return this.sellerAction(req, true, async (tx, s) => {
@@ -214,7 +236,11 @@ export class AccountManagement {
       await this.send(
         tx,
         "account_verification",
-        accountVerificationEmail(s.user.email, appUrl(this.auth.config, `/seller#account-verification=${token}`), purpose),
+        accountVerificationEmail(
+          s.user.email,
+          appUrl(this.auth.config, `/seller#account-verification=${token}`),
+          purpose,
+        ),
       );
       await audit(tx, s.user.id, "seller.verification.requested", null, {
         purpose,
@@ -251,6 +277,12 @@ export class AccountManagement {
     purpose: SensitivePurpose,
     token: string,
   ) {
+    check(
+      !(privilegedPurposes as readonly string[]).includes(purpose),
+      403,
+      "hardware_required",
+      "Email verification cannot approve this action.",
+    );
     const session = await this.auth.seller(req, true);
     await this.throttle(`verification-consume:${session.user.id}`, 20, 900000);
     return this.sellerAction(req, true, async (tx, s) => {
@@ -275,7 +307,19 @@ export class AccountManagement {
     action: (tx: Tx) => Promise<T>,
   ): Promise<T> {
     return this.sellerAction(req, true, async (tx, s) => {
-      await this.consumeChallenge(tx, s, `grant:${purpose}`, verification);
+      if ((privilegedPurposes as readonly string[]).includes(purpose))
+        await consumeCapabilityProof(
+          tx,
+          s,
+          verification,
+          {
+            action: "account.privileged",
+            purpose: purpose as (typeof privilegedPurposes)[number],
+            path: req.url.split("?")[0]!,
+          },
+          this.auth.config.secret,
+        );
+      else await this.consumeChallenge(tx, s, `grant:${purpose}`, verification);
       const result = await action(tx);
       await audit(tx, s.user.id, "seller.verification.used", null, { purpose });
       return result;
@@ -390,12 +434,19 @@ export class AccountManagement {
         return false;
       }
       await tx("account_recovery_codes").where({ id: recovery.id }).delete();
-      await tx("seller_sessions").where({ user_id: user!.id }).delete();
-      await tx("seller_login_tokens").where({ user_id: user!.id }).delete();
-      await tx("account_challenges").where({ user_id: user!.id }).delete();
+      const flow = await beginRecovery(
+        tx,
+        user!.id,
+        this.auth.config.secret,
+        "ordinary",
+      );
       await tx("seller_sessions").insert({
         id: hash(token),
         user_id: user!.id,
+        auth_method: "recovery",
+        auth_generation: Number(user!.security_generation),
+        recovery_id: flow.id,
+        created_at: Date.now(),
         expires_at: Date.now() + 7 * 86400000,
       });
       await audit(tx, user!.id, "seller.recovery.used");
@@ -408,7 +459,7 @@ export class AccountManagement {
       "Recovery credentials are invalid or already used.",
     );
     reply.setCookie(this.auth.cookieName, token, this.cookieOptions(7 * 86400));
-    return { ok: true };
+    return { ok: true, recoveryRestricted: true };
   }
   private hostedEmailChange() {
     check(
@@ -450,12 +501,28 @@ export class AccountManagement {
       await this.send(
         tx,
         "account_email_current",
-        emailChangeEmail(s.user.email, appUrl(this.auth.config, `/seller#account-email-change=${id}&token=${currentToken}`), address, true),
+        emailChangeEmail(
+          s.user.email,
+          appUrl(
+            this.auth.config,
+            `/seller#account-email-change=${id}&token=${currentToken}`,
+          ),
+          address,
+          true,
+        ),
       );
       await this.send(
         tx,
         "account_email_new",
-        emailChangeEmail(address, appUrl(this.auth.config, `/seller#account-email-change=${id}&token=${newToken}`), address, false),
+        emailChangeEmail(
+          address,
+          appUrl(
+            this.auth.config,
+            `/seller#account-email-change=${id}&token=${newToken}`,
+          ),
+          address,
+          false,
+        ),
       );
       await audit(tx, s.user.id, "seller.email_change.requested");
       return { id, expiresIn: 900 };
@@ -603,31 +670,91 @@ export async function completedCustomerClosure(
   if (turn) {
     // Bound the raw tenant receipt prefix before qualification. A join filtered
     // by completion could scan arbitrarily many unrelated/open rows first.
-    const receipts = await turn.textRows<{ id: string; tenant_id: string; customer_id: string; request_id: string; details: string; created_at: number }>(
-      db("account_privacy_receipts").where({ tenant_id: tenantId })
-        .select("id", "tenant_id", "customer_id", "request_id", "details", "created_at"), ["details"], db,
+    const receipts = await turn.textRows<{
+      id: string;
+      tenant_id: string;
+      customer_id: string;
+      request_id: string;
+      details: string;
+      created_at: number;
+    }>(
+      db("account_privacy_receipts")
+        .where({ tenant_id: tenantId })
+        .select(
+          "id",
+          "tenant_id",
+          "customer_id",
+          "request_id",
+          "details",
+          "created_at",
+        ),
+      ["details"],
+      db,
     );
     turn.work(receipts.length);
-    const closures = receipts.length ? await turn.rows<{ customer_id: string; id: string }>(db("account_closures")
-      .where({ tenant_id: tenantId, status: "completed" })
-      .whereIn("customer_id", [...new Set(receipts.map((receipt) => receipt.customer_id))])
-      .select("customer_id", "id")) : [];
+    const closures = receipts.length
+      ? await turn.rows<{ customer_id: string; id: string }>(
+          db("account_closures")
+            .where({ tenant_id: tenantId, status: "completed" })
+            .whereIn("customer_id", [
+              ...new Set(receipts.map((receipt) => receipt.customer_id)),
+            ])
+            .select("customer_id", "id"),
+        )
+      : [];
     turn.work(closures.length);
-    const completed = new Set(closures.map((closure) => JSON.stringify([closure.customer_id, closure.id])));
+    const completed = new Set(
+      closures.map((closure) =>
+        JSON.stringify([closure.customer_id, closure.id]),
+      ),
+    );
     for (const receipt of receipts) {
       turn.work();
-      if (!completed.has(JSON.stringify([receipt.customer_id, receipt.request_id]))) continue;
+      if (
+        !completed.has(
+          JSON.stringify([receipt.customer_id, receipt.request_id]),
+        )
+      )
+        continue;
       const details = turn.json<Record<string, unknown>>(receipt.details);
-      turn.work(Array.isArray(details.referenceDigests) ? details.referenceDigests.length : 1);
-      const matches = z.array(z.string().regex(/^[a-f0-9]{64}$/)).max(10000)
-        .parse(details.referenceDigests).includes(digest);
+      turn.work(
+        Array.isArray(details.referenceDigests)
+          ? details.referenceDigests.length
+          : 1,
+      );
+      const matches = z
+        .array(z.string().regex(/^[a-f0-9]{64}$/))
+        .max(10000)
+        .parse(details.referenceDigests)
+        .includes(digest);
       turn.work();
       if (!matches) continue;
-      check(typeof details.stripeLiveMode === "boolean", 503, "billing_privacy_mode_required", "Establish the retained receipt's provider mode before replay.");
+      check(
+        typeof details.stripeLiveMode === "boolean",
+        503,
+        "billing_privacy_mode_required",
+        "Establish the retained receipt's provider mode before replay.",
+      );
       if (details.stripeLiveMode !== stripeLiveMode) continue;
       if (details.stripeCustomerAttribution !== undefined) {
-        turn.work(typeof details.stripeCustomerAttribution === "string" ? Math.max(1, Math.ceil(details.stripeCustomerAttribution.length / 64)) : 1);
-        unsealPrivacyAttribution(z.string().parse(details.stripeCustomerAttribution), { tenantId, customerId: receipt.customer_id, requestId: receipt.request_id, stripeLiveMode }, secret);
+        turn.work(
+          typeof details.stripeCustomerAttribution === "string"
+            ? Math.max(
+                1,
+                Math.ceil(details.stripeCustomerAttribution.length / 64),
+              )
+            : 1,
+        );
+        unsealPrivacyAttribution(
+          z.string().parse(details.stripeCustomerAttribution),
+          {
+            tenantId,
+            customerId: receipt.customer_id,
+            requestId: receipt.request_id,
+            stripeLiveMode,
+          },
+          secret,
+        );
       }
       // Retained HMAC bindings remain authoritative even after a reviewed null
       // or later provider attribution; the direct path below has the same rule.
@@ -699,27 +826,67 @@ export async function completedSubscriptionClosure(
   if (turn) {
     // This unique lookup avoids traversing another subscription's closure or
     // license history before applying the receipt bound.
-    const licenses = await turn.rows<{ customer_id: string }>(db("licenses")
-      .where({ tenant_id: tenantId, subscription_id: subscriptionId }).select("customer_id"));
+    const licenses = await turn.rows<{ customer_id: string }>(
+      db("licenses")
+        .where({ tenant_id: tenantId, subscription_id: subscriptionId })
+        .select("customer_id"),
+    );
     turn.work();
     const license = licenses[0];
     if (!license) return false;
-    const closures = await turn.rows<{ id: string }>(db("account_closures")
-      .where({ tenant_id: tenantId, customer_id: license.customer_id, status: "completed" }).select("id"));
+    const closures = await turn.rows<{ id: string }>(
+      db("account_closures")
+        .where({
+          tenant_id: tenantId,
+          customer_id: license.customer_id,
+          status: "completed",
+        })
+        .select("id"),
+    );
     turn.work();
     const closure = closures[0];
     if (!closure) return false;
-    const receipts = await turn.textRows<{ customer_id: string; request_id: string; details: string }>(
-      db("account_privacy_receipts").where({ tenant_id: tenantId, customer_id: license.customer_id, request_id: closure.id })
-        .select("customer_id", "request_id", "details"), ["details"], db,
+    const receipts = await turn.textRows<{
+      customer_id: string;
+      request_id: string;
+      details: string;
+    }>(
+      db("account_privacy_receipts")
+        .where({
+          tenant_id: tenantId,
+          customer_id: license.customer_id,
+          request_id: closure.id,
+        })
+        .select("customer_id", "request_id", "details"),
+      ["details"],
+      db,
     );
     for (const row of receipts) {
       const details = turn.json<Record<string, unknown>>(row.details);
       turn.work();
-      if (details.stripeLiveMode !== stripeLiveMode || details.stripeCustomerAttribution === undefined) continue;
-      turn.work(typeof details.stripeCustomerAttribution === "string" ? Math.max(1, Math.ceil(details.stripeCustomerAttribution.length / 64)) : 1);
-      const attribution = unsealPrivacyAttribution(z.string().parse(details.stripeCustomerAttribution),
-        { tenantId, customerId: row.customer_id, requestId: row.request_id, stripeLiveMode }, secret);
+      if (
+        details.stripeLiveMode !== stripeLiveMode ||
+        details.stripeCustomerAttribution === undefined
+      )
+        continue;
+      turn.work(
+        typeof details.stripeCustomerAttribution === "string"
+          ? Math.max(
+              1,
+              Math.ceil(details.stripeCustomerAttribution.length / 64),
+            )
+          : 1,
+      );
+      const attribution = unsealPrivacyAttribution(
+        z.string().parse(details.stripeCustomerAttribution),
+        {
+          tenantId,
+          customerId: row.customer_id,
+          requestId: row.request_id,
+          stripeLiveMode,
+        },
+        secret,
+      );
       turn.work();
       if (attribution !== null) return true;
     }

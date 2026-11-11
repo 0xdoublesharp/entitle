@@ -10,6 +10,8 @@ import {
 } from "vue";
 import type { PropType } from "vue";
 import { ApiClient, ApiError, errorMessage } from "./api.ts";
+import { RecoveryPanel } from "./auth-recovery.ts";
+import { hardwareVerification, PublisherSecurity } from "./oidc.ts";
 
 type Confirm = (
   title: string,
@@ -25,6 +27,7 @@ export interface EmailChangeDraft {
 }
 interface FeatureProduct {
   id: string;
+  slug?: string;
   name: string;
   plans: { id: string; name: string }[];
   tax_code?: string | null;
@@ -230,10 +233,23 @@ export async function verifiedRequest<T>(
   path: string,
   body: unknown,
 ): Promise<T> {
-  const result = await platform.post<{ verification: string }>(
-    "/account/verification/consume",
-    { purpose, token },
-  );
+  const privileged = [
+    "api_keys",
+    "workspace_remove",
+    "release_publish",
+  ].includes(purpose);
+  const result = privileged
+    ? {
+        verification: await hardwareVerification(platform, {
+          action: "account.privileged",
+          purpose,
+          path: `${api.basePath}${path}`,
+        }),
+      }
+    : await platform.post<{ verification: string }>(
+        "/account/verification/consume",
+        { purpose, token },
+      );
   return api.request<T>(path, {
     method: "POST",
     headers: {
@@ -589,29 +605,34 @@ export const SellerFeaturePanel = defineComponent({
         proofSent.value = true;
       });
     const proofField = (purpose: string) =>
-      h("div", { class: "verification-proof" }, [
-        !proofSent.value &&
-          h(
+      ["workspace_remove", "api_keys", "release_publish"].includes(purpose)
+        ? h(
             "p",
-            proofArrived && values.value["verification-token"]
-              ? "Verification link received. Complete the action below."
-              : "We'll email you a link. Open it in this browser to continue.",
-          ),
-        button(
-          proofSent.value
-            ? "Resend verification link"
-            : "Send verification link",
-          () => requestProof(purpose),
-          pending.value,
-        ),
-        proofSent.value &&
-          h(
-            "p",
-            { role: "status", class: "verification-sent" },
-            "Link sent. Check your email and open it in this browser.",
-          ),
-        field("verification-token", "Email verification", "password"),
-      ]);
+            "This action requires fresh verification with an independently provisioned hardware key.",
+          )
+        : h("div", { class: "verification-proof" }, [
+            !proofSent.value &&
+              h(
+                "p",
+                proofArrived && values.value["verification-token"]
+                  ? "Verification link received. Complete the action below."
+                  : "We'll email you a link. Open it in this browser to continue.",
+              ),
+            button(
+              proofSent.value
+                ? "Resend verification link"
+                : "Send verification link",
+              () => requestProof(purpose),
+              pending.value,
+            ),
+            proofSent.value &&
+              h(
+                "p",
+                { role: "status", class: "verification-sent" },
+                "Link sent. Check your email and open it in this browser.",
+              ),
+            field("verification-token", "Email verification", "password"),
+          ]);
     const consumeProof = async (purpose: string) => {
       const token = String(values.value["verification-token"] || "");
       values.value["verification-token"] = "";
@@ -1555,6 +1576,14 @@ export const SellerFeaturePanel = defineComponent({
             ),
           ];
     const security = () => [
+      h(PublisherSecurity, {
+        api: props.api,
+        platform: props.platform,
+        products: props.products,
+        initialToken: props.initialToken,
+        onExpired: () => emit("expired"),
+        onConsumed: () => props.invalidateProof?.(props.page, initialProof),
+      }),
       card(
         "Active sessions",
         "Manage the browsers signed in to your account.",
@@ -1913,28 +1942,10 @@ export const SellerFeaturePanel = defineComponent({
         ),
     ];
     const recovery = () => [
-      h(
-        "p",
-        "Use one offline recovery code. Signing in revokes older sessions and unused email sign-in links.",
-      ),
-      form(
-        "account-recovery",
-        "Sign in with recovery code",
-        [
-          field("recovery-email", "Seller email", "email"),
-          field("recovery-code", "Recovery code", "password"),
-        ],
-        async () => {
-          const body = {
-            email: values.value["recovery-email"],
-            code: values.value["recovery-code"],
-          };
-          values.value["recovery-code"] = "";
-          await props.platform.post("/account/recovery/start", {}, false);
-          await props.platform.post("/account/recovery/consume", body, false);
-          emit("signedOut");
-        },
-      ),
+      h(RecoveryPanel, {
+        platform: props.platform,
+        onComplete: () => emit("signedOut"),
+      }),
     ];
     return () =>
       h(

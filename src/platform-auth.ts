@@ -10,8 +10,17 @@ import type { Mailer, Message } from "./email.ts";
 import { runQueue, DeferredJob } from "./queue.ts";
 import { tenantApiKeyScopes } from "./tenants.ts";
 import { signInEmail } from "./sign-in-email.ts";
+import {
+  consumeCapabilityProof,
+  type privilegedPurposes,
+} from "./auth-policy.ts";
+import { OidcPublishing } from "./oidc-publishing.ts";
 
 export interface SellerUser {
+  email_login_disabled?: number;
+  security_generation?: number;
+  recovered_ordinary?: number;
+  privileged_suspended?: number;
   id: string;
   email: string;
   verified_at: number | null;
@@ -28,9 +37,12 @@ export class PlatformAuth {
   config: Config;
   cookieName: string;
   preauthCookieName: string;
-  constructor(db: DB, config: Config) {
+  oidc: OidcPublishing;
+  readonly oidcActors = new WeakMap<FastifyRequest, string>();
+  constructor(db: DB, config: Config, oidcFetch?: typeof fetch) {
     this.db = db;
     this.config = config;
+    this.oidc = new OidcPublishing(db, config, oidcFetch);
     this.cookieName = config.production
       ? "__Host-de-seller-session"
       : "de-seller-session";
@@ -41,7 +53,10 @@ export class PlatformAuth {
   async request(email: string, req: FastifyRequest, reply: FastifyReply) {
     this.origin(req);
     email = email.trim().toLowerCase();
-    if (this.config.deploymentMode === "standalone" && email !== this.config.standaloneOwnerEmail)
+    if (
+      this.config.deploymentMode === "standalone" &&
+      email !== this.config.standaloneOwnerEmail
+    )
       return;
     check(
       email.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email),
@@ -58,6 +73,7 @@ export class PlatformAuth {
       await lock(tx, "auth");
       const now = Date.now();
       let user = await tx<SellerUser>("seller_users").where({ email }).first();
+      if (user?.email_login_disabled) return false;
       if (!user) {
         // All accounts start unverified; later verification must not free a creation slot.
         const signups = await tx("seller_users")
@@ -159,12 +175,35 @@ export class PlatformAuth {
         "invalid_login",
         "Login link is invalid, expired, or already used.",
       );
+      const loginUser = await tx<SellerUser>("seller_users")
+        .where({ id: link.user_id })
+        .first();
+      check(
+        loginUser && !loginUser.email_login_disabled,
+        401,
+        "invalid_login",
+        "Email-link sign-in is unavailable for this account.",
+      );
       if (this.config.deploymentMode === "standalone") {
-        const owner = await tx<SellerUser>("seller_users").where({ id: link.user_id }).first();
-        check(owner?.email === this.config.standaloneOwnerEmail && !!this.config.standaloneOwnerEmail,
-          401, "invalid_login", "Login link is invalid, expired, or already used.");
-        await tx("seller_memberships").insert({ tenant_id: "primary", user_id: link.user_id,
-          role: "owner", created_at: Date.now() }).onConflict(["tenant_id", "user_id"]).ignore();
+        const owner = await tx<SellerUser>("seller_users")
+          .where({ id: link.user_id })
+          .first();
+        check(
+          owner?.email === this.config.standaloneOwnerEmail &&
+            !!this.config.standaloneOwnerEmail,
+          401,
+          "invalid_login",
+          "Login link is invalid, expired, or already used.",
+        );
+        await tx("seller_memberships")
+          .insert({
+            tenant_id: "primary",
+            user_id: link.user_id,
+            role: "owner",
+            created_at: Date.now(),
+          })
+          .onConflict(["tenant_id", "user_id"])
+          .ignore();
       }
       await tx("seller_login_tokens")
         .where({ id: link.id })
@@ -176,6 +215,10 @@ export class PlatformAuth {
       await tx("seller_sessions").insert({
         id: hash(session),
         user_id: link.user_id,
+        auth_method: "email",
+        auth_generation: Number(loginUser.security_generation),
+        auth_verified_at: Date.now(),
+        created_at: Date.now(),
         expires_at: Date.now() + 7 * 86400000,
       });
       await tx("audit_events").insert({
@@ -196,7 +239,11 @@ export class PlatformAuth {
       maxAge: 7 * 86400,
     });
   }
-  async seller(req: FastifyRequest, mutation = true): Promise<SellerSession> {
+  async seller(
+    req: FastifyRequest,
+    mutation = true,
+    allowRecovery = false,
+  ): Promise<SellerSession> {
     const token = req.cookies[this.cookieName];
     check(
       token,
@@ -230,15 +277,90 @@ export class PlatformAuth {
       .whereNotNull("verified_at")
       .first();
     check(
-      user && (this.config.deploymentMode !== "standalone" || user.email === this.config.standaloneOwnerEmail),
+      user &&
+        (this.config.deploymentMode !== "standalone" ||
+          user.email === this.config.standaloneOwnerEmail),
       401,
       "seller_login_required",
       "Verify your email and sign in again.",
     );
+    check(
+      Number(session.auth_generation) === Number(user.security_generation),
+      401,
+      "seller_login_required",
+      "Sign in again.",
+    );
+    check(
+      allowRecovery || !session.recovery_id,
+      403,
+      "recovery_restricted",
+      "Complete account recovery before continuing.",
+    );
     return { user, csrfToken, sessionHash: session.id as string };
   }
-  publicationAuthorization(req: FastifyRequest, tenantId: string) {
-    if (req.headers.authorization === undefined) return undefined;
+  async capabilityAuthorization(
+    req: FastifyRequest,
+    purpose: (typeof privilegedPurposes)[number],
+    consume = true,
+  ) {
+    const session = await this.seller(req, true);
+    const proof = req.headers["x-account-verification"];
+    check(
+      typeof proof === "string" && proof.length <= 200,
+      403,
+      "reauth_required",
+      "Fresh hardware verification is required.",
+    );
+    return async (tx: Tx, commit = true) => {
+      await lock(tx, "auth");
+      await consumeCapabilityProof(
+        tx,
+        session,
+        proof,
+        { action: "account.privileged", purpose, path: req.url.split("?")[0]! },
+        this.config.secret,
+        consume && commit,
+      );
+    };
+  }
+  async publicationAuthorization(req: FastifyRequest, tenantId: string) {
+    if (req.headers.authorization === undefined) {
+      const authorize = await this.capabilityAuthorization(
+        req,
+        "release_publish",
+      );
+      return async (tx: Tx, commit = true) => {
+        await lock(tx, "auth");
+        const token = req.cookies[this.cookieName];
+        const session =
+          token &&
+          (await tx("seller_sessions")
+            .where({ id: hash(token) })
+            .first());
+        check(
+          session &&
+            (await tx("seller_memberships")
+              .where({
+                tenant_id: tenantId,
+                user_id: session.user_id,
+                role: "owner",
+              })
+              .first()),
+          403,
+          "tenant_denied",
+          "You do not own this workspace.",
+        );
+        await authorize(tx, commit);
+      };
+    }
+    if (req.headers.authorization.startsWith("Bearer DE-CI-")) {
+      const token = req.headers.authorization.slice(7);
+      const { product } = req.params as { product: string };
+      return async (tx: Tx) => {
+        await lock(tx, "auth");
+        await this.oidc.authorize(tx, token, tenantId, product);
+      };
+    }
     const keyHash = hash(req.headers.authorization.slice(7));
     return async (tx: Tx) => {
       // Revocation takes the same lock. Keep it until the publication commits,
@@ -251,7 +373,11 @@ export class PlatformAuth {
         .first();
       check(key, 403, "tenant_denied", "Tenant credentials are invalid.");
       let scopes: unknown;
-      try { scopes = JSON.parse(key.scopes as string); } catch { scopes = []; }
+      try {
+        scopes = JSON.parse(key.scopes as string);
+      } catch {
+        scopes = [];
+      }
       check(
         Array.isArray(scopes) && scopes.includes("releases:write"),
         403,
@@ -286,6 +412,28 @@ export class PlatformAuth {
         "An explicit tenant API key scope is required.",
       );
       const header = req.headers.authorization;
+      if (header.startsWith("Bearer DE-CI-")) {
+        const route = req.routeOptions.url!;
+        check(
+          req.method === "POST" &&
+            (route.endsWith("/releases/:product/:version") ||
+              route.endsWith("/assets/:product/:version")),
+          403,
+          "scope_denied",
+          "CI credentials permit publishing only.",
+        );
+        const { product } = req.params as { product: string };
+        this.oidcActors.set(
+          req,
+          await this.oidc.authorize(
+            this.db,
+            header.slice(7),
+            tenant.id,
+            product,
+          ),
+        );
+        return tenant;
+      }
       check(
         header.startsWith("Bearer DE-TK-"),
         403,

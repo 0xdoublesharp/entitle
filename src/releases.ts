@@ -240,7 +240,7 @@ export class Releases {
   }
   async publish(
     input: Publication,
-    authorize?: (tx: Tx) => Promise<void>,
+    authorize?: (tx: Tx, commit?: boolean) => Promise<void>,
   ): Promise<Release> {
     input = { ...input };
     check(
@@ -293,7 +293,7 @@ export class Releases {
     );
     const id = randomUUID();
     await this.db.transaction(async (tx) => {
-      await authorize?.(tx);
+      await authorize?.(tx, false);
       await lock(tx, "schema", this.tenant.id);
       const capacity = await this.capacity(tx);
       check(
@@ -367,7 +367,7 @@ export class Releases {
           tested: input.tested,
         };
         await this.db.transaction(async (tx) => {
-          await authorize?.(tx);
+          await authorize?.(tx, true);
           await lock(tx, "schema", this.tenant.id);
           const capacity = await this.capacity(tx);
           check(
@@ -394,7 +394,14 @@ export class Releases {
               .where({ tenant_id: this.tenant.id, id: product.id })
               .update({ plugin_basename: basename });
           await tx("releases").insert(release);
-          await recordBusinessEvent(tx, this.tenant.id, "release.published", release.id, "published", release.published_at);
+          await recordBusinessEvent(
+            tx,
+            this.tenant.id,
+            "release.published",
+            release.id,
+            "published",
+            release.published_at,
+          );
           await tx("upload_reservations")
             .where({ tenant_id: this.tenant.id, id })
             .delete();
@@ -455,13 +462,23 @@ export class Releases {
     return rows.sort((a, b) => semver.rcompare(a.version, b.version))[0];
   }
   async withdraw(id: string) {
-    await this.db.transaction(async tx => {
+    await this.db.transaction(async (tx) => {
       await lock(tx, "schema", this.tenant.id);
-      const release = await tx<Release>("releases").where({ tenant_id: this.tenant.id, id }).first();
+      const release = await tx<Release>("releases")
+        .where({ tenant_id: this.tenant.id, id })
+        .first();
       check(release, 404, "not_found", "Release not found.");
       if (release.withdrawn) return;
-      await tx("releases").where({ tenant_id: this.tenant.id, id }).update({ withdrawn: 1 });
-      await recordBusinessEvent(tx, this.tenant.id, "release.withdrawn", id, "withdrawn");
+      await tx("releases")
+        .where({ tenant_id: this.tenant.id, id })
+        .update({ withdrawn: 1 });
+      await recordBusinessEvent(
+        tx,
+        this.tenant.id,
+        "release.withdrawn",
+        id,
+        "withdrawn",
+      );
     });
   }
   async read(release: Release) {
