@@ -1,6 +1,8 @@
 import { z } from "zod";
 import { genericApi } from "./cli-api.ts";
 import { readRegularFile } from "./cli-files.ts";
+import { publisherInputSchema } from "./oidc-schema.ts";
+import { strongIntentSchema } from "./strong-schema.ts";
 
 const id = z
   .string()
@@ -632,6 +634,7 @@ export const agentOperations: Record<string, Operation> = {
     schema: z
       .object({
         purpose: z.enum([
+          "security_enroll",
           "recovery_codes",
           "billing",
           "api_keys",
@@ -662,6 +665,114 @@ export const agentOperations: Record<string, Operation> = {
     method: "POST",
     route: () => "/api/v1/platform/tenants",
     body: (v) => v,
+  },
+  "owner-publishers": {
+    description:
+      "List trusted CI publishers and available OIDC providers using an owner session.",
+    schema: empty,
+    mode: "request",
+    method: "GET",
+    readOnly: true,
+    route: (_v, e) => `${tenantPath(e)}/seller/oidc/publishers`,
+  },
+  "owner-publisher-create": {
+    description:
+      "Trust one product and CI identity. Requires independently provisioned hardware approval bound to this exact publisher input.",
+    schema: publisherInputSchema,
+    mode: "request",
+    method: "POST",
+    route: (_v, e) => `${tenantPath(e)}/seller/oidc/publishers`,
+    body: (v) => v,
+  },
+  "owner-publisher-revoke": {
+    description:
+      "Revoke a trusted publisher and its active CI credentials. Requires independently provisioned hardware approval for this publisher ID.",
+    schema: z.object({ id: uuid }).strict(),
+    mode: "request",
+    method: "POST",
+    route: (v, e) =>
+      `${tenantPath(e)}/seller/oidc/publishers/${routeId(v, "id")}/revoke`,
+    body: () => ({}),
+  },
+  "owner-recovery-status": {
+    description: "View restricted recovery status and CSRF token.",
+    schema: empty,
+    mode: "request",
+    method: "GET",
+    route: () => "/api/v1/platform/account/recovery/status",
+    readOnly: true,
+  },
+  "owner-recovery-channel-request": {
+    description: "Request confirmation at the existing recovery email.",
+    schema: empty,
+    mode: "request",
+    method: "POST",
+    route: () => "/api/v1/platform/account/recovery/channel/request",
+    body: (v) => v,
+  },
+  "owner-recovery-channel-consume": {
+    description:
+      "Confirm the separate recovery email in this restricted session.",
+    schema: z.object({ token: z.string().min(1).max(200) }).strict(),
+    mode: "request",
+    method: "POST",
+    route: () => "/api/v1/platform/account/recovery/channel/consume",
+    body: (v) => v,
+  },
+  "owner-recovery-complete": {
+    description:
+      "Complete ordinary recovery with a fresh replacement-key proof; invalidates sessions and publishing delegations.",
+    schema: empty,
+    mode: "request",
+    method: "POST",
+    route: () => "/api/v1/platform/account/recovery/complete",
+    body: (v) => v,
+  },
+  "owner-recovery-cancel": {
+    description:
+      "Cancel a recovery flow; other sessions require a fresh original-key proof.",
+    schema: z.object({ flowId: uuid }).strict(),
+    mode: "request",
+    method: "POST",
+    route: () => "/api/v1/platform/account/recovery/cancel",
+    body: (v) => v,
+  },
+  "owner-security": {
+    description:
+      "List enrolled passkeys, security keys and email-link fallback settings without secret material.",
+    schema: empty,
+    mode: "request",
+    method: "GET",
+    readOnly: true,
+    route: () => "/api/v1/platform/account/security",
+  },
+  "owner-reauth-options": {
+    description:
+      "Start passkey or security key verification bound to an exact publisher change or factor enrollment.",
+    schema: strongIntentSchema,
+    mode: "request",
+    method: "POST",
+    route: () => "/api/v1/platform/account/reauth/options",
+    body: (v) => v,
+  },
+  "owner-email-login": {
+    description:
+      "Enable or disable email-link sign-in. Requires fresh passkey or security key approval for the exact enabled value.",
+    schema: z.object({ enabled: z.boolean() }).strict(),
+    mode: "request",
+    method: "POST",
+    route: () => "/api/v1/platform/account/security/email-login",
+    body: (v) => v,
+  },
+  "owner-factor-remove": {
+    description:
+      "Remove a registered passkey or security key with fresh action-bound WebAuthn approval. The last key cannot be removed when email sign-in is disabled.",
+    schema: z.object({ id: uuid }).strict(),
+    mode: "request",
+    method: "POST",
+    route: (v) =>
+      `/api/v1/platform/account/security/factors/${routeId(v, "id")}/remove`,
+    body: () => ({}),
   },
   "owner-keys": {
     description: "List automation keys using an interactive owner session.",

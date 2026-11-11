@@ -1,4 +1,4 @@
-import { defineComponent, h, ref, watch, type PropType } from "vue";
+import { defineComponent, h, ref, type PropType } from "vue";
 import { type Tenant, workspaceArchived } from "../packages/shared/tenant.ts";
 import type { ApiClient } from "./api.ts";
 import { verifiedRequest } from "./features.ts";
@@ -8,7 +8,6 @@ export const WorkspaceManager = defineComponent({
     tenants: { type: Array as PropType<Tenant[]>, required: true },
     platform: { type: Object as PropType<ApiClient>, required: true },
     busy: Boolean,
-    initialToken: { type: String, default: "" },
     execute: {
       type: Function as PropType<(action: () => Promise<void>) => void>,
       required: true,
@@ -24,7 +23,7 @@ export const WorkspaceManager = defineComponent({
       required: true,
     },
   },
-  emits: ["opened", "tokenUsed"],
+  emits: ["opened"],
   setup(props, { emit }) {
     const view = ref("active");
     const removal = ref<{
@@ -33,14 +32,6 @@ export const WorkspaceManager = defineComponent({
       blockers: string[];
     } | null>(null);
     const slug = ref("");
-    const token = ref(props.initialToken);
-    const emailed = ref(false);
-    watch(
-      () => props.initialToken,
-      (value) => {
-        token.value = value;
-      },
-    );
     const button = (label: string, action: () => void) =>
       h(
         "button",
@@ -182,21 +173,10 @@ export const WorkspaceManager = defineComponent({
                         "p",
                         "This workspace is empty. Permanent removal deletes its settings and unused API keys, releases its address and frees an account slot. Security audit records are retained. This cannot be undone.",
                       ),
-                      button("Email removal verification", () =>
-                        props.execute(async () => {
-                          await props.platform.post(
-                            "/account/verification/request",
-                            { purpose: "workspace_remove" },
-                          );
-                          emailed.value = true;
-                        }),
+                      h(
+                        "p",
+                        "Confirm removal with an independently provisioned hardware key.",
                       ),
-                      emailed.value &&
-                        h(
-                          "p",
-                          { role: "status" },
-                          "Check your email and open the verification link in this browser. Choose Workspace removal, then return to Check removal for this workspace.",
-                        ),
                       h(
                         "form",
                         {
@@ -204,15 +184,13 @@ export const WorkspaceManager = defineComponent({
                           class: "seller-form",
                           onSubmit: (event: Event) => {
                             event.preventDefault();
-                            const proof = token.value;
+                            const proof = "";
                             const address = slug.value;
                             const tenant = target.tenant;
                             props.confirm(
                               `Permanently remove ${tenant.name}? This cannot be undone.`,
                               "Permanently remove workspace",
                               async () => {
-                                token.value = "";
-                                emit("tokenUsed");
                                 await verifiedRequest(
                                   props.platform,
                                   props.platform,
@@ -242,30 +220,12 @@ export const WorkspaceManager = defineComponent({
                               },
                             }),
                           ]),
-                          h("label", { for: "workspace-remove-token" }, [
-                            "Verification token from email",
-                            h("input", {
-                              id: "workspace-remove-token",
-                              type: "password",
-                              required: true,
-                              value: token.value,
-                              autocomplete: "off",
-                              disabled: props.busy,
-                              onInput: (event: Event) => {
-                                token.value = (
-                                  event.target as HTMLInputElement
-                                ).value;
-                              },
-                            }),
-                          ]),
                           h(
                             "button",
                             {
                               type: "submit",
                               disabled:
-                                props.busy ||
-                                slug.value !== target.tenant.slug ||
-                                !token.value,
+                                props.busy || slug.value !== target.tenant.slug,
                             },
                             "Review permanent removal",
                           ),

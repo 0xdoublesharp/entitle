@@ -133,6 +133,9 @@ test("SQLite migration preserves constraints and reruns without deleting records
       "016_worker_continuations",
       "017_worker_grant_index",
       "018_worker_privacy_receipt_index",
+      "019_oidc_publishing",
+      "020_strong_reauthentication",
+      "021_auth_capabilities",
     ]);
     await assert.rejects(
       db("plans").insert({
@@ -277,6 +280,9 @@ test(
         { name: "016_worker_continuations" },
         { name: "017_worker_grant_index" },
         { name: "018_worker_privacy_receipt_index" },
+        { name: "019_oidc_publishing" },
+        { name: "020_strong_reauthentication" },
+        { name: "021_auth_capabilities" },
       ]);
     } finally {
       try {
@@ -325,6 +331,9 @@ test("migration002 upgrades existing products without changing original migratio
       "016_worker_continuations",
       "017_worker_grant_index",
       "018_worker_privacy_receipt_index",
+      "019_oidc_publishing",
+      "020_strong_reauthentication",
+      "021_auth_capabilities",
     ]);
     assert.equal(
       (await db("products").where({ id: "legacy" }).first()).plugin_basename,

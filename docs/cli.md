@@ -266,3 +266,12 @@ offline tool with mandatory named operator and quiescence attestations. Read
 an HTTP queue action or tenant suspension as proof that all workers have drained.
 
 `closure-attribution-upgrade` adds encrypted, scope-bound attribution to older completed-closure receipts using a private reviewed receipt with explicit Stripe mode and proven provider customer ID. See [operator maintenance](operator-maintenance.md#upgrade-legacy-closure-attribution).
+
+## OIDC publishing
+
+Set `ENTITLE_OIDC_PUBLISHER_ID` to use CI identity authentication with `publish`
+or `publish-asset`. GitHub Actions requests its ID token automatically; other
+providers supply `ENTITLE_OIDC_TOKEN` or `ENTITLE_OIDC_TOKEN_FILE`.
+See [setup, owner commands and reauthentication](oidc-publishing.md).
+
+See [capability-specific authentication and recovery](authentication-policy.md) for hardware approvals, restricted recovery operations and local operator recovery.

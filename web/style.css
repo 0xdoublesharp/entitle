@@ -3862,3 +3862,6 @@ td button {
     white-space: nowrap;
   }
 }
+.publisher-security code { overflow-wrap: anywhere; }
+.publisher-security .feature-session { display: grid; gap: 0.5rem; }
+.publisher-security input, .publisher-security select { max-width: 100%; }

@@ -77,8 +77,12 @@ import { frameworks } from "./frameworks.ts";
 import { Portability } from "./portability.ts";
 import { portabilityRoutes } from "./portability-api.ts";
 import { site } from "./site.ts";
+import { registerOidcRoutes } from "./oidc-api.ts";
+import { AuthRecovery, authRecoveryRoutes } from "./auth-recovery.ts";
+import { StrongAuth, strongAuthRoutes, passkeyLoginRoutes } from "./strong-auth.ts";
 const empty = z.object({}).strict();
 export interface AppOptions {
+  oidcFetch?: typeof fetch;
   store?: ArtifactStore;
   stripeFactory?: (tenant: Tenant) => StripeBilling;
   platformBilling?: PlatformBilling;
@@ -336,7 +340,7 @@ export async function buildApp(
       : {}),
   });
   app.addHook("onClose", () => reads.close());
-  const platformAuth = new PlatformAuth(db, config),
+  const platformAuth = new PlatformAuth(db, config, options.oidcFetch),
     tenants = new Tenants(db, config),
     platform = options.platformBilling ?? new PlatformBilling(db, config);
   const transport = nodemailer.createTransport({
@@ -364,6 +368,7 @@ export async function buildApp(
     config.platformDailyEmailLimit,
   );
   const accounts = new AccountManagement(db, platformAuth);
+  const strongAuth = new StrongAuth(db, platformAuth);
   const portability = new Portability({
     db,
     store,
@@ -982,9 +987,14 @@ export async function buildApp(
         ],
       }));
       await api.register(
-        async (account) => registerAccountRoutes(account, { accounts }),
+        async (account) => {
+          await registerAccountRoutes(account, { accounts });
+          await strongAuthRoutes(account, strongAuth);
+          await authRecoveryRoutes(account, new AuthRecovery(db, platformAuth));
+        },
         { prefix: "/account" },
       );
+      await passkeyLoginRoutes(api, strongAuth);
       api.post("/auth/request", { config: apiLimit(5) }, async (req, reply) => {
         const { email } = z
           .object({ email: z.email().max(254) })
@@ -1066,8 +1076,7 @@ export async function buildApp(
           .object({ slug: z.string().min(1).max(63) })
           .strict()
           .parse(req.body);
-        await accounts.requireStepUp(req, "workspace_remove");
-        await tenants.remove(seller, workspaceId(req), slug);
+        await tenants.remove(seller, workspaceId(req), slug, await platformAuth.capabilityAuthorization(req, "workspace_remove"));
         return { ok: true };
       });
       api.get("/stripe/callback", async (req, reply) => {
@@ -1391,6 +1400,7 @@ export async function buildApp(
       for (const register of [buyerRoutes, frameworkRoutes])
         await register(api, context, sendDownload, reserveDownload);
       await notificationRoutes(api, context);
+      await registerOidcRoutes(api, context, platformAuth, strongAuth);
       await registerCustomerAccountRoutes(api, {
         context: (req) => {
           const s = context(req);

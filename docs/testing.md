@@ -156,6 +156,24 @@ into a focused deterministic regression before changing application code.
    production operation require their own evidence. Review acceptance applies to
    the source snapshot reviewed, not later edits.
 
+## OIDC security checks
+
+The OIDC schema suite also accepts `TEST_OIDC_POSTGRES_DATABASE_URL` and
+`TEST_OIDC_MYSQL_DATABASE_URL` for isolated cross-engine migration checks during
+coverage runs. To run the complete OIDC publishing and strong reauthentication
+suites on either engine, set `TEST_SAAS_DATABASE_URL` and run
+`node --test --test-concurrency=1 tests/oidc-publishing.test.ts tests/strong-auth.test.ts tests/auth-policy.test.ts`.
+
+AUTH-07 recovery acceptance also runs `tests/auth-recovery-ui.test.ts`,
+`tests/auth-recovery-clients.test.ts` and `tests/auth-maintenance.test.ts`. These
+exercise ordinary recovery completion, independent delayed promotion, restricted
+CLI/MCP sessions and private local provisioning. See
+[the policy and operational recovery procedure](authentication-policy.md).
+
+Set `ENTITLE_TEST_SERVER_DIR` to the built `server/` directory when running
+`tests/oidc-client.test.ts` to exercise the compiled HTTP API, CLI and MCP stdio
+entrypoints together.
+
 ## Keep evidence separate
 
 Store command logs, coverage JSON, browser captures, source hashes and provider

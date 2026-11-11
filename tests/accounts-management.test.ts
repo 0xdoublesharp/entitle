@@ -29,6 +29,8 @@ import {
   registerAccountRoutes,
   registerCustomerAccountRoutes,
 } from "../src/account-management.ts";
+import { up as strongSchema } from "../src/migrations/020_strong_reauthentication.ts";
+import { up as policySchema } from "../src/migrations/021_auth_capabilities.ts";
 import { up, down } from "../src/migrations/009_accounts.ts";
 import { up as complimentarySchema } from "../src/migrations/014_complimentary_licenses.ts";
 import { up as continuationSchema } from "../src/migrations/016_worker_continuations.ts";
@@ -76,6 +78,7 @@ async function fixture(t: test.TestContext, standalone = false) {
   });
   await migrateAccountsDb(db);
   await up(db);
+  await strongSchema(db); await policySchema(db);
   const config = loadConfig({
     APP_SECRET: "11".repeat(32),
     OPERATOR_TOKEN: "x".repeat(32),
@@ -320,7 +323,7 @@ test("verification and grants bind browser, purpose, expiry and single use", asy
 
 test("account emails include branded actions with the original browser-bound links", async (t) => {
   const f = await fixture(t);
-  assert.equal((await f.post("/verification/request", { purpose: "api_keys" })).statusCode, 200);
+  assert.equal((await f.post("/verification/request", { purpose: "security_enroll" })).statusCode, 200);
   assert.equal((await f.post("/email-change/request", { email: "new@example.test" })).statusCode, 200);
   for (const [kind, to, expiry, label, fragment] of [
     ["account_verification", "owner@example.test", "10 minutes", "Confirm account action", "account-verification="],
@@ -355,13 +358,13 @@ test("account emails include branded actions with the original browser-bound lin
 
 test("a failed sensitive action rolls its grant back, a successful one consumes it", async (t) => {
   const f = await fixture(t);
-  const verification = await f.proof("api_keys");
+  const verification = await f.proof("security_enroll");
   const req = {
     headers: f.headers(),
     cookies: { [f.auth.cookieName]: "current" },
   } as never;
   await assert.rejects(
-    f.accounts.withStepUp(req, "api_keys", verification, async () => {
+    f.accounts.withStepUp(req, "security_enroll", verification, async () => {
       throw Error("action failed");
     }),
     /action failed/,
@@ -369,13 +372,13 @@ test("a failed sensitive action rolls its grant back, a successful one consumes 
   assert.equal(
     await f.accounts.withStepUp(
       req,
-      "api_keys",
+      "security_enroll",
       verification,
       async () => "done",
     ),
     "done",
   );
-  await assert.rejects(f.accounts.requireStepUp(req, "api_keys", verification));
+  await assert.rejects(f.accounts.requireStepUp(req, "security_enroll", verification));
 });
 
 test("proof email does not leak a usable secret through API, rows, or audit and expires", async (t) => {
@@ -554,7 +557,7 @@ test("email ownership is rechecked at confirmation so concurrent claims cannot t
   );
 });
 
-test("offline recovery codes are hashed, rotated, single use and revoke existing sessions", async (t) => {
+test("offline recovery codes are hashed, rotated and single use; original sessions remain available to cancel", async (t) => {
   const f = await fixture(t);
   const first = (
     await f.post("/recovery-codes", { verification: await f.proof() })
@@ -584,8 +587,8 @@ test("offline recovery codes are hashed, rotated, single use and revoke existing
   assert.equal(success.statusCode, 200, success.body);
   assert.ok(success.cookies.some((c) => c.name === f.auth.cookieName));
   assert.equal((await consume(rotated[0]!)).statusCode, 401);
-  assert.equal((await f.get("/sessions")).statusCode, 401);
-  assert.equal((await f.get("/sessions", "second")).statusCode, 401);
+  assert.equal((await f.get("/sessions")).statusCode, 200);
+  assert.equal((await f.get("/sessions", "second")).statusCode, 200);
   assert.equal((await f.get("/sessions", "foreign")).statusCode, 200);
   assert.equal(
     (await f.db("audit_events").where({ action: "seller.recovery.used" }))
@@ -1153,18 +1156,10 @@ test("production recovery cookies expire, reject tampering and enforce standalon
       "owner@example.test",
       "owner-code",
     ),
-    { ok: true },
+    { ok: true, recoveryRestricted: true },
   );
   const active = replies.at(-1)!.value;
-  assert.equal(
-    (
-      await secureAccounts.sessions({
-        headers: {},
-        cookies: { [f.auth.cookieName]: active },
-      } as never)
-    ).sessions.length,
-    1,
-  );
+  await assert.rejects(secureAccounts.sessions({ headers: {}, cookies: { [f.auth.cookieName]: active } } as never), { code: "recovery_restricted" });
 });
 
 test("closure status can resume after blockers clear and operator identity is required", async (t) => {
@@ -1583,13 +1578,13 @@ test("account verification throttles across browsers durably, then permits retry
       "billing",
     );
   await assert.rejects(
-    f.accounts.requestVerification(req("second"), "api_keys"),
+    f.accounts.requestVerification(req("second"), "billing"),
     { code: "account_rate_limited" },
   );
   assert.equal((await f.db("platform_emails")).length, 5);
   await f.db("account_attempts").update({ expires_at: 0 });
   assert.deepEqual(
-    await f.accounts.requestVerification(req("second"), "api_keys"),
+    await f.accounts.requestVerification(req("second"), "billing"),
     { ok: true },
   );
 });
@@ -1892,13 +1887,13 @@ test("operator redaction rejects other-customer records, stale Stripe binding, u
 
 test("sensitive existing actions can consume purpose-bound proof from x-account-verification", async (t) => {
   const f = await fixture(t);
-  const verification = await f.proof("tenant_transfer");
+  const verification = await f.proof("security_enroll");
   const request = {
     headers: { ...f.headers(), "x-account-verification": verification },
     cookies: { [f.auth.cookieName]: "current" },
   } as never;
-  await f.accounts.requireStepUp(request, "tenant_transfer");
-  await assert.rejects(f.accounts.requireStepUp(request, "tenant_transfer"), {
+  await f.accounts.requireStepUp(request, "security_enroll");
+  await assert.rejects(f.accounts.requireStepUp(request, "security_enroll"), {
     code: "verification_required",
   });
   for (const value of [undefined, [verification], "", "x".repeat(201)]) {

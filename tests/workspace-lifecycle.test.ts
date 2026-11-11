@@ -1,3 +1,4 @@
+import { hardwareHeaders } from "./helpers/oidc.ts";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -84,17 +85,29 @@ async function fixture(t: test.TestContext) {
     session = "session",
     expires = Date.now() + 60000,
   ) => {
-    const token = randomUUID();
-    await db("account_challenges").insert({
-      id: randomUUID(),
-      user_id: "owner",
-      session_hash: hash(session),
-      purpose: `grant:${purpose}`,
-      token_hash: hash(token),
-      expires_at: expires,
-      created_at: Date.now(),
-    });
-    return { "x-account-verification": token };
+    if (purpose === "tenant_transfer") {
+      const token = randomUUID();
+      await db("account_challenges").insert({
+        id: randomUUID(),
+        user_id: "owner",
+        session_hash: hash(session),
+        purpose: `grant:${purpose}`,
+        token_hash: hash(token),
+        expires_at: expires,
+        created_at: Date.now(),
+      });
+      return { "x-account-verification": token };
+    }
+    const result = await hardwareHeaders(
+      { db, app, config },
+      { ...headers, cookie: `de-seller-session=${session}` },
+      `${path}/remove`,
+      purpose,
+    );
+    await db("account_challenges")
+      .where({ token_hash: hash(result["x-account-verification"]) })
+      .update({ expires_at: expires });
+    return { "x-account-verification": result["x-account-verification"] };
   };
   return { db, app, tenant, headers, path, post, proof, config };
 }
@@ -194,6 +207,9 @@ test("empty workspace removal requires typed address and a fresh, purpose-bound 
     (await post("remove", { slug: "wrong" }, wrong)).statusCode,
     400,
   );
+  await db("account_challenges")
+    .where({ token_hash: hash(wrong["x-account-verification"]) })
+    .update({ expires_at: 0 });
   assert.equal(
     (await post("remove", { slug: tenant.slug }, wrong)).statusCode,
     403,

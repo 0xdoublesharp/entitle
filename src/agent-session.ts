@@ -247,14 +247,31 @@ export async function loadOwnerSession(sessionFile: string, origin: string) {
     redirect: "error",
     signal: AbortSignal.timeout(30000),
   });
-  if (!response.ok) {
+  let state = response;
+  if (
+    response.status === 403 &&
+    (
+      await response
+        .clone()
+        .json()
+        .catch(() => null)
+    )?.error?.code === "recovery_restricted"
+  ) {
     await response.body?.cancel();
-    throw Error(`Seller session lookup returned ${response.status}.`);
+    state = await fetch(`${origin}/api/v1/platform/account/recovery/status`, {
+      headers: { cookie: session.cookie },
+      redirect: "error",
+      signal: AbortSignal.timeout(30000),
+    });
+  }
+  if (!state.ok) {
+    await state.body?.cancel();
+    throw Error(`Seller session lookup returned ${state.status}.`);
   }
   const result = z
     .object({ csrfToken: z.string().min(1).max(500) })
     .passthrough()
-    .parse(await response.json());
+    .parse(await state.json());
   const current = await readSession(sessionFile, origin);
   if (current.cookie !== session.cookie)
     throw Error("Session changed during refresh.");
@@ -362,6 +379,7 @@ export async function consumeVerification(
   const input = z
     .object({
       purpose: z.enum([
+        "security_enroll",
         "recovery_codes",
         "billing",
         "api_keys",
@@ -392,6 +410,132 @@ export async function consumeVerification(
       .parse(JSON.parse(lines.join("\n")));
   });
   io.log(JSON.stringify({ proofFile: output }));
+}
+export async function consumeStrongVerification(
+  bodyFile: string,
+  output: string,
+  env: NodeJS.ProcessEnv,
+  io: Pick<Console, "log">,
+) {
+  const input = z
+    .object({
+      challengeId: z.uuid(),
+      response: z.record(z.string(), z.unknown()),
+    })
+    .strict()
+    .parse(JSON.parse(await privateRead(bodyFile)));
+  await saveNew(output, async () => {
+    const lines: string[] = [];
+    await genericApi(
+      "request",
+      ["POST", "/api/v1/platform/account/reauth/verify"],
+      env,
+      { log: (line: string) => lines.push(line) },
+      input,
+    );
+    return z
+      .object({
+        verification: z.string().min(1).max(200),
+        expiresIn: z.number(),
+      })
+      .strict()
+      .parse(JSON.parse(lines.join("\n")));
+  });
+  io.log(JSON.stringify({ proofFile: output }));
+}
+export async function passkeyLoginStart(
+  path: string,
+  env: NodeJS.ProcessEnv,
+  io: Pick<Console, "log">,
+) {
+  const origin = sessionOrigin(env);
+  await saveNew(path, async () => {
+    const response = await fetch(
+      `${origin}/api/v1/platform/auth/passkey/options`,
+      {
+        method: "POST",
+        headers: { origin, "content-type": "application/json" },
+        body: "{}",
+        redirect: "error",
+        signal: AbortSignal.timeout(30000),
+      },
+    );
+    if (!response.ok) {
+      await response.body?.cancel();
+      throw Error(`Passkey sign-in returned ${response.status}.`);
+    }
+    const cookies = response.headers
+      .getSetCookie()
+      .map(
+        (value) =>
+          /^((?:__Host-)?de-passkey-login=[A-Za-z0-9_-]{43})(?:;|$)/.exec(
+            value,
+          )?.[1],
+      )
+      .filter(Boolean);
+    if (cookies.length !== 1) {
+      await response.body?.cancel();
+      throw Error(
+        "The server did not return the expected passkey browser binding.",
+      );
+    }
+    const { options } = z
+      .object({ options: z.record(z.string(), z.unknown()) })
+      .strict()
+      .parse(await response.json());
+    return { origin, cookie: cookies[0]!, options };
+  });
+  io.log(
+    JSON.stringify({
+      preauthFile: path,
+      next: "Complete the saved WebAuthn options at the configured origin, then pass the private assertion file to owner-passkey-login-finish.",
+    }),
+  );
+}
+export async function passkeyLoginFinish(
+  preauthFile: string,
+  assertionFile: string,
+  sessionFile: string,
+  env: NodeJS.ProcessEnv,
+  io: Pick<Console, "log">,
+) {
+  const origin = sessionOrigin(env);
+  const preauth = z
+    .object({
+      origin: z.string(),
+      cookie: z
+        .string()
+        .regex(/^(?:__Host-)?de-passkey-login=[A-Za-z0-9_-]{43}$/),
+      options: z.record(z.string(), z.unknown()),
+    })
+    .strict()
+    .parse(JSON.parse(await privateRead(preauthFile)));
+  if (preauth.origin !== origin)
+    throw Error("Passkey login file does not match this origin.");
+  const response = z
+    .record(z.string(), z.unknown())
+    .parse(JSON.parse(await privateRead(assertionFile)));
+  await saveNew(sessionFile, async () => ({
+    origin,
+    cookie: cookie(
+      await post(
+        origin,
+        "/api/v1/platform/auth/passkey/verify",
+        { response },
+        preauth.cookie,
+      ),
+      "session",
+    ),
+  }));
+  try {
+    await refreshSession(sessionFile, env);
+  } catch (error) {
+    throw Error(
+      `Passkey sign-in succeeded and the session is saved in ${sessionFile}; run owner-session-refresh to retrieve CSRF.`,
+      { cause: error },
+    );
+  }
+  io.log(JSON.stringify({ sessionFile }));
 }
 export async function activateInstallation(
   bodyFile: string,

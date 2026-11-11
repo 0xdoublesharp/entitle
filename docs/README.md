@@ -59,3 +59,10 @@ The public `/docs` guide is available without an account on a running deployment
 Use your deployment origin in examples. `primary` is the default standalone
 workspace slug; an import can preserve another slug. Internal tenant IDs are
 not public slugs.
+
+## CI identity publishing
+
+Use [OIDC publishing](oidc-publishing.md) to configure trusted GitHub Actions,
+GitLab, and other CI identities with passkey or security key reauthentication.
+
+- [Authentication capabilities, hardware provisioning and recovery](authentication-policy.md)

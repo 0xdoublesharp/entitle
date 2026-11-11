@@ -9,6 +9,7 @@ export interface LicenseEmailContext {
 }
 
 const purposeLabels: Record<SensitivePurpose, string> = {
+  security_enroll: "passkey or security key enrollment",
   recovery_codes: "recovery codes",
   billing: "billing changes",
   api_keys: "API key management",

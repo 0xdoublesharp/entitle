@@ -21,6 +21,9 @@ import {
 } from "./agent-session.ts";
 
 const commands: Record<string, string> = {
+  "owner-passkey-login-start": "Start passwordless passkey/security key sign-in and save browser binding plus WebAuthn options privately: [NEW_PREAUTH_FILE].",
+  "owner-passkey-login-finish": "Complete WebAuthn sign-in from a private assertion and save an origin-bound seller session: [PREAUTH_FILE, PRIVATE_ASSERTION_FILE, NEW_SESSION_FILE].",
+  "owner-reauth-verify": "Verify a passkey or security key assertion from a private JSON file and save the action-bound approval: [PRIVATE_ASSERTION_JSON_FILE, NEW_PROOF_FILE].",
   product: "Save a product and its plans: [JSON_FILE].",
   publish:
     "Publish a WordPress release: [PRODUCT, VERSION, ZIP_FILE, METADATA_JSON_FILE].",
@@ -56,6 +59,8 @@ const commands: Record<string, string> = {
 function toolError(error: unknown, fallback: string) {
   let message = error instanceof Error ? error.message : fallback;
   for (const secret of [
+    process.env.ENTITLE_OIDC_TOKEN,
+    process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN,
     process.env.TENANT_API_KEY,
     process.env.OPERATOR_TOKEN,
     process.env.ENTITLE_AUTHORIZATION,
@@ -257,7 +262,7 @@ export function createMcpServer() {
       ...Object.entries(agentOperations).map(([name, operation]) => ({
         name: `entitle_op_${name.replaceAll("-", "_")}`,
         description: operation.description,
-        inputSchema: z.toJSONSchema(operation.schema) as {
+        inputSchema: { ...z.toJSONSchema(operation.schema), type: "object" } as {
           type: "object";
           [key: string]: unknown;
         },

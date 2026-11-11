@@ -264,3 +264,10 @@ failure falls back to source operations. No Redis service is required.
 output on Scratch. `GO_BINARY` selects Go for the local S3 helper. `TEST_*` and
 integration variables belong to isolated [verification](testing.md#release-checks), not
 production service configuration.
+
+## CI identity providers
+
+`OIDC_PROVIDERS` selects the trusted issuer, JWKS URL and signing algorithms for
+each operator-enabled CI provider. GitHub Actions is enabled by default. See
+[OIDC publishing](oidc-publishing.md#gitlab-and-other-providers) for configuration
+and the seller trust rules required before any CI identity can publish.

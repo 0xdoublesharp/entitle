@@ -5,9 +5,10 @@ import { loadConfig } from "./config.ts";
 import { createDb, migrate } from "./db.ts";
 import { genericApi } from "./cli-api.ts";
 import { readRegularFile } from "./cli-files.ts";
+import { oidcPublishingToken } from "./oidc-client.ts";
 import { agentOperations, runAgentCli } from "./agent-operations.ts";
 import { createExport, downloadExport } from "./agent-export.ts";
-import { loginStart, loginFinish, refreshSession, consumeVerification, activateInstallation, buyerLoginStart, buyerLoginFinish, refreshBuyerSession } from "./agent-session.ts";
+import { loginStart, loginFinish, refreshSession, consumeVerification, consumeStrongVerification, passkeyLoginStart, passkeyLoginFinish, activateInstallation, buyerLoginStart, buyerLoginFinish, refreshBuyerSession } from "./agent-session.ts";
 
 const tenantCommands = new Set([
   "product",
@@ -43,8 +44,12 @@ export async function runCli(
   env: NodeJS.ProcessEnv = process.env,
   io: Pick<Console, "log" | "error"> = console,
 ): Promise<number> {
+  const privateValues: string[] = [];
   function redact(message: string) {
     for (const credential of [
+      env.ENTITLE_OIDC_TOKEN,
+      env.ACTIONS_ID_TOKEN_REQUEST_TOKEN,
+      ...privateValues,
       env.TENANT_API_KEY,
       env.OPERATOR_TOKEN,
       env.APP_SECRET,
@@ -58,6 +63,19 @@ export async function runCli(
   }
   try {
     const [command = "", ...args] = argv;
+    if (command === "owner-passkey-login-start") {
+      if (args.length !== 1) throw Error("Usage: owner-passkey-login-start NEW_PREAUTH_FILE");
+      await passkeyLoginStart(args[0]!, env, io); return 0;
+    }
+    if (command === "owner-passkey-login-finish") {
+      if (args.length !== 3) throw Error("Usage: owner-passkey-login-finish PREAUTH_FILE PRIVATE_ASSERTION_FILE NEW_SESSION_FILE");
+      await passkeyLoginFinish(args[0]!, args[1]!, args[2]!, env, io); return 0;
+    }
+    if (command === "owner-reauth-verify") {
+      if (args.length !== 2) throw Error("Usage: owner-reauth-verify PRIVATE_ASSERTION_JSON_FILE NEW_PROOF_FILE");
+      await consumeStrongVerification(args[0]!, args[1]!, env, io);
+      return 0;
+    }
     if (command === "buyer-login-start") {
       if (args.length !== 1) throw Error("Usage: buyer-login-start EMAIL");
       await buyerLoginStart(args[0]!,env,io);
@@ -149,12 +167,17 @@ export async function runCli(
         throw Error(
           "TENANT_SLUG must be a lowercase tenant slug of at most 100 characters.",
         );
+      if (env.ENTITLE_OIDC_PUBLISHER_ID && ["publish", "publish-asset"].includes(command)) {
+        token = await oidcPublishingToken(env);
+        privateValues.push(token);
+      } else {
       if (
         !env.TENANT_API_KEY ||
         !/^DE-TK-[A-Za-z0-9_-]{43}$/.test(env.TENANT_API_KEY)
       )
         throw Error("A valid TENANT_API_KEY is required for tenant commands.");
       token = env.TENANT_API_KEY;
+      }
       prefix = `/api/v1/tenants/${env.TENANT_SLUG}/seller`;
     }
     const origin = new URL(

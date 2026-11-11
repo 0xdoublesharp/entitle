@@ -264,8 +264,14 @@ export class Tenants {
       return { removable: blockers.length === 0, blockers };
     });
   }
-  async remove(seller: SellerSession, id: string, slug: string) {
+  async remove(
+    seller: SellerSession,
+    id: string,
+    slug: string,
+    authorize?: (tx: Tx) => Promise<void>,
+  ) {
     await this.db.transaction(async (tx) => {
+      await authorize?.(tx);
       const tenant = await this.lifecycleTenant(tx, seller, id);
       check(
         slug === tenant.slug,
@@ -403,6 +409,7 @@ export class Tenants {
     tenantId: string,
     name: string,
     options: { scopes?: string[]; expiresInDays?: number } = {},
+    authorize?: (tx: Tx) => Promise<void>,
   ) {
     name = name.trim();
     check(
@@ -435,6 +442,7 @@ export class Tenants {
     await this.db.transaction(async (tx) => {
       await lock(tx, "auth");
       await this.owner(tx, seller, tenantId);
+      await authorize?.(tx);
       await tx("tenant_api_keys").insert({
         id,
         tenant_id: tenantId,
@@ -451,10 +459,16 @@ export class Tenants {
     });
     return { id, name, token, scopes, expires_at, display_prefix };
   }
-  async revokeKey(seller: SellerSession, tenantId: string, keyId: string) {
+  async revokeKey(
+    seller: SellerSession,
+    tenantId: string,
+    keyId: string,
+    authorize?: (tx: Tx) => Promise<void>,
+  ) {
     await this.db.transaction(async (tx) => {
       await lock(tx, "auth");
       await this.owner(tx, seller, tenantId);
+      await authorize?.(tx);
       const key = await tx("tenant_api_keys")
         .where({ id: keyId, tenant_id: tenantId })
         .first();

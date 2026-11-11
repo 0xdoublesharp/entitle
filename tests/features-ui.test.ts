@@ -49,6 +49,7 @@ Object.defineProperty(dom.HTMLAnchorElement.prototype, "click", {
   },
 });
 const calls: { path: string; init: RequestInit; body: unknown }[] = [];
+let publishingSecurityStatus = 200;
 let handler: (path: string, body: unknown) => unknown = () => ({});
 const fetcher: typeof fetch = async (input, init = {}) => {
   const path = String(input);
@@ -56,6 +57,9 @@ const fetcher: typeof fetch = async (input, init = {}) => {
     ? (JSON.parse(String(init.body)) as unknown)
     : undefined;
   calls.push({ path, init, body });
+  if (path === "/platform/account/security") return publishingSecurityStatus === 401
+    ? Response.json({ error: { message: "Sign in again." } }, { status: 401 }) : Response.json({ factors: [] });
+  if (path === "/seller/oidc/publishers") return Response.json({ audience: "https://entitle.test/api/v1/tenants/primary/oidc", providers: [], publishers: [] });
   const result = await handler(path, body);
   return result instanceof Response ? result : Response.json(result);
 };
@@ -106,6 +110,7 @@ async function mount(
   taxCode?: string,
   initialToken = "",
   emailChange: EmailChangeDraft | null = null,
+  onExpired?: () => void,
 ) {
   app?.unmount();
   calls.length = 0;
@@ -116,6 +121,7 @@ async function mount(
       h(ui.SellerFeaturePanel, {
         page,
         initialToken,
+        ...(onExpired ? { onExpired } : {}),
         emailChange: emailChangeState.value,
         "onUpdate:emailChange": (value: EmailChangeDraft | null) => {
           emailChangeState.value = value;
@@ -281,19 +287,12 @@ test("buyer privacy and notices load on demand and preserve paid-rights blockers
   );
 });
 test("recovery binds this browser before consuming an offline code", async () => {
-  handler = () => ({ ok: true });
-  await mount("recovery");
-  await input("recovery-email", "seller@example.test");
-  await input("recovery-code", "offline-code");
-  await submit("account-recovery");
-  assert.deepEqual(
-    calls.slice(-2).map((call) => call.path),
-    ["/platform/account/recovery/start", "/platform/account/recovery/consume"],
-  );
-  assert.deepEqual(calls.at(-1)?.body, {
-    email: "seller@example.test",
-    code: "offline-code",
-  });
+  let recovering = false;
+  handler = path => path.endsWith("/recovery/status") ? recovering ? { id: "flow", mode: "ordinary", channelVerified: false, csrfToken: "csrf" } : new Response("{}", { status: 403 }) : (path.endsWith("/recovery/consume") ? (recovering = true, { ok: true, recoveryRestricted: true }) : { ok: true });
+  await mount("recovery"); await input("recovery-email", "seller@example.test"); await input("recovery-code", "offline-code"); await submit("account-recovery");
+  assert.deepEqual(calls.slice(-3).map(c => c.path), ["/platform/account/recovery/start", "/platform/account/recovery/consume", "/platform/account/recovery/status"]);
+  assert.deepEqual(calls.at(-2)?.body, { email: "seller@example.test", code: "offline-code" });
+  assert.match(dom.document.body.textContent!, /Recovery access is restricted/);
 });
 test("tax inputs clear merchant override and update checkbox values", async () => {
   handler = () => ({
@@ -1378,7 +1377,7 @@ test("email change assigns only the most recently opened link to an explicitly s
   assert.equal((element("#security-email") as HTMLDetailsElement).open, true);
   assert.equal((element("#currentToken") as HTMLInputElement).value, "");
   assert.equal((element("#newToken") as HTMLInputElement).value, "");
-  assert.equal(calls.length, 1);
+  assert.equal(calls.filter(call => call.path.endsWith("/sessions")).length, 1);
   await click("Use link from new mailbox");
   assert.equal((element("#newToken") as HTMLInputElement).value, "new-proof");
   assert.equal(dom.document.querySelector("#email-change-link"), null);
@@ -1485,4 +1484,21 @@ test("email change requires distinct mailbox proofs and a replacement request cl
   assert.equal((element("#currentToken") as HTMLInputElement).value, "");
   assert.equal((element("#newToken") as HTMLInputElement).value, "");
   assert.equal(dom.document.querySelector("#email-change-link"), null);
+});
+
+test("publisher security forwards session expiry and consumes first-key enrollment links for the correct purpose", async () => {
+  let expired = false;
+  publishingSecurityStatus = 401;
+  handler = path => path.endsWith("/sessions") ? { sessions: [] } : { ok: true };
+  try {
+    await mount("security", true, false, undefined, "", null, () => { expired = true; });
+    assert.equal(expired, true);
+  } finally { publishingSecurityStatus = 200; }
+  handler = path => path.endsWith("/sessions") ? { sessions: [] }
+    : path.endsWith("/verification/consume") ? { verification: "setup-proof" }
+    : path.endsWith("/passkey/enroll") ? { challengeId: "enroll", options: {} } : { ok: true };
+  await mount("security", true, false, undefined, "setup-email-token");
+  await click("Enroll passkey");
+  assert.ok(calls.some(call => call.path.endsWith("/verification/consume") && (call.body as { purpose: string }).purpose === "security_enroll"));
+  assert.ok(!calls.some(call => call.path.endsWith("/passkey/confirm")));
 });
