@@ -249,7 +249,7 @@ else exit 1; fi
         ...process.env,
         PATH: `${root}:${process.env.PATH}`,
         DIGEST: selected,
-        IMAGE: "ghcr.io/doublesharp/entitle-server",
+        IMAGE: "ghcr.io/0xdoublesharp/entitle-server",
         SOURCE_SHA: "b".repeat(40),
         INPUT_HASH: "c".repeat(64),
         CALLS: join(root, "calls"),
