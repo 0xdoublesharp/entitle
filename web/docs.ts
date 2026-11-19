@@ -734,7 +734,7 @@ export function publicDocs(
           h(
             "a",
             {
-              href: "https://github.com/doublesharp/entitle/blob/main/docs/mcp.md",
+              href: "https://github.com/0xdoublesharp/entitle/blob/main/docs/mcp.md",
             },
             "Read the full MCP reference →",
           ),
