@@ -1,6 +1,6 @@
 # Build from the repository root: docker build -f deploy/runtime.Dockerfile .
 # This stable runtime contains no application build or release-specific files.
-FROM nginxinc/nginx-unprivileged:1.28.2-alpine@sha256:7377697a821c131a924a7105fafbe7414db4e9fcc77a6f08f776f33f141ec3f8
+FROM ghcr.io/nginx/nginx-unprivileged:1.31.9-alpine@sha256:60214a103e6f38e953ff957f34b1f2e97a9db801ab2df3821da955d0fe6cadd6
 USER root
 RUN mkdir -p /runtime /cache /releases \
     && chown 101:101 /runtime /cache
