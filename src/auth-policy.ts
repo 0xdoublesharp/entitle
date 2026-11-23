@@ -18,6 +18,7 @@ export interface AuthFactor {
   backup_eligible: number | null;
   backed_up: number | null;
   user_verified: number;
+  created_at: number;
 }
 export interface RecoveryFlow {
   id: string;
@@ -31,6 +32,7 @@ export interface RecoveryFlow {
   expires_at: number;
   created_at: number;
 }
+export type PrivilegedPolicy = "hardware" | "passkey";
 export const privilegedPurposes = [
   "api_keys",
   "workspace_remove",
@@ -117,6 +119,31 @@ export async function activeRecovery(tx: Tx, s: SellerSession) {
   check(flow, 403, "recovery_required", "Start or resume account recovery.");
   return flow as RecoveryFlow;
 }
+/**
+ * Factors a session may use. A normal session never sees an unfinished recovery's
+ * factors (legacy NULL provenance stays usable); a recovery session sees only its own.
+ */
+export function sessionFactors(
+  tx: Tx,
+  userId: string,
+  recoveryId: string | null,
+) {
+  const factors = tx<AuthFactor>("seller_factors").where({ user_id: userId });
+  return recoveryId
+    ? factors.andWhere({ recovery_id: recoveryId })
+    : factors.andWhere((q) =>
+        q.whereNull("provenance").orWhereNot("provenance", "recovery"),
+      );
+}
+/** Passkey policy: any user-verified WebAuthn credential outside a pending recovery. */
+export function passkeyEligible(factor: AuthFactor) {
+  return factor.provenance !== "recovery" && Number(factor.user_verified) === 1;
+}
+export function privilegedRestricted(user: SellerUser) {
+  return (
+    !!Number(user.recovered_ordinary) || !!Number(user.privileged_suspended)
+  );
+}
 export async function approvedHardware(
   tx: Tx,
   userId: string,
@@ -161,6 +188,7 @@ export async function assertCapability(
   factorId: string,
   intent: StrongIntent,
   secret: string,
+  policy: PrivilegedPolicy = "hardware",
 ) {
   const { row, user } = await currentAuthSession(tx, s);
 
@@ -180,9 +208,16 @@ export async function assertCapability(
     );
     return factor;
   }
+  // An unfinished recovery's key only works inside its own recovery session.
+  check(
+    factor.provenance !== "recovery",
+    403,
+    "recovery_restricted",
+    "Complete recovery before using this credential.",
+  );
   if (intent.action === "security.recovery_cancel")
     check(
-      !factor.recovery_id,
+      factor.recovery_id !== intent.flowId,
       403,
       "recovery_restricted",
       "Use a pre-existing credential to cancel another recovery.",
@@ -194,11 +229,11 @@ export async function assertCapability(
     (await tx("auth_hardware_approvals")
       .where({ factor_id: intent.factorId, user_id: user.id })
       .first());
-  if (privileged || targetHardware) {
+  // Removing an operator-approved key always needs another approved key.
+  if (targetHardware || (privileged && policy === "hardware")) {
     const keys = await approvedHardware(tx, user.id, secret);
     check(
-      !Number(user.recovered_ordinary) &&
-        !Number(user.privileged_suspended) &&
+      !privilegedRestricted(user) &&
         keys.some((k) => k.id === factorId) &&
         keys.length >= (privileged ? 2 : 1),
       403,
@@ -212,6 +247,19 @@ export async function assertCapability(
         "remaining_key_required",
         "Use a remaining approved key to remove a hardware credential.",
       );
+  } else if (privileged) {
+    check(
+      !privilegedRestricted(user),
+      403,
+      "recovery_restricted",
+      "Privileged access is suspended after recovery. Contact your Entitle operator.",
+    );
+    check(
+      passkeyEligible(factor),
+      403,
+      "passkey_required",
+      "Verify with a user-verified passkey or security key.",
+    );
   }
   return factor;
 }
@@ -222,6 +270,7 @@ export async function consumeCapabilityProof(
   intent: StrongIntent,
   secret: string,
   consume = true,
+  policy: PrivilegedPolicy = "hardware",
 ) {
   const { user } = await currentAuthSession(tx, s);
   const grant = await tx("account_challenges")
@@ -241,7 +290,7 @@ export async function consumeCapabilityProof(
     "reauth_required",
     "Fresh verification for this exact action is required.",
   );
-  await assertCapability(tx, s, grant.factor_id, intent, secret);
+  await assertCapability(tx, s, grant.factor_id, intent, secret, policy);
   if (consume) await tx("account_challenges").where({ id: grant.id }).delete();
 }
 export async function bumpAuthGeneration(tx: Tx, s: SellerSession) {
@@ -284,5 +333,8 @@ export async function revokePublishingGrants(tx: Tx, userId: string) {
     .whereIn("tenant_id", owned)
     .whereNull("revoked_at")
     .update({ revoked_at: Date.now() });
-  await tx("oidc_sessions").whereIn("tenant_id", owned).delete();
+  // Expire access immediately but keep identity_hash replay markers until replay_until.
+  await tx("oidc_sessions")
+    .whereIn("tenant_id", owned)
+    .update({ expires_at: 0 });
 }

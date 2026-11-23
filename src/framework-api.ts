@@ -59,6 +59,10 @@ export async function frameworkRoutes(
               build: z.string().max(100).optional(),
               os: z.string().max(100).optional(),
               arch: z.string().max(100).optional(),
+              uuid: z.string().max(100).optional(),
+              mid: z.string().max(100).optional(),
+              eap: z.string().max(100).optional(),
+              pluginId: z.string().max(200).optional(),
             })
             .strict()
         : framework === "generic"

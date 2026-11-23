@@ -428,7 +428,7 @@ test("advanced health reports stay lazy and settings preserve lifecycle boolean"
   await mount("operations", false);
   assert.match(dom.document.body.textContent!, /Basic health/);
 });
-test("webhook event selection, signing secret, rotation, deletion and failed retry use protected routes", async () => {
+test("webhook event selection, signing secret, rotation, deletion and failed retry use protected routes", async (t) => {
   handler = (path) =>
     path.endsWith("/features")
       ? { features: { outboundWebhooks: true }, hostedProConfigured: true }
@@ -485,8 +485,13 @@ test("webhook event selection, signing secret, rotation, deletion and failed ret
     events: ["license.renewed"],
   });
   assert.match(dom.document.body.textContent!, /signing-once/);
+  revoked.length = 0;
+  t.mock.timers.enable({ apis: ["setTimeout"] });
   await click("Save secrets offline");
   assert.equal(downloads.at(-1)?.filename, "entitle-secrets.txt");
+  assert.deepEqual(revoked, [], "the download must start before revocation");
+  t.mock.timers.tick(1000);
+  t.mock.timers.reset();
   assert.equal(revoked.at(-1), "blob:download");
   await click("I saved these secrets");
   await click("Rotate signing secret");
@@ -596,7 +601,8 @@ test("tenant export consumes tenant_transfer proof then downloads only encrypted
   );
   assert.doesNotMatch(dom.document.body.textContent!, /Download manifest/);
 });
-test("buyer own-data export creates a JSON download and revokes its object URL", async () => {
+test("buyer own-data export creates a JSON download and revokes its object URL", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
   handler = (path) =>
     path.endsWith("/notifications")
       ? { notifications: [] }
@@ -604,8 +610,12 @@ test("buyer own-data export creates a JSON download and revokes its object URL",
         ? { request: null }
         : { customer: { email: "buyer@example.test" } };
   await mount("customer");
+  revoked.length = 0;
   await click("Download my account data");
   assert.equal(downloads.at(-1)?.filename, "entitle-account.json");
+  t.mock.timers.tick(999);
+  assert.deepEqual(revoked, []);
+  t.mock.timers.tick(1);
   assert.equal(revoked.at(-1), "blob:download");
 });
 test("panel errors are recoverable and duplicate submissions are blocked", async () => {
@@ -963,6 +973,8 @@ test("download trends use the selected UTC period and keep missing days at zero"
               storageReads: 1,
               storageReadBytes: 1024,
             },
+            // Rows recorded before response and storage-read counters existed.
+            { day: "2026-11-01", servedBytes: 0 },
           ],
         }
       : {

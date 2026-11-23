@@ -9,11 +9,10 @@ standalone production setup, or the local fixture first.
 | Path                  | You provide                                                                           | Start here                                                            |
 | --------------------- | ------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
 | Hosted publisher      | Your seller email, product builds and client integration; Stripe for paid sales       | Sign in at `/app/seller` on the hosted deployment.                    |
-| Self-hosted publisher | HTTPS server, database, private S3 bucket, SMTP and backups; Stripe for paid sales     | Follow [standalone deployment](deployment.md#self-hosted-standalone). |
+| Self-hosted publisher | HTTPS server with Docker, private S3 bucket, SMTP, and backups; Stripe for paid sales  | Start the [two-container stack](#self-host-with-docker-compose) below. |
 | Local development     | Pinned Node/pnpm, Docker for the mail fixture, and Go 1.27.1 for the source-built S3 fixture | Use the local procedure below. No paid services are required.         |
 
-Use the deployment origin supplied by your operator. The shared hosted link
-in the source is not a service-availability commitment.
+Use the deployment origin supplied by your operator.
 
 Hosted sellers create a **publisher workspace** for their business or brand and
 choose its permanent slug. Add each plugin or app as a **product** inside that
@@ -23,21 +22,56 @@ and releases. The overview displays this relationship and totals across the
 workspace. See the [seller guide](seller-guide.md) for license search, filters,
 sorting, email history and daily activity reports.
 
-Complimentary
-licensing needs no connected Stripe account; connect Stripe from Billing when
-offering paid plans. Hosted capacity and service limits still apply. Standalone
-owners set `STANDALONE_OWNER_EMAIL` and sign in with
-that address. Verification grants access to the existing `primary` workspace.
-Standalone needs no Connect onboarding or platform subscription.
+Complimentary licensing needs no connected Stripe account; connect Stripe from
+Billing when you offer monthly or annual paid plans. Hosted capacity and service
+limits still apply. Standalone owners set `STANDALONE_OWNER_EMAIL` and sign in
+with that address. Verification grants access to the existing `primary`
+workspace. Standalone needs no Connect onboarding or platform subscription.
 
 Email links are single-use and bound to the browser that requested them. Open
 the link in that browser. Seller and buyer sign-ins are separate.
 
+## Self-host with Docker Compose
+
+`deploy/compose.standalone.yaml` runs a standalone server as two containers: one
+app built from `deploy/standalone.Dockerfile` that serves the API and dashboard at
+the root of `PUBLIC_ORIGIN`, and a Caddy proxy that obtains HTTPS certificates.
+It needs no separate frontend release step.
+
+1. Point your domain's DNS at the host and open ports 80 and 443.
+2. Copy `.env.example` to `.env`, protect it with mode 0600, and set
+   `PUBLIC_ORIGIN`, independent `APP_SECRET` and `OPERATOR_TOKEN` values,
+   `DEPLOYMENT_MODE=standalone`, `STANDALONE_OWNER_EMAIL`, private S3 storage,
+   SMTP, and `ENTITLE_DATA_DIR`, an absolute persistent host directory. The
+   copied file sets `PRIVILEGED_AUTH_POLICY=passkey`, which lets you approve API
+   keys and browser releases with your own passkey; change it to `hardware` if
+   your operator will inventory hardware keys. See
+   [configuration](configuration.md#deployment-and-identity).
+3. Create the app's data directory, then start the stack. This example uses
+   `ENTITLE_DATA_DIR=/srv/entitle`:
+
+   ```sh
+   sudo install -d -o 1000 -g 1000 /srv/entitle/app
+   docker compose --env-file .env -f deploy/compose.standalone.yaml up -d --build
+   ```
+
+4. Open `PUBLIC_ORIGIN/seller` and sign in with `STANDALONE_OWNER_EMAIL`.
+
+The app mounts only `${ENTITLE_DATA_DIR}/app`; Caddy keeps its certificate keys
+in the sibling `caddy-data` and `caddy-config` directories. Startup fails if the
+`app` directory is missing, so it never creates an empty database by accident.
+If you are upgrading an installation that mounted `ENTITLE_DATA_DIR` itself, move
+its files into `app/` first, as described in
+[operator maintenance](operator-maintenance.md#move-data-into-the-app-subdirectory).
+See [deployment](deployment.md#self-hosted-standalone) for production settings,
+Stripe, and the split web-runtime layout.
+
 ## Run the local fixture
 
-Use the versions pinned in [Development](development.md#toolchain). In this macOS workspace,
-confirm `/Volumes/Scratch` is mounted before creating disposable output. Do not
-substitute the internal Data volume if it is missing.
+Use the versions pinned in [Development](development.md#toolchain). The helper
+scripts below write disposable output to the `/Volumes/Scratch` volume used by
+this macOS workspace and stop if it is not mounted. On Linux, Windows, or a Mac
+without that volume, use the [manual setup](#manual-setup) instead.
 
 ```sh
 export TMPDIR=/Volumes/Scratch/entitle/tmp/setup
@@ -77,6 +111,9 @@ manual procedure below.
 2. Set `DEPLOYMENT_MODE=standalone`, `STANDALONE_OWNER_EMAIL`, `PUBLIC_ORIGIN`,
    `DATABASE_URL`, private `DATA_DIR` / `WORK_DIR`, and `BUILD_DIR` / `WEB_DIR`.
    Choose persistent paths for data and disposable paths for builds and caches.
+   The example file's `DATA_DIR` and `BUILD_DIR` point at the macOS Scratch
+   volume; elsewhere, use repository-relative paths such as `DATA_DIR=./.data`
+   and `BUILD_DIR=./dist`.
 3. Configure a private S3-compatible bucket and its access settings, plus SMTP
    or the local mail sink. Use `LOCAL_BILLING=true` only for disposable development.
    For a production complimentary pilot, use `LOCAL_BILLING=false` and omit all
@@ -97,22 +134,27 @@ be reused deliberately, not regenerated by a setup helper.
 1. In Products, choose the framework your build actually uses. WordPress needs
    the exact `directory/main-file.php` plugin basename. Joomla and JetBrains
    need their extension/plugin identity. Generic defaults to device activation.
-2. For a complimentary pilot, leave **Include annual paid plan** unchecked. No
-   price or payment provider is needed. For paid sales, create an active annual
-   recurring price in the correct merchant account and Stripe mode.
+2. For a complimentary pilot, leave **Include a paid plan** unchecked. No price
+   or payment provider is needed. For paid sales, create an active monthly or
+   annual recurring price in the correct merchant account and Stripe mode.
 3. If adding a paid plan, select that price and its site/device allowance. The same API field,
    `siteAllowance`, counts seats for either activation type.
 4. Save and check `/api/v1/tenants/YOUR_SLUG/catalog`. Confirm the product slug,
-   framework and any paid plan IDs before adding checkout to another website.
+   framework, paid plan IDs, and each plan's `unit_amount`, `currency`, and
+   `billing_interval` before adding checkout to another website.
 
-Framework configuration locks after the first license or release. Price-to-product
-and allowance mappings also persist. Add a new Stripe price when changing an
-allowance. See [seller guide](seller-guide.md#products-and-plans).
+To start selling a pilot product later, choose **Edit product** and add a monthly
+or annual plan. Framework configuration locks after the first license or release.
+Price-to-product and allowance mappings also persist. Add a new Stripe price when
+changing an allowance, and archive a plan to stop new purchases. See
+[seller guide](seller-guide.md#products-and-plans).
 
 ## Publish version 1.0.0
 
-Use Releases in the dashboard. Browser publication requires a fresh emailed
-confirmation for that action. CI uses a scoped automation key instead.
+Use Releases in the dashboard. Browser publication requires a fresh passkey or
+security-key approval for that action; the server's
+[privileged policy](authentication-policy.md) decides which keys qualify. CI uses
+a scoped automation key or a [trusted OIDC publisher](oidc-publishing.md) instead.
 
 For WordPress, publish a ZIP whose main plugin header and directory match the
 product and version. For other frameworks, upload a package for an exact target
@@ -141,8 +183,8 @@ Complimentary licenses are labelled in seller and customer views and create no
 invoice, subscription or revenue. They never automatically charge or enroll a
 pilot customer, including after Stripe is enabled. Revocation/restoration and
 customer key replacement use the normal controls. Restoration does not extend
-expiration. Expiration stops new activations, downloads and updates while
-installed plugin features continue working.
+expiration. Expiration stops new activations, downloads, and updates while
+installed software keeps working.
 
 Follow [activation](#activate-the-client) below using the emailed key. The existing
 WordPress client needs no changes. See the [seller guide](seller-guide.md#issue-a-complimentary-license)

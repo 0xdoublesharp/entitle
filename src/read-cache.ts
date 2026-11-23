@@ -12,6 +12,8 @@ interface ReadCacheOptions {
   namespace?: string;
   memoryBytes?: number;
 }
+class ReadSourceError extends Error {}
+
 /** Only presentation/provider reads. Never cache authority or artifact bytes. */
 export class ReadCache {
   private readonly engine: ReadCacheEngine;
@@ -83,9 +85,16 @@ export class ReadCache {
         .digest("hex");
     let source: Promise<T> | undefined;
     const compute = () => (source ??= Promise.resolve().then(load));
+    const engine = scope === "feed" && this.localFeeds ? this.localFeeds : this.engine;
     try {
-      return await (scope === "feed" && this.localFeeds ? this.localFeeds : this.engine).getOrSet(key, compute);
-    } catch {
+      return await engine.getOrSet(key, () =>
+        compute().catch((cause) => {
+          // Coalesced callers receive the same source failure from the cache.
+          throw new ReadSourceError("Read source failed", { cause });
+        }),
+      );
+    } catch (error) {
+      if (error instanceof ReadSourceError) throw error.cause;
       if (!this.warned) {
         this.warned = true;
         try { this.onUnavailable?.(); } catch { /* Logging cannot prevent source reads. */ }

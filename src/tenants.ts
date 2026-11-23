@@ -5,6 +5,7 @@ import type { Config } from "./config.ts";
 import type { SellerSession } from "./platform-auth.ts";
 import { hash, random } from "./crypto.ts";
 import { check } from "./errors.ts";
+import { currentAuthSession } from "./auth-policy.ts";
 
 export const tenantApiKeyScopes = [
   "read",
@@ -100,19 +101,21 @@ export class Tenants {
     this.config = config;
   }
   private async session(tx: Tx, seller: SellerSession) {
-    const session = await tx("seller_sessions")
-      .where({ id: seller.sessionHash, user_id: seller.user.id })
-      .andWhere("expires_at", ">", Date.now())
-      .first();
-    const user = await tx("seller_users")
-      .where({ id: seller.user.id })
-      .whereNotNull("verified_at")
-      .first();
+    // Re-validate inside the transaction: a security-generation bump or a
+    // recovery-restricted session must not reach workspace or key management.
+    const { row, user } = await currentAuthSession(tx, seller);
     check(
-      session && user,
+      this.config.deploymentMode !== "standalone" ||
+        user.email === this.config.standaloneOwnerEmail,
       401,
       "seller_login_required",
-      "An active verified seller session is required.",
+      "Verify your email and sign in again.",
+    );
+    check(
+      !row.recovery_id,
+      403,
+      "recovery_restricted",
+      "Complete account recovery before continuing.",
     );
     return user;
   }
@@ -171,9 +174,11 @@ export class Tenants {
       "not_found",
       "Workspace management is unavailable in standalone mode.",
     );
-    await lock(tx, "schema");
+    // Global and per-tenant order: auth before schema globally (remove() authorizes
+    // first), then schema, auth, billing, work, email as operations and licensing do.
     await lock(tx, "auth");
-    for (const name of ["schema", "billing", "work", "email", "auth"])
+    await lock(tx, "schema");
+    for (const name of ["schema", "auth", "billing", "work", "email"])
       await tx("locks")
         .where({ id: `${id}:${name}` })
         .increment("version", 1);
@@ -346,6 +351,9 @@ export class Tenants {
       "That tenant namespace is reserved for the platform.",
     );
     return this.db.transaction(async (tx) => {
+      // Session revocation and lifecycle changes take auth before schema; the
+      // same order keeps a revoked session from racing workspace creation.
+      await lock(tx, "auth");
       await lock(tx, "schema");
       const user = await this.session(tx, seller);
       check(

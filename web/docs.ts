@@ -256,7 +256,7 @@ export function publicDocs(
         h("p", [
           "Planned hosted address: ",
           h("a", { href: site.hostedOrigin }, new URL(site.hostedOrigin).host),
-          ". This documentation does not confirm a public launch or production availability.",
+          ".",
         ]),
         h("div", { class: "button-row" }, [
           h("a", { href: "#hosted-setup" }, "Hosted setup →"),
@@ -277,18 +277,25 @@ export function publicDocs(
             "Create your publisher workspace for your business or brand. Sign in through the seller dashboard and open the email link in the same browser that requested it. Choose your workspace's permanent slug, then add each plugin or app as a product inside it. You can issue complimentary licenses without connecting Stripe; product and storage allowances still apply. Review platform charges and limits before subscribing to a hosted plan.",
           ),
           paragraph(
-            "For paid sales, connect Stripe from Billing, create annual recurring prices and configure the Customer Portal. On the hosted service, buyers use /app/t/YOUR_WORKSPACE_SLUG and the seller dashboard is /app/seller. Your API base is /api/v1/tenants/YOUR_WORKSPACE_SLUG. Custom app mounts may use a different page prefix.",
+            "For paid sales, connect Stripe from Billing, create monthly or annual recurring prices, and configure the Customer Portal. On the hosted service, buyers use /app/t/YOUR_WORKSPACE_SLUG and the seller dashboard is /app/seller. Your API base is /api/v1/tenants/YOUR_WORKSPACE_SLUG. Custom app mounts may use a different page prefix.",
           ),
           h("h3", { id: "self-hosted-setup" }, "Self-hosted standalone setup"),
           paragraph(
-            "Run one application behind HTTPS with a persistent database, a private S3-compatible bucket and SMTP. SQLite is the default; PostgreSQL and MySQL are supported. You operate backups, monitoring and server upgrades. Redis is optional.",
+            "Run one application behind HTTPS with a persistent database, a private S3-compatible bucket, and SMTP. SQLite is the default; PostgreSQL and MySQL are supported. You operate backups, monitoring, and server upgrades. Redis is optional.",
+          ),
+          paragraph(
+            "The quickest path is deploy/compose.standalone.yaml. It builds deploy/standalone.Dockerfile into one app container that serves the API and dashboard at the root of PUBLIC_ORIGIN, and adds a Caddy container that obtains HTTPS certificates. No separate frontend release step is needed. Set ENTITLE_DATA_DIR in .env to an absolute persistent directory, and create its app subdirectory owned by UID and GID 1000 before the first start.",
+          ),
+          code(
+            "Shell / two-container standalone stack",
+            "sudo install -d -o 1000 -g 1000 /srv/entitle/app\ndocker compose --env-file .env -f deploy/compose.standalone.yaml up -d --build",
           ),
           code(
             "Server configuration / mode selection, not a complete production environment",
             "DEPLOYMENT_MODE=standalone\nSTANDALONE_OWNER_EMAIL=owner@example.com\nPUBLIC_ORIGIN=https://licenses.example.com",
           ),
           paragraph(
-            "Supply independent application secrets, private storage, email and the remaining production settings from .env.example and docs/deployment.md. For a complimentary pilot, use LOCAL_BILLING=false and omit all primary Stripe, Connect and platform price settings. When enabling paid sales, supply the complete mode-specific Stripe configuration, register /api/v1/stripe/merchant-webhook, create annual recurring prices and configure your Stripe Customer Portal.",
+            "Supply independent application secrets, private storage, email and the remaining production settings from .env.example and docs/deployment.md. For a complimentary pilot, use LOCAL_BILLING=false and omit all primary Stripe, Connect, and platform price settings. When enabling paid sales, supply the complete mode-specific Stripe configuration, register /api/v1/stripe/merchant-webhook, create monthly or annual recurring prices, and configure your Stripe Customer Portal.",
           ),
           paragraph(
             "Sign in at /seller with STANDALONE_OWNER_EMAIL. Email verification gives the owner access to the existing primary workspace. Buyers use /t/primary and client APIs use /api/v1/tenants/primary. No workspace creation, Connect onboarding, platform subscription or application fee is required. Product, storage and upload limits still apply.",
@@ -304,7 +311,7 @@ export function publicDocs(
             [
               [
                 "Add your product; a paid plan is optional.",
-                "In Products, choose the framework that matches your software. Leave Include annual paid plan unchecked for complimentary licensing. To sell, select an annual recurring Stripe price and its installation allowance. WordPress needs the plugin's directory/main-file.php identity. Joomla and JetBrains need their extension or plugin identity too.",
+                "In Products, choose the framework that matches your software. Leave Include a paid plan unchecked for complimentary licensing. To sell, select a monthly or annual recurring Stripe price and its installation allowance. WordPress needs the plugin's directory/main-file.php identity. Joomla and JetBrains need their extension or plugin identity too.",
               ],
               [
                 "Publish your first release and configure the client.",
@@ -358,7 +365,7 @@ export function publicDocs(
           "Archiving a publisher also hides its sandbox. Restore the publisher first; a sandbox archived separately stays archived until you restore it too. The primary workspace cannot be archived or removed.",
         ),
         paragraph(
-          "Check removal explains whether a workspace is empty. Permanent removal needs its exact address and fresh email verification. It deletes empty workspace settings, membership and unused API keys, releases the address and frees a slot. Customers, products, releases, payments, used keys, exports and other retained history block removal; archive instead. Linked sandboxes must be handled separately. Security audit records are retained.",
+          "Check removal explains whether a workspace is empty. Permanent removal needs its exact address and a fresh passkey or security-key approval. It deletes empty workspace settings, membership and unused API keys, releases the address and frees a slot. Customers, products, releases, payments, used keys, exports and other retained history block removal; archive instead. Linked sandboxes must be handled separately. Security audit records are retained.",
         ),
         paragraph(
           "Workspace management is separate from personal-data deletion. Customers request account closure in their buyer account; financial and security records follow the privacy and retention process.",
@@ -377,7 +384,7 @@ export function publicDocs(
             ],
             [
               "Plan",
-              "An annual Stripe price paired with an installation allowance. One product can have several plans, such as one site or five sites.",
+              "A monthly or annual Stripe price paired with an installation allowance. One product can have several plans, such as one site billed monthly and five sites billed yearly. Archive a plan to remove it from checkout; existing licenses are unchanged.",
             ],
             [
               "License",
@@ -432,7 +439,13 @@ export function publicDocs(
         "Products, optional paid plans and installations",
         [
           paragraph(
-            "A product slug appears in activation requests and update feeds. Choose it alongside the framework identity before distributing your client. Products need no paid plan for complimentary licensing; leave Include annual paid plan unchecked, or use plans:[] in the API. A paid plan maps one annual recurring Stripe price to an installation allowance.",
+            "A product slug appears in activation requests and update feeds. Choose it alongside the framework identity before distributing your client. Products need no paid plan for complimentary licensing; leave Include a paid plan unchecked, or use plans:[] in the API. A paid plan maps one monthly or annual recurring Stripe price to an installation allowance.",
+          ),
+          paragraph(
+            "To change a product later, choose Edit product. You can rename it and add monthly or annual plans, including to a complimentary pilot product when you start selling. Saving the same slug again through the API or product-save adds new plans and keeps existing ones. A plan's allowance cannot change; create a new Stripe price instead.",
+          ),
+          paragraph(
+            "Archive a plan to stop new purchases without changing existing licenses, and restore it to offer it again. The customer catalog lists only unarchived plans, with their price and billing interval, such as $9 / month or $49 / year. Automation uses POST /plans/PLAN_ID/archive with {\"archived\": true} or false, the plan-archive CLI command, or the entitle_op_plan_archive MCP tool.",
           ),
           code(
             "JSON / Generic device product",
@@ -691,7 +704,7 @@ export function publicDocs(
         "Connect your AI agent with MCP",
         [
           paragraph(
-            "Use an AI client that supports the Model Context Protocol (MCP) to manage your Entitle workspace from a conversation. The tools can create products and paid-plan mappings, publish release files, issue complimentary licenses and read workspace stats.",
+            "Use an AI client that supports the Model Context Protocol (MCP) to manage your Entitle workspace from a conversation. The tools can create products and monthly or annual plan mappings, archive plans, publish release files, issue complimentary licenses, deactivate a customer's installation, and read workspace stats.",
           ),
           h("ol", { class: "docs-checklist" }, [
             h(
@@ -716,8 +729,16 @@ export function publicDocs(
                 "entitle_op_product_save; entitle_prices to inspect existing Stripe prices",
               ],
               [
+                "Archive or restore a plan",
+                "entitle_op_plan_archive",
+              ],
+              [
                 "Publish a private release",
                 "entitle_op_release_publish or entitle_op_asset_publish",
+              ],
+              [
+                "Free a customer's seat",
+                "entitle_op_license_detail to list installations, then entitle_op_license_installation_deactivate",
               ],
               [
                 "Read workspace stats",
@@ -726,7 +747,7 @@ export function publicDocs(
             ],
           ),
           paragraph(
-            "The seller overview includes licenses, seats, downloads, storage and payments separated by currency. Daily download and bandwidth reports require Hosted Pro or a self-hosted installation.",
+            "The seller overview includes licenses, seats, downloads, storage, and payments separated by currency. Daily download and bandwidth reports require Hosted Pro or a self-hosted installation.",
           ),
           paragraph(
             "The MCP server runs locally over stdio and connects to your hosted or self-hosted Entitle API. Complete owner verification and Stripe authorization interactively; your agent can then map existing prices to your product. Keep API keys and verification material out of prompts and shared transcripts.",
@@ -787,7 +808,7 @@ export function publicDocs(
           h("ol", { class: "docs-steps" }, [
             h(
               "li",
-              "Create a product in Products with Include annual paid plan unchecked, then publish its private release and configure the client.",
+              "Create a product in Products with Include a paid plan unchecked, then publish its private release and configure the client.",
             ),
             h(
               "li",
@@ -862,7 +883,7 @@ export function publicDocs(
           h("div", [
             h("h3", "Your customers’ subscription"),
             paragraph(
-              "Your annual product plans pay for licenses and installation allowances. Customers can buy through Stripe Checkout or an integrated Stripe Elements form and manage billing through their customer page.",
+              "Your monthly or annual product plans pay for licenses and installation allowances. Customers can buy through Stripe Checkout or an integrated Stripe Elements form and manage billing through their customer page.",
             ),
           ]),
           h("div", [
@@ -926,6 +947,10 @@ export function publicDocs(
                 "Releases that seat and invalidates its token; other installations remain available.",
               ],
               [
+                "Ask the publisher to deactivate one",
+                "In Licenses, the publisher chooses Installations on the customer's license and deactivates the old site or device. The effect is the same, and no license key is shared.",
+              ],
+              [
                 "Cancel renewal in Stripe",
                 "Stops future renewal according to the merchant's Portal settings. Already-paid time remains.",
               ],
@@ -963,7 +988,7 @@ export function publicDocs(
         [
           h("h3", "Account security"),
           paragraph(
-            "Open Account security to review and revoke sessions, create offline recovery codes, or change a hosted seller email with approval from both mailboxes. API keys, browser release publication and workspace export need a fresh, single-use emailed confirmation for the specific action. Keep recovery codes offline; replacing them invalidates the previous set.",
+            "Open Account security to review and revoke sessions, create offline recovery codes, or change a hosted seller email with approval from both mailboxes. API keys, browser release publication, and workspace removal need a fresh passkey or security-key approval, and workspace export needs a single-use emailed confirmation, each for the specific action. Keep recovery codes offline; replacing them invalidates the previous set.",
           ),
           h("h3", "Test in a sandbox"),
           paragraph(
@@ -982,7 +1007,10 @@ export function publicDocs(
           ),
           h("h3", "Confirm sensitive actions"),
           paragraph(
-            "Emailed verification is purpose-specific and bound to your current session. After consumption, its proof lasts five minutes and works once. API-key changes use api_keys, browser publication uses release_publish, workspace export uses tenant_transfer, empty-workspace removal uses workspace_remove and recovery-code replacement uses recovery_codes. A failed action requires a new proof.",
+            "API-key changes, browser release publication, trusted-publisher changes, and empty-workspace removal need a fresh passkey or security-key approval for that exact action. Each approval works once and expires after five minutes. The server's PRIVILEGED_AUTH_POLICY decides which keys qualify: passkey accepts any user-verified passkey or security key on your account, and hardware, the default, requires two security keys that your operator has inventoried and approved.",
+          ),
+          paragraph(
+            "Emailed verification covers the remaining sensitive actions. Workspace export uses tenant_transfer, recovery-code replacement uses recovery_codes, and enrolling your first passkey uses security_enroll. Each emailed proof is bound to your current session. After it is consumed, it lasts five minutes and works once. A failed action requires a new proof.",
           ),
           h("h3", "Read health before retrying work"),
           table(
@@ -1157,7 +1185,24 @@ export function publicDocs(
       ),
       section("self-hosting", "Operators", "Deploy and configure the service", [
         paragraph(
-          "Build the API and Vue interfaces independently with pnpm build:server and pnpm build:web. The API runs database-backed jobs; a separate web runtime serves immutable frontend releases and proxies API requests. Static content changes can publish without rebuilding either runtime image. Run behind HTTPS with a persistent SQLite database or configured PostgreSQL/MySQL, private S3-compatible storage and SMTP. Redis is optional. The source package contains deploy/compose.yaml, .env.example and the full deployment/configuration guides.",
+          "Choose one of two Docker Compose layouts from the source package. Both run behind HTTPS with a persistent SQLite database or configured PostgreSQL/MySQL, private S3-compatible storage, and SMTP. Redis is optional.",
+        ),
+        table(
+          "Docker Compose layouts",
+          ["Layout", "What runs"],
+          [
+            [
+              "deploy/compose.standalone.yaml",
+              "Two containers: one app built from deploy/standalone.Dockerfile that serves the API and dashboard, and a Caddy HTTPS proxy. Start it with docker compose --env-file .env -f deploy/compose.standalone.yaml up -d --build. Frontend changes ship with a rebuild.",
+            ],
+            [
+              "deploy/compose.yaml",
+              "Split runtimes: the API image, a separate web runtime that serves immutable frontend releases and proxies API requests, and the HTTPS proxy. Build with pnpm build:server and pnpm build:web. Static content changes can publish without rebuilding either runtime image.",
+            ],
+          ],
+        ),
+        paragraph(
+          "Both layouts mount only ENTITLE_DATA_DIR/app into the application, so the proxy's TLS keys stay out of its reach. Create that directory owned by UID and GID 1000 before the first start; a missing directory stops startup instead of creating an empty database. If you ran an earlier release that mounted ENTITLE_DATA_DIR itself, stop the stack and move the application's files into the new app subdirectory before upgrading. The source package also contains .env.example and the full deployment and configuration guides.",
         ),
         note(
           "Production without Stripe",
@@ -1169,11 +1214,15 @@ export function publicDocs(
           [
             [
               "Origin and proxy",
-              "NODE_ENV=production, an HTTPS PUBLIC_ORIGIN and exact TRUST_PROXY address/subnet.",
+              "NODE_ENV=production, an HTTPS PUBLIC_ORIGIN, and TRUST_PROXY set to the proxy's exact address, a specific subnet, or loopback, linklocal, or uniquelocal. true and /0 ranges are refused.",
             ],
             [
               "Private state",
               "Independent APP_SECRET with 64 hex characters, OPERATOR_TOKEN of at least 32 characters, persistent DATABASE_URL/DATA_DIR and private WORK_DIR.",
+            ],
+            [
+              "Privileged approvals",
+              "PRIVILEGED_AUTH_POLICY=hardware, the default when omitted, requires two operator-inventoried hardware keys for API keys, browser releases, trusted publishers, and workspace removal. PRIVILEGED_AUTH_POLICY=passkey, the value in .env.example, lets sellers approve those actions with any user-verified passkey they enrolled themselves.",
             ],
             [
               "Storage",
@@ -1534,11 +1583,11 @@ export function publicDocs(
           ],
           [
             "My API key works for reads but cannot publish",
-            "Check tenant, expiry and releases:write scope. An interactive browser also needs a fresh release_publish proof. Owner-only actions reject automation keys regardless of scopes; do not substitute an operator credential.",
+            "Check tenant, expiry, and releases:write scope. Publishing from the browser also needs a fresh passkey or security-key approval. Owner-only actions reject automation keys regardless of scopes; do not substitute an operator credential.",
           ],
           [
-            "A sensitive action fails after email confirmation",
-            "Confirm the proof's purpose and current session. It lasts five minutes after consumption and can be used once. A failed action needs a new proof. Browser mutations also require matching Origin and CSRF headers.",
+            "A sensitive action fails after verification",
+            "Confirm the proof's purpose and current session. It lasts five minutes after consumption and can be used once, and a failed action needs a new proof. For API keys, releases, and workspace removal, a passkey_required error means the server uses the passkey policy and needs a user-verified passkey, while hardware_required means it needs one of your two operator-approved hardware keys. Browser mutations also require matching Origin and CSRF headers.",
           ],
           [
             "Checkout asks an existing customer to sign in",

@@ -145,6 +145,39 @@ async function fixture(
 }
 type Fixture = Awaited<ReturnType<typeof fixture>>;
 
+test("fixture purchases honor the publisher's configured grace period", async (t) => {
+  const f = await fixture(t);
+  f.config.graceDays = 14;
+  const browser = await seller(f);
+  const owner = await f.post(
+    "/api/v1/operator/tenants/primary/owner",
+    { email: "owner@example.test" },
+    f.operator,
+  );
+  assert.equal(owner.statusCode, 200, owner.body);
+  const created = await f.post(`${prefix}/seller/sandbox`, {}, browser);
+  assert.equal(created.statusCode, 200, created.body);
+  const { tenant: sandbox } = created.json();
+  await f.db("tenants").where({ id: "primary" }).update({
+    exempt: 0, trial_ends_at: 0, paid_through: Date.now() - 9 * 86400000,
+  });
+  await f.db("products").insert({
+    tenant_id: sandbox.id, id: "fixture_product", slug: "test-product", name: "Test product",
+  });
+  await f.db("plans").insert({
+    tenant_id: sandbox.id, id: "fixture_plan", product_id: "fixture_product",
+    stripe_price_id: "price_fixture", name: "One", site_allowance: 1,
+  });
+  const url = `/api/v1/tenants/${sandbox.slug}/seller/sandbox/purchase`;
+  const purchase = await f.post(url, { planId: "fixture_plan" }, browser);
+  assert.equal(purchase.statusCode, 200, purchase.body);
+  assert.equal((await f.db("licenses").where({ tenant_id: sandbox.id })).length, 1);
+  f.config.graceDays = 8;
+  const expired = await f.post(url, { planId: "fixture_plan" }, browser);
+  assert.equal(expired.statusCode, 403, expired.body);
+  assert.equal(expired.json().error.code, "tenant_capacity");
+});
+
 for (const framework of ["wordpress", "generic"] as const) {
   for (const transition of ["revoked", "expired", "scope_removed"] as const) {
     test(`${framework} publication denies an API key ${transition} during storage verification`, async (t) => {
@@ -835,6 +868,62 @@ test("buyer account includes a paid plan created during effective license projec
   assert.equal(response.json().licenses[0].site_allowance, 5);
 });
 
+test("seller views show effective plan details and allow scoped installation deactivation", async (t) => {
+  const f = await fixture(t);
+  const purchase = await commerce(f);
+  const sellerKey = await f.key();
+  const reader = await f.key("primary", `DE-TK-${"r".repeat(43)}`, ["read"]);
+  const now = Date.now();
+  await f.db("plans").insert({
+    tenant_id: "primary", id: "upgrade", product_id: purchase.productId,
+    name: "Five sites", site_allowance: 5, stripe_price_id: "price_upgrade",
+  });
+  await f.db("grants").insert({
+    tenant_id: "primary", id: "seller-upgrade", license_id: purchase.licenseId,
+    plan_id: "upgrade", invoice_id: "seller-upgrade", period_start: now - 1000,
+    period_end: now + 86400000, paid_at: now,
+  });
+  const licensePath = `${prefix}/seller/licenses/${purchase.licenseId}`;
+  const overview = await f.app.inject({ url: `${prefix}/seller/overview`, headers: reader.headers });
+  const detail = await f.app.inject({ url: licensePath, headers: reader.headers });
+  assert.equal(overview.statusCode, 200, overview.body);
+  assert.equal(detail.statusCode, 200, detail.body);
+  for (const license of [overview.json().licenses[0], detail.json().license]) {
+    assert.equal(license.site_allowance, 5);
+    assert.equal(license.plan_name, "Five sites");
+    assert.equal(license.key_hash, undefined);
+  }
+  const installation = detail.json().installations[0];
+  assert.equal(installation.active, true);
+  const deactivate = `${licensePath}/installations/${installation.id}/deactivate`;
+  assert.equal((await f.post(deactivate, {}, reader.headers)).statusCode, 403);
+  assert.equal((await f.post(deactivate, { extra: true }, sellerKey.headers)).statusCode, 400);
+  assert.equal((await f.post(
+    `${prefix}/seller/licenses/other/installations/${installation.id}/deactivate`,
+    {}, sellerKey.headers,
+  )).statusCode, 404);
+  const response = await f.post(deactivate, {}, sellerKey.headers);
+  assert.equal(response.statusCode, 200, response.body);
+  assert.deepEqual(response.json(), { ok: true });
+  const updated = await f.app.inject({ url: licensePath, headers: reader.headers });
+  assert.equal(updated.json().installations[0].active, false);
+  const audit = await f.db("audit_events").where({ action: "installation.deactivated" }).first();
+  assert.deepEqual(JSON.parse(audit.details), {
+    license_id: purchase.licenseId, installation_id: installation.id,
+  });
+});
+
+test("plan archive requires catalog write scope", async (t) => {
+  const f = await fixture(t);
+  const purchase = await commerce(f);
+  const key = await f.key("primary", testTenantKey, ["read", "licenses:write"]);
+  const response = await f.post(`${prefix}/seller/plans/${purchase.planId}/archive`, {
+    archived: true,
+  }, key.headers);
+  assert.equal(response.statusCode, 403, response.body);
+  assert.equal((await f.db("plans").where({ id: purchase.planId }).first()).archived_at, null);
+});
+
 test("public catalog requires an explicit tenant namespace and platform info exposes verified capabilities", async (t) => {
   const f = await fixture(t);
   const scoped = await f.app.inject(`${prefix}/catalog`);
@@ -986,6 +1075,24 @@ test("seller email login binds its preauth browser, consumes once, and validates
     (await f.app.inject({ url: "/api/v1/platform/me", headers })).statusCode,
     401,
   );
+});
+
+test("a recovery session can log out with valid origin and CSRF", async (t) => {
+  const f = await fixture(t);
+  const headers = await seller(f);
+  const sessionHash = hash(headers.cookie.split("=")[1]!);
+  await f.db("seller_sessions").where({ id: sessionHash }).update({ recovery_id: randomUUID() });
+  const me = await f.app.inject({ url: "/api/v1/platform/me", headers });
+  assert.equal(me.statusCode, 403, me.body);
+  assert.equal(me.json().error.code, "recovery_restricted");
+  const logout = "/api/v1/platform/auth/logout";
+  const invalid = await f.post(logout, {}, { ...headers, "x-csrf-token": "invalid" });
+  assert.equal(invalid.statusCode, 403, invalid.body);
+  assert.equal(invalid.json().error.code, "csrf_denied");
+  const valid = await f.post(logout, {}, headers);
+  assert.equal(valid.statusCode, 200, valid.body);
+  assert.match(String(valid.headers["set-cookie"]), /seller-session=;/);
+  assert.equal(await f.db("seller_sessions").where({ id: sessionHash }).first(), undefined);
 });
 
 test("seller keys enforce scope, expiry, tenant ownership, and interactive-only administration", async (t) => {
@@ -1497,7 +1604,7 @@ test("signed platform and Connect webhooks enforce endpoint, mode and account bi
   );
 });
 
-test("seller Stripe catalog selects annual prices and sends account context on each list page", async (t) => {
+test("seller Stripe catalog selects active paid monthly and annual prices and sends account context on each list page", async (t) => {
   const f = await fixture(t, false);
   const key = await f.key();
   // Build the per-tenant adapter before injecting a deterministic SDK boundary.
@@ -1508,6 +1615,8 @@ test("seller Stripe catalog selects annual prices and sends account context on e
   const source = f.sources.get("primary")!;
   const annual = {
     id: "price_annual",
+    active: true,
+    type: "recurring",
     product: { name: "Plugin" },
     nickname: null,
     unit_amount: 1200,
@@ -1528,6 +1637,8 @@ test("seller Stripe catalog selects annual prices and sends account context on e
           id: "price_month",
           recurring: { interval: "month", interval_count: 1 },
         };
+        yield { ...annual, id: "price_inactive", active: false };
+        yield { ...annual, id: "price_free", unit_amount: 0 };
         yield annual;
         yield { ...annual, id: "price_string", product: "prod_one" };
         yield {
@@ -1545,8 +1656,39 @@ test("seller Stripe catalog selects annual prices and sends account context on e
   assert.equal(prices.statusCode, 200, prices.body);
   assert.equal(calls, 1);
   assert.equal(prices.json().localMode, false);
-  assert.equal(prices.json().prices.length, 3);
+  assert.deepEqual(
+    prices.json().prices.map((price: { id: string; interval: string }) => [price.id, price.interval]),
+    [["price_month", "month"], ["price_annual", "year"], ["price_string", "year"], ["price_deleted", "year"]],
+  );
   assert.equal(prices.json().prices[0].productName, "Plugin");
+  let unitAmount = 1400;
+  t.mock.method(source.stripe.prices, "retrieve", (priceId: string) => ({
+    ...annual,
+    id: priceId,
+    unit_amount: unitAmount,
+    currency: "eur",
+    recurring: { interval: "month", interval_count: 1 },
+  }));
+  const input = {
+    slug: "monthly", name: "Monthly",
+    plans: [{ name: "Monthly", siteAllowance: 1, priceId: "price_month" }],
+  };
+  const created = await f.post(`${prefix}/seller/products`, input, key.headers);
+  assert.equal(created.statusCode, 200, created.body);
+  const plan = created.json().plans[0];
+  assert.equal(plan.unit_amount, 1400);
+  assert.equal(plan.currency, "eur");
+  assert.equal(plan.billing_interval, "month");
+  unitAmount = 1600;
+  const updated = await f.post(`${prefix}/seller/products`, input, key.headers);
+  assert.equal(updated.statusCode, 200, updated.body);
+  assert.equal(updated.json().plans[0].id, plan.id);
+  assert.equal(updated.json().plans[0].unit_amount, 1600);
+  unitAmount = 0;
+  const rejected = await f.post(`${prefix}/seller/products`, input, key.headers);
+  assert.equal(rejected.statusCode, 409, rejected.body);
+  assert.equal(rejected.json().error.code, "invalid_price");
+  assert.equal((await f.db("plans").where({ id: plan.id }).first()).unit_amount, 1600);
   const again = await f.app.inject({
     url: `${prefix}/seller/prices`,
     headers: key.headers,
@@ -1589,7 +1731,17 @@ test("seller Stripe catalog selects annual prices and sends account context on e
     headers: localKey.headers,
   });
   assert.equal(fixtures.json().localMode, true);
-  assert.equal(fixtures.json().prices.length, 3);
+  assert.deepEqual(
+    new Set(fixtures.json().prices.map((price: { interval: string }) => price.interval)),
+    new Set(["month", "year"]),
+  );
+  const monthly = fixtures.json().prices.find((price: { interval: string }) => price.interval === "month");
+  const saved = await local.post(`${prefix}/seller/products`, {
+    ...input,
+    plans: [{ ...input.plans[0], priceId: monthly.id }],
+  }, localKey.headers);
+  assert.equal(saved.statusCode, 200, saved.body);
+  assert.equal(saved.json().plans[0].billing_interval, monthly.interval);
 });
 
 test("seller OAuth callback binds the browser session and redirects only after connecting its Standard account", async (t) => {
@@ -1641,6 +1793,7 @@ test("seller OAuth callback binds the browser session and redirects only after c
   t.mock.method(f.platform.stripe.prices, "retrieve", async () => ({
     active: true,
     type: "recurring",
+    unit_amount: 1000,
     livemode: false,
   }));
   t.mock.method(f.platform.stripe.customers, "create", async () => ({
@@ -2018,7 +2171,7 @@ test("default S3 configuration and chunked upload admission preserve limits and 
   const f = await fixture(t);
   const config = { ...f.config };
   delete config.maxUploadBytes;
-  delete config.stripeConnectWebhookSecret;
+  config.cacheRedisUrl = "redis://127.0.0.1:1";
   // Construction exercises the real S3 adapter configuration without a storage request.
   const app = await buildApp(config, f.db);
   t.after(() => app.close());
@@ -2051,7 +2204,7 @@ test("default S3 configuration and chunked upload admission preserve limits and 
       "content-type": "application/json",
       "stripe-signature": Stripe.webhooks.generateTestHeaderString({
         payload,
-        secret: "whsec_connect_local",
+        secret: config.stripeConnectWebhookSecret!,
       }),
     },
     payload,

@@ -386,6 +386,24 @@ test("expired valid seller links cannot establish sessions and production cookie
   assert.equal(options.maxAge, 7 * 86400);
 });
 
+test("workspace creation takes the auth lock before the schema lock", async () => {
+  const owner = await login();
+  await db.raw("CREATE TABLE lock_trace (seq INTEGER PRIMARY KEY, id TEXT)");
+  await db.raw(
+    "CREATE TRIGGER trace_locks AFTER UPDATE OF version ON locks BEGIN INSERT INTO lock_trace (id) VALUES (NEW.id); END",
+  );
+  try {
+    await tenants.create(owner.seller, { slug: "ordered", name: "Ordered" });
+    assert.deepEqual(
+      (await db("lock_trace").orderBy("seq").pluck("id")).slice(0, 2),
+      ["auth", "schema"],
+    );
+  } finally {
+    await db.raw("DROP TRIGGER trace_locks");
+    await db.raw("DROP TABLE lock_trace");
+  }
+});
+
 test("seller outbox does not send credentials canceled after queue claim", async () => {
   await send("owner@example.test");
   await db.raw(
@@ -569,6 +587,12 @@ test("API key scope and expiration policy rejects invalid inputs and hides secre
   await assert.rejects(auth.tenant(req, "alpha", false, true, "read"), {
     code: "scope_denied",
   });
+  // Release publication parses scopes separately; corrupt JSON must still deny.
+  const publish = await auth.publicationAuthorization(req, tenant.id);
+  await assert.rejects(
+    db.transaction((tx) => publish(tx)),
+    { code: "scope_denied" },
+  );
   await db("tenant_api_keys").where({ id: key.id }).update({ scopes: "null" });
   await assert.rejects(auth.tenant(req, "alpha", false, true, "read"), {
     code: "scope_denied",

@@ -369,6 +369,15 @@ export class Releases {
         await this.db.transaction(async (tx) => {
           await authorize?.(tx, true);
           await lock(tx, "schema", this.tenant.id);
+          const reservation = await tx("upload_reservations")
+            .where({ tenant_id: this.tenant.id, id })
+            .first();
+          check(
+            reservation && Number(reservation.expires_at) > Date.now(),
+            409,
+            "upload_expired",
+            "Upload reservation expired; retry publication.",
+          );
           const capacity = await this.capacity(tx);
           check(
             capacity.used + capacity.reserved - size + bytes.length <=
@@ -437,29 +446,46 @@ export class Releases {
     }
   }
   async cleanup() {
+    const now = Date.now();
     const expired = await this.db("upload_reservations")
       .where({ tenant_id: this.tenant.id })
-      .andWhere("expires_at", "<", Date.now())
+      .andWhere("expires_at", "<", now)
+      .select("id")
       .limit(20);
-    for (const reservation of expired) {
-      const published = await this.db("releases")
-        .where({ tenant_id: this.tenant.id, id: reservation.id })
-        .first();
-      const asset = await this.db("release_assets")
-        .where({ tenant_id: this.tenant.id, id: reservation.id })
-        .first();
-      if (!published && !asset)
-        await this.store.delete(this.tenant.id, reservation.id);
-      await this.db("upload_reservations")
-        .where({ tenant_id: this.tenant.id, id: reservation.id })
-        .delete();
+    for (const { id } of expired) {
+      const key = { tenant_id: this.tenant.id, id };
+      const deleteObject = await this.db.transaction(async (tx) => {
+        await lock(tx, "schema", this.tenant.id);
+        const reservation = await tx("upload_reservations")
+          .where(key)
+          .andWhere("expires_at", "<", now)
+          .first("id");
+        if (!reservation) return false;
+        const published = await tx("releases").where(key).first("id");
+        const asset = await tx("release_assets").where(key).first("id");
+        if (published || asset) {
+          await tx("upload_reservations").where(key).delete();
+          return false;
+        }
+        // Fence publication before touching storage. Keep the row for retry
+        // until the remote deletion succeeds.
+        await tx("upload_reservations").where(key).update({ expires_at: 0 });
+        return true;
+      });
+      if (deleteObject) {
+        await this.store.delete(this.tenant.id, id);
+        await this.db("upload_reservations").where(key).delete();
+      }
     }
   }
   async latest(productId: string): Promise<Release | undefined> {
-    const rows = await this.db<Release>("releases")
+    const eligible = this.db<Release>("releases")
       .where({ tenant_id: this.tenant.id, product_id: productId, withdrawn: 0 })
       .andWhere("published_at", "<=", Date.now());
-    return rows.sort((a, b) => semver.rcompare(a.version, b.version))[0];
+    const rows = await eligible.clone().select("id", "version");
+    const latest = rows.sort((a, b) => semver.rcompare(a.version, b.version))[0];
+    if (latest) return eligible.where({ id: latest.id }).first();
+    return undefined;
   }
   async withdraw(id: string) {
     await this.db.transaction(async (tx) => {

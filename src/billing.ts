@@ -35,6 +35,8 @@ export interface BillingSnapshot {
   suspended: boolean;
   fullyRefunded: boolean;
   grants: PaidGrant[];
+  // Canonical invoices whose applied credit no longer proves settlement.
+  unsettledInvoiceIds?: string[];
   invoices?: {
     invoiceId: string;
     currency: string;
@@ -110,6 +112,7 @@ export class Billing {
         turn.beginApply();
         turn.array(s.grants);
         turn.array(s.invoices ?? []);
+        turn.array(s.unsettledInvoiceIds ?? []);
       }
       const applied = await this.db.transaction(async (tx) => {
         await turn?.prepareTransaction(tx);
@@ -143,7 +146,7 @@ export class Billing {
         const paid = s.grants.filter(
           (g) =>
             g.settled &&
-            g.periodEnd > g.periodStart &&
+            g.periodEnd >= g.periodStart &&
             plans.some((p) => p.stripe_price_id === g.priceId),
         );
         let l = await tx<License>("licenses")
@@ -153,7 +156,8 @@ export class Billing {
           })
           .first();
         check(!l || l.provenance !== "complimentary", 409, "billing_provenance_conflict", "Stripe cannot reconcile complimentary entitlement.");
-        if (!l && !paid.length) return true;
+        const first = paid.find((g) => g.periodEnd > g.periodStart);
+        if (!l && !first) return true;
         if (!l) {
           // An open checkout reserves no authority to issue a new license.
           // Existing subscriptions still reconcile renewals, refunds and disputes.
@@ -167,7 +171,7 @@ export class Billing {
             );
           } catch (error) {
             if (
-              error instanceof AppError &&
+              turn && error instanceof AppError &&
               ["tenant_suspended", "tenant_capacity"].includes(error.code)
             )
               throw new DeferredJob(Date.now() + 60000, "tenant_authority");
@@ -237,8 +241,7 @@ export class Billing {
         }
         const created = !l;
         if (!l) {
-          const first = paid[0]!;
-          const plan = plans.find((p) => p.stripe_price_id === first.priceId)!;
+          const plan = plans.find((p) => p.stripe_price_id === first!.priceId)!;
           const key = `DE-${random()}`;
           l = {
             tenant_id: this.licensing.tenant.id,
@@ -268,6 +271,14 @@ export class Billing {
         await tx("licenses")
           .where({ tenant_id: this.licensing.tenant.id, id: l.id })
           .increment("lock_version", 1);
+        for (const invoiceId of s.unsettledInvoiceIds ?? []) {
+          turn?.work();
+          await tx("grants").where({
+            tenant_id: this.licensing.tenant.id,
+            license_id: l.id,
+            invoice_id: invoiceId,
+          }).delete();
+        }
         for (const g of paid) {
           turn?.work(Math.max(1, plans.length));
           const p = plans.find((p) => p.stripe_price_id === g.priceId)!;
@@ -291,14 +302,25 @@ export class Billing {
               period_end: g.periodEnd,
               paid_at: g.paidAt,
             });
+          else if (Number(existing.period_end) !== g.periodEnd)
+            await tx("grants").where({
+              tenant_id: this.licensing.tenant.id,
+              license_id: l.id,
+              id: g.id,
+              invoice_id: g.invoiceId,
+            }).update({ period_end: g.periodEnd });
         }
+        type GrantProjection = { id: string; plan_id: string; period_end: number };
+        // Keep fully credited rows as evidence without extending paid access.
         const grantsQuery = tx("grants")
           .where({ tenant_id: this.licensing.tenant.id, license_id: l.id })
+          .whereRaw("?? > ??", ["period_end", "period_start"])
           .orderBy("period_start", "desc")
           .orderBy("paid_at", "desc")
-          .orderBy("id", "desc");
+          .orderBy("id", "desc")
+          .select<GrantProjection[]>("id", "plan_id", "period_end");
         const grants = turn
-          ? await turn.rows<{ id: string; plan_id: string; period_end: number }>(grantsQuery)
+          ? await turn.rows<GrantProjection>(grantsQuery)
           : await grantsQuery;
         turn?.work(grants.length + plans.length);
         const current = grants[0];
@@ -313,9 +335,8 @@ export class Billing {
           },
           tx,
         );
-        const paidThrough = Math.max(
-          Number(l.paid_through),
-          ...grants.map((g) => Number(g.period_end)),
+        const paidThrough = grants.reduce(
+          (end, grant) => Math.max(end, Number(grant.period_end)), 0,
         );
         await tx("licenses")
           .where({ tenant_id: this.licensing.tenant.id, id: l.id })

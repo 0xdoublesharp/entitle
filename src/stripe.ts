@@ -15,6 +15,150 @@ import { stripeWorkerHttpClient, workerTurn } from "./worker-continuation.ts";
 import { workerSnapshot, workerResolveSubscription } from "./stripe-worker.ts";
 const id = (value: string | { id: string } | null | undefined) =>
   typeof value === "string" ? value : value?.id;
+export function isSupportedRecurringPrice(
+  price: Pick<Stripe.Price, "active" | "type" | "recurring" | "unit_amount">,
+): boolean {
+  const recurring = price.recurring;
+  return price.active === true &&
+    price.type === "recurring" &&
+    (recurring?.interval === "month" || recurring?.interval === "year") &&
+    recurring.interval_count === 1 &&
+    (price.unit_amount ?? 0) > 0;
+}
+export function creditInvoiceTotal(invoice: Stripe.Invoice, customerId: string): number {
+  return invoice.amount_paid === 0 &&
+    invoice.amount_due === 0 &&
+    invoice.amount_remaining === 0 &&
+    invoice.total > 0 &&
+    id(invoice.customer) === customerId
+    ? invoice.total : 0;
+}
+export function appliedInvoiceCredit(
+  transaction: Stripe.CustomerBalanceTransaction,
+  invoice: Pick<Stripe.Invoice, "id" | "currency">,
+  customerId: string,
+  livemode: boolean,
+): number {
+  if (
+    id(transaction.customer) !== customerId ||
+    id(transaction.invoice) !== invoice.id ||
+    transaction.currency !== invoice.currency ||
+    !["applied_to_invoice", "unapplied_from_invoice"].includes(transaction.type)
+  ) return 0;
+  check(
+    transaction.livemode === livemode,
+    400,
+    "stripe_mode",
+    "Stripe test and live modes cannot be mixed.",
+  );
+  return transaction.amount;
+}
+export interface MerchantGrantCredit {
+  sourceInvoiceId: string;
+  invoiceId: string;
+  lineIds: string[];
+  priceId: string;
+  start: number;
+  end: number;
+}
+export function merchantInvoiceLine(
+  line: Stripe.InvoiceLineItem,
+  invoice: { id: string; paidAt: number },
+  settled: boolean,
+  prorationInvoice: boolean,
+): { grant?: PaidGrant; credit?: MerchantGrantCredit } {
+  const priceId = id(line.pricing?.price_details?.price);
+  const details = line.parent?.subscription_item_details;
+  if (!priceId || !details || line.period.end <= line.period.start) return {};
+  const start = line.period.start * 1000;
+  const end = line.period.end * 1000;
+  if ((settled || prorationInvoice) && line.amount > 0) return {
+    grant: {
+      id: line.id, invoiceId: invoice.id, priceId,
+      periodStart: start, periodEnd: end, paidAt: invoice.paidAt, settled,
+    },
+  };
+  const credited = details.proration_details?.credited_items;
+  if (line.amount < 0 && details.proration && credited) return {
+    credit: {
+      sourceInvoiceId: invoice.id,
+      invoiceId: credited.invoice,
+      lineIds: credited.invoice_line_items,
+      priceId, start, end,
+    },
+  };
+  return {};
+}
+function matchesCredit(grant: PaidGrant, credit: MerchantGrantCredit) {
+  return grant.invoiceId === credit.invoiceId &&
+    grant.priceId === credit.priceId &&
+    grant.periodStart <= credit.start && grant.periodEnd >= credit.end;
+}
+
+function retain<T>(values: T[], keep: (value: T) => boolean) {
+  let retained = 0;
+  for (const value of values) if (keep(value)) values[retained++] = value;
+  values.length = retained;
+}
+
+export function settleMerchantGrants(
+  grants: PaidGrant[],
+  credits: MerchantGrantCredit[],
+  unsettledInvoiceIds: string[],
+) {
+  const turn = workerTurn();
+  turn?.work(grants.length + credits.length + unsettledInvoiceIds.length);
+  const candidates = Map.groupBy(grants.filter((line) => !line.settled), (line) => line.invoiceId);
+  // Keep the worker's counted fact arrays through to billing apply.
+  retain(grants, (line) => line.settled);
+  const creditsByLine = new Map<string, MerchantGrantCredit[]>();
+  for (const credit of credits) {
+    turn?.work(credit.lineIds.length);
+    for (const lineId of credit.lineIds) {
+      const existing = creditsByLine.get(lineId);
+      if (existing) existing.push(credit);
+      else creditsByLine.set(lineId, [credit]);
+    }
+  }
+  const settledInvoices = new Set<string>();
+  // Follow provider references from settled debits. Appended grants can fund
+  // later adjustments even when Stripe returns those invoices first.
+  for (const grant of grants) {
+    const linkedCredits = creditsByLine.get(grant.id) ?? [];
+    turn?.work(1 + linkedCredits.length);
+    for (const credit of linkedCredits) {
+      const invoiceLines = candidates.get(credit.sourceInvoiceId);
+      if (!invoiceLines || !matchesCredit(grant, credit)) continue;
+      candidates.delete(credit.sourceInvoiceId);
+      settledInvoices.add(credit.sourceInvoiceId);
+      turn?.work(invoiceLines.length);
+      for (const line of invoiceLines) grants.push({ ...line, settled: true });
+    }
+  }
+  retain(unsettledInvoiceIds, (id) => !settledInvoices.has(id));
+  return {
+    grants: truncateCreditedGrants(grants, credits),
+    unsettledInvoiceIds,
+  };
+}
+
+function truncateCreditedGrants(grants: PaidGrant[], credits: MerchantGrantCredit[]) {
+  const byLine = new Map(grants.map((grant) => [grant.id, grant]));
+  const ends = new Map<string, number>();
+  const turn = workerTurn();
+  turn?.work(grants.length + credits.length);
+  for (const credit of credits) {
+    turn?.work(credit.lineIds.length);
+    for (const lineId of credit.lineIds) {
+      const grant = byLine.get(lineId);
+      if (grant && matchesCredit(grant, credit))
+        ends.set(lineId, Math.min(ends.get(lineId) ?? grant.periodEnd, credit.start));
+    }
+  }
+  turn?.work(ends.size);
+  for (const [lineId, end] of ends) byLine.get(lineId)!.periodEnd = end;
+  return grants;
+}
 export interface GuestCheckout {
   guestCustomerId?: string;
   issueGuestClaim?: (customerId: string) => void;
@@ -85,6 +229,8 @@ export class StripeBilling implements BillingSource {
       this.options(),
     );
     const grants: PaidGrant[] = [];
+    const credits: MerchantGrantCredit[] = [];
+    const unsettledInvoiceIds: string[] = [];
     const invoices: NonNullable<BillingSnapshot["invoices"]> = [];
     let suspended = false,
       fullyRefunded = false;
@@ -95,61 +241,81 @@ export class StripeBilling implements BillingSource {
       },
       this.options(),
     )) {
-      if (invoice.status !== "paid" || invoice.amount_paid <= 0) continue;
-      let refunded = 0;
-      const seenCharges = new Set<string>();
-      for await (const payment of this.stripe.invoicePayments.list(
-        {
-          invoice: invoice.id,
-          status: "paid",
-          limit: 100,
-        },
-        this.options(),
-      )) {
-        const charges: Stripe.Charge[] = [];
-        const pi = id(payment.payment.payment_intent);
-        if (pi) {
-          for await (const charge of this.stripe.charges.list(
-            {
-              payment_intent: pi,
-              limit: 100,
-            },
-            this.options(),
-          ))
-            charges.push(charge);
-        } else if (payment.payment.charge)
-          charges.push(
-            await this.stripe.charges.retrieve(
-              id(payment.payment.charge)!,
-              {},
-              this.options(),
-            ),
-          );
-        for (const charge of charges) {
-          if (!charge.paid || seenCharges.has(charge.id)) continue;
-          seenCharges.add(charge.id);
-          refunded += charge.amount_refunded;
-          if (charge.disputed) {
-            for await (const dispute of this.stripe.disputes.list(
+      if (invoice.status !== "paid") continue;
+      const cashPaid = invoice.amount_paid > 0;
+      const creditTotal = creditInvoiceTotal(invoice, customerId);
+      let appliedCredit = 0;
+      if (creditTotal) {
+        for await (const transaction of this.stripe.customers.listBalanceTransactions(
+          customerId,
+          { limit: 100 },
+          this.options(),
+        )) appliedCredit += appliedInvoiceCredit(
+          transaction, invoice, customerId, this.config.stripeLiveMode ?? false,
+        );
+      }
+      const settled = cashPaid || (creditTotal > 0 && appliedCredit >= creditTotal);
+      if (!settled) unsettledInvoiceIds.push(invoice.id);
+      if (cashPaid) {
+        let refunded = 0;
+        const seenCharges = new Set<string>();
+        for await (const payment of this.stripe.invoicePayments.list(
+          {
+            invoice: invoice.id,
+            status: "paid",
+            limit: 100,
+          },
+          this.options(),
+        )) {
+          const charges: Stripe.Charge[] = [];
+          const pi = id(payment.payment.payment_intent);
+          if (pi) {
+            for await (const charge of this.stripe.charges.list(
               {
-                charge: charge.id,
+                payment_intent: pi,
                 limit: 100,
               },
               this.options(),
-            )) {
-              if (!["won", "warning_closed"].includes(dispute.status))
-                suspended = true;
+            ))
+              charges.push(charge);
+          } else if (payment.payment.charge)
+            charges.push(
+              await this.stripe.charges.retrieve(
+                id(payment.payment.charge)!,
+                {},
+                this.options(),
+              ),
+            );
+          for (const charge of charges) {
+            if (!charge.paid || seenCharges.has(charge.id)) continue;
+            seenCharges.add(charge.id);
+            refunded += charge.amount_refunded;
+            if (charge.disputed) {
+              let found = false;
+              for await (const dispute of this.stripe.disputes.list(
+                {
+                  charge: charge.id,
+                  limit: 100,
+                },
+                this.options(),
+              )) {
+                found = true;
+                if (!["won", "warning_closed"].includes(dispute.status))
+                  suspended = true;
+              }
+              if (!found) suspended = true;
             }
           }
         }
+        invoices.push({
+          invoiceId: invoice.id,
+          currency: invoice.currency,
+          paidMinor: invoice.amount_paid,
+          refundedMinor: Math.min(invoice.amount_paid, refunded),
+        });
+        if (refunded >= invoice.amount_paid) fullyRefunded = true;
       }
-      invoices.push({
-        invoiceId: invoice.id,
-        currency: invoice.currency,
-        paidMinor: invoice.amount_paid,
-        refundedMinor: Math.min(invoice.amount_paid, refunded),
-      });
-      if (refunded >= invoice.amount_paid) fullyRefunded = true;
+      if (!cashPaid && (invoice.amount_due !== 0 || invoice.amount_remaining !== 0)) continue;
       for await (const line of this.stripe.invoices.listLineItems(
         invoice.id,
         {
@@ -157,23 +323,12 @@ export class StripeBilling implements BillingSource {
         },
         this.options(),
       )) {
-        const priceId = id(line.pricing?.price_details?.price);
-        if (
-          line.amount <= 0 ||
-          !line.parent?.subscription_item_details ||
-          !priceId
-        )
-          continue;
-        grants.push({
-          id: line.id,
-          invoiceId: invoice.id,
-          priceId,
-          periodStart: line.period.start * 1000,
-          periodEnd: line.period.end * 1000,
-          paidAt:
-            (invoice.status_transitions.paid_at ?? invoice.created) * 1000,
-          settled: true,
-        });
+        const { grant, credit } = merchantInvoiceLine(line, {
+          id: invoice.id,
+          paidAt: (invoice.status_transitions.paid_at ?? invoice.created) * 1000,
+        }, settled, invoice.total <= 0);
+        if (grant) grants.push(grant);
+        if (credit) credits.push(credit);
       }
     }
     return {
@@ -183,7 +338,7 @@ export class StripeBilling implements BillingSource {
       // already-known customer from reconciling. New issuance validates it.
       email: customer.deleted ? "" : (customer.email ?? ""),
       billingStatus: sub.status,
-      grants,
+      ...settleMerchantGrants(grants, credits, unsettledInvoiceIds),
       invoices,
       suspended,
       fullyRefunded,
@@ -383,13 +538,10 @@ export class StripeBilling implements BillingSource {
       this.options(),
     );
     check(
-      price.active &&
-        price.type === "recurring" &&
-        price.recurring?.interval === "year" &&
-        price.recurring.interval_count === 1,
+      isSupportedRecurringPrice(price),
       409,
       "invalid_price",
-      "Plan must use an active annual Stripe price.",
+      "Plan must use an active, paid monthly or annual Stripe price.",
     );
     const tax = await this.checkoutTax(plan);
     let stripeId = customer.stripe_id;
@@ -675,6 +827,7 @@ export class StripeBilling implements BillingSource {
       return id(session.subscription) ?? null;
     }
     let charge: Stripe.Charge | undefined;
+    let refundIntent: string | undefined;
     if (event.type.startsWith("charge.dispute.")) {
       const dispute = await this.stripe.disputes.retrieve(
         String(obj.id),
@@ -686,13 +839,10 @@ export class StripeBilling implements BillingSource {
         {},
         this.options(),
       );
-    } else if (event.type.startsWith("charge."))
-      charge = await this.stripe.charges.retrieve(
-        String(obj.id),
-        {},
-        this.options(),
-      );
-    else if (event.type.startsWith("refund.")) {
+    } else if (
+      event.type.startsWith("refund.") ||
+      event.type.startsWith("charge.refund.")
+    ) {
       const refund = await this.stripe.refunds.retrieve(
         String(obj.id),
         {},
@@ -704,48 +854,54 @@ export class StripeBilling implements BillingSource {
           {},
           this.options(),
         );
-    }
-    if (charge) {
-      const pi = id(charge.payment_intent);
-      if (pi)
+      else refundIntent = id(refund.payment_intent);
+    } else if (event.type.startsWith("charge."))
+      charge = await this.stripe.charges.retrieve(
+        String(obj.id),
+        {},
+        this.options(),
+      );
+    const pi = id(charge?.payment_intent) ?? refundIntent;
+    if (pi)
+      for await (const payment of this.stripe.invoicePayments.list(
+        {
+          payment: { type: "payment_intent", payment_intent: pi },
+          limit: 100,
+        },
+        this.options(),
+      )) {
+        const invoiceId = id(payment.invoice);
+        if (!invoiceId) continue;
+        const invoice = await this.stripe.invoices.retrieve(
+          invoiceId,
+          {},
+          this.options(),
+        );
+        const sub = id(invoice.parent?.subscription_details?.subscription);
+        if (sub) return sub;
+      }
+    else if (charge?.customer) {
+      // Legacy direct-charge invoice payments cannot be filtered by charge in
+      // Stripe's list API. Inspect this customer's invoices with pagination.
+      for await (const invoice of this.stripe.invoices.list(
+        {
+          customer: id(charge.customer)!,
+          limit: 100,
+        },
+        this.options(),
+      )) {
+        const subscription = id(
+          invoice.parent?.subscription_details?.subscription,
+        );
+        if (!subscription) continue;
         for await (const payment of this.stripe.invoicePayments.list(
           {
-            payment: { type: "payment_intent", payment_intent: pi },
+            invoice: invoice.id,
             limit: 100,
           },
           this.options(),
         )) {
-          const invoice = await this.stripe.invoices.retrieve(
-            id(payment.invoice)!,
-            {},
-            this.options(),
-          );
-          const sub = id(invoice.parent?.subscription_details?.subscription);
-          if (sub) return sub;
-        }
-      if (!pi && charge.customer) {
-        // Legacy direct-charge invoice payments cannot be filtered by charge in
-        // Stripe's list API. Inspect this customer's invoices with pagination.
-        for await (const invoice of this.stripe.invoices.list(
-          {
-            customer: id(charge.customer)!,
-            limit: 100,
-          },
-          this.options(),
-        )) {
-          const subscription = id(
-            invoice.parent?.subscription_details?.subscription,
-          );
-          if (!subscription) continue;
-          for await (const payment of this.stripe.invoicePayments.list(
-            {
-              invoice: invoice.id,
-              limit: 100,
-            },
-            this.options(),
-          )) {
-            if (id(payment.payment.charge) === charge.id) return subscription;
-          }
+          if (id(payment.payment.charge) === charge.id) return subscription;
         }
       }
     }

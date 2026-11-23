@@ -57,23 +57,50 @@ export async function buyerRoutes(
     const plans = Map.groupBy(
       await db("plans")
         .where({ tenant_id: tenant.id })
-        .select("id", "product_id", "name", "site_allowance"),
+        .whereNull("archived_at")
+        .select(
+          "id",
+          "product_id",
+          "name",
+          "site_allowance",
+          "unit_amount",
+          "currency",
+          "billing_interval",
+        ),
       (plan) => plan.product_id,
     );
     for (const p of products) {
       p.frameworkConfig = JSON.parse(p.framework_config);
       delete p.framework_config;
-      p.plans = (plans.get(p.id) ?? []).map(({ id, name, site_allowance }) => ({
-        id,
-        name,
-        site_allowance,
-      }));
+      p.plans = (plans.get(p.id) ?? []).map(
+        ({
+          id,
+          name,
+          site_allowance,
+          unit_amount,
+          currency,
+          billing_interval,
+        }) => ({
+          id,
+          name,
+          site_allowance,
+          unit_amount,
+          currency,
+          billing_interval,
+        }),
+      );
     }
     return { tenant: { slug: tenant.slug, name: tenant.name }, products, billingAvailable: config.localBilling || (stripeConfigured(config) && (config.deploymentMode === "standalone" || tenant.stripe_status === "connected")) };
   });
   api.post("/checkout", { config: apiLimit(10) }, async (req, reply) => {
-    check(context(req).config.localBilling || stripeConfigured(context(req).config), 503, "billing_unavailable", "Stripe billing is not configured.");
-    const { db, tenant, auth, stripe } = context(req);
+    const { db, tenant, auth, stripe, config } = context(req);
+    check(
+      config.localBilling || stripeConfigured(config),
+      503,
+      "billing_unavailable",
+      "Stripe billing is not configured.",
+    );
+    if (req.headers.origin !== undefined) auth.origin(req);
     const input = z
       .object({
         planId: bounded,
@@ -86,6 +113,12 @@ export async function buyerRoutes(
       .where({ tenant_id: tenant.id, id: input.planId })
       .first();
     check(plan, 404, "not_found", "Plan not found.");
+    check(
+      !plan.archived_at,
+      409,
+      "plan_archived",
+      "This plan is no longer available for new purchases.",
+    );
     let customerId: string | undefined;
     if (req.cookies[auth.cookieName]) {
       try {

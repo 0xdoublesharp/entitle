@@ -382,9 +382,7 @@ export async function consumeVerification(
         "security_enroll",
         "recovery_codes",
         "billing",
-        "api_keys",
         "tenant_transfer",
-        "release_publish",
       ]),
       token: z.string().min(1).max(200),
     })

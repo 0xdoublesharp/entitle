@@ -136,6 +136,7 @@ test("canonical subscription changes cannot transfer a license to another custom
   assert.equal((await db("emails")).length, 1);
 });
 test("reconciliation preserves a preexisting paid license even when Stripe returns no additional grant", async () => {
+  const paidThrough = Date.now() + 86400000;
   await db("customers").insert({
     tenant_id: "primary",
     id: "customer",
@@ -149,10 +150,20 @@ test("reconciliation preserves a preexisting paid license even when Stripe retur
     product_id: "product",
     plan_id: "plan",
     site_allowance: 1,
-    paid_through: Date.now() + 86400000,
+    paid_through: paidThrough,
     billing_status: "active",
     subscription_id: "sub",
     key_hash: hash("key"),
+  });
+  await db("grants").insert({
+    tenant_id: "primary",
+    id: "previous-grant",
+    license_id: "imported",
+    invoice_id: "previous-invoice",
+    plan_id: "plan",
+    period_start: Date.now() - 1000,
+    period_end: paidThrough,
+    paid_at: Date.now() - 1000,
   });
   snapshot.grants = [];
   snapshot.billingStatus = "canceled";
@@ -162,6 +173,7 @@ test("reconciliation preserves a preexisting paid license even when Stripe retur
   assert.equal(license.plan_id, "plan");
   assert.equal(license.site_allowance, 1);
   assert.equal(license.billing_status, "canceled");
+  assert.equal(Number(license.paid_through), paidThrough);
   assert.equal(licensing.entitled(license), true);
   assert.equal((await db("emails")).length, 0);
 });

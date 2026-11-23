@@ -144,7 +144,22 @@ test("CLI sends every tenant seller command with exact methods, authentication a
   assert.deepEqual(JSON.parse(output[0]!), { ok: true });
 });
 
-test("publication sends original ZIP bytes and lossless metadata to the tenant origin", async () => {
+test("CLI reports upstream HTML errors and accepts a 204 with no content", async (t) => {
+  const timeout = t.mock.method(AbortSignal, "timeout");
+  responseCode = 502;
+  responseBody = "<html>Bad Gateway</html>";
+  assert.equal(await runCli(["prices"], env, io), 1);
+  assert.match(errors[0]!, /API returned 502: <html>Bad Gateway<\/html>/);
+  assert.ok(timeout.mock.calls.some(({ arguments: args }) => args[0] === 60000));
+  assert.equal(output.length, 0);
+  responseCode = 204;
+  responseBody = "";
+  assert.equal(await runCli(["prices"], env, io), 0);
+  assert.deepEqual(output, []);
+});
+
+test("publication sends original ZIP bytes and lossless metadata to the tenant origin with the upload timeout", async (t) => {
+  const timeout = t.mock.method(AbortSignal, "timeout");
   assert.equal(
     await runCli(
       [
@@ -164,6 +179,7 @@ test("publication sends original ZIP bytes and lossless metadata to the tenant o
     0,
   );
   const c = calls[0]!;
+  assert.equal(timeout.mock.calls[0]?.arguments[0], 3600000);
   assert.equal(
     c.path,
     "/api/v1/tenants/primary/seller/releases/product%2Fname/1.0.0%2Bbuild",
@@ -203,8 +219,11 @@ test("migrate creates real SQLite schema and closes its connection", async () =>
 });
 
 test("usage and file errors return nonzero without making requests", async () => {
+  assert.equal(await runCli([], env, io), 1);
+  for (const command of ["owner-passkey-login-start", "owner-passkey-login-finish", "owner-reauth-verify"])
+    assert.ok(errors[0]!.includes(command));
+
   for (const args of [
-    [],
     ["unknown"],
     ["publish"],
     ["publish", "p"],

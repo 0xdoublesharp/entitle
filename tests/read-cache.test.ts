@@ -78,17 +78,21 @@ test("cache failures before and after a load use the source once and preserve so
 test("failed reads are not retained and keys contain no raw input credentials", async () => {
   const engine = direct();
   const keys: string[] = [];
+  let warnings = 0;
   engine.getOrSet = async (key, loader) => {
     keys.push(key);
     return loader({ signal: new AbortController().signal });
   };
-  const cache = new ReadCache({ namespace: "fixture:" }, engine);
+  const cache = new ReadCache({
+    namespace: "fixture:", onUnavailable: () => { warnings++; },
+  }, engine);
   await assert.rejects(
     cache.remember("prices", "tenant", "secret-input", async () => {
       throw new Error("failed");
     }),
     /failed/,
   );
+  assert.equal(warnings, 0);
   assert.equal(
     await cache.remember(
       "prices",
@@ -101,6 +105,9 @@ test("failed reads are not retained and keys contain no raw input credentials", 
   assert.equal(keys[0], keys[1]);
   assert.match(keys[0]!, /^fixture:adaptive-v2:prices:/);
   assert.ok(!keys[0]!.includes("secret-input"));
+  engine.getOrSet = async () => { throw Error("cache offline"); };
+  assert.equal(await cache.remember("prices", "tenant", "fallback", async () => "source"), "source");
+  assert.equal(warnings, 1);
   await cache.close();
 });
 test("an unavailable optional Redis server cannot prevent source reads or retain connections", async () => {
@@ -209,6 +216,7 @@ test("remote cache entries cannot replace update feeds and cache failures emit b
     {
       onUnavailable: () => {
         ++warnings;
+        throw Error("warning logger failed");
       },
     },
     poison,
@@ -224,8 +232,11 @@ test("remote cache entries cannot replace update feeds and cache failures emit b
   poison.getOrSet = async () => {
     throw new Error("private-redis-credentials");
   };
-  await cache.remember("prices", "tenant", "acct", async () => []);
-  await cache.remember("prices", "tenant", "acct", async () => []);
+  for (let pass = 0; pass < 2; pass++)
+    assert.deepEqual(
+      await cache.remember("prices", "tenant", "acct", async () => []),
+      [],
+    );
   assert.equal(warnings, 1);
   await cache.close();
 });

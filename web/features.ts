@@ -17,6 +17,7 @@ type Confirm = (
   title: string,
   label: string,
   action: () => Promise<void>,
+  description?: string,
 ) => void;
 type Values = Record<string, string | number | boolean>;
 export interface EmailChangeDraft {
@@ -266,7 +267,8 @@ export function saveBlob(blob: Blob, filename: string) {
   link.href = url;
   link.download = filename;
   link.click();
-  URL.revokeObjectURL(url);
+  // Revoking synchronously aborts downloads in Safari and Firefox.
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 type ExportHandle = { id: string; blobs: string[] } & (
@@ -277,6 +279,7 @@ export const SellerFeaturePanel = defineComponent({
   props: {
     page: { type: String, required: true },
     initialToken: { type: String, default: "" },
+    initialPurpose: { type: String, default: "" },
     emailChange: {
       type: Object as PropType<EmailChangeDraft | null>,
       default: null,
@@ -288,7 +291,6 @@ export const SellerFeaturePanel = defineComponent({
     platform: { type: Object as PropType<ApiClient>, required: true },
     hosted: { type: Boolean, required: true },
     subscribed: { type: Boolean, default: false },
-    embedded: { type: Boolean, default: false },
     products: { type: Array as PropType<FeatureProduct[]>, required: true },
     confirm: { type: Function as PropType<Confirm>, required: true },
   },
@@ -497,13 +499,17 @@ export const SellerFeaturePanel = defineComponent({
       await load();
       await nextTick();
       if (proofArrived && alive) {
-        const summary = document
-          .getElementById(
-            props.page === "security" ? "security-recovery" : "export-create",
-          )
-          ?.querySelector<HTMLElement>("summary");
-        summary?.scrollIntoView({ block: "start" });
-        summary?.focus({ preventScroll: true });
+        const section = document.getElementById(
+          props.page !== "security"
+            ? "export-create"
+            : props.initialPurpose === "security_enroll"
+              ? "security-passkeys"
+              : "security-recovery",
+        );
+        const target =
+          section?.querySelector<HTMLElement>("summary") ?? section;
+        target?.scrollIntoView({ block: "start" });
+        target?.focus({ preventScroll: true });
       }
     });
     onUnmounted(() => {
@@ -593,10 +599,19 @@ export const SellerFeaturePanel = defineComponent({
           h("button", { type: "submit", disabled: pending.value }, label),
         ] as Parameters<typeof h>[2],
       );
-    const confirm = (title: string, action: () => Promise<void>) =>
-      props.confirm(title, "Confirm action", async () => {
-        await run(action);
-      });
+    const confirm = (
+      title: string,
+      action: () => Promise<void>,
+      description?: string,
+    ) =>
+      props.confirm(
+        title,
+        "Confirm action",
+        async () => {
+          await run(action);
+        },
+        description,
+      );
     const requestProof = (purpose: string) =>
       void run(async () => {
         await props.platform.post("/account/verification/request", { purpose });
@@ -605,12 +620,7 @@ export const SellerFeaturePanel = defineComponent({
         proofSent.value = true;
       });
     const proofField = (purpose: string) =>
-      ["workspace_remove", "api_keys", "release_publish"].includes(purpose)
-        ? h(
-            "p",
-            "This action requires fresh verification with an independently provisioned hardware key.",
-          )
-        : h("div", { class: "verification-proof" }, [
+      h("div", { class: "verification-proof" }, [
             !proofSent.value &&
               h(
                 "p",
@@ -1485,6 +1495,7 @@ export const SellerFeaturePanel = defineComponent({
                               showSecret(result.secret);
                               await loadWebhooks();
                             },
+                            "The new secret is shown once. Update your receiver before the next delivery.",
                           ),
                         pending.value,
                       ),
@@ -1501,6 +1512,7 @@ export const SellerFeaturePanel = defineComponent({
                               );
                               await loadWebhooks();
                             },
+                            "Events stop being sent to this endpoint.",
                           ),
                         pending.value,
                       ),
@@ -1606,7 +1618,7 @@ export const SellerFeaturePanel = defineComponent({
                             "/account/sessions",
                           )
                         ).sessions;
-                    }),
+                    }, "That browser is signed out immediately."),
                   pending.value,
                 ),
               ]),
@@ -1630,6 +1642,9 @@ export const SellerFeaturePanel = defineComponent({
                           )
                         ).sessions;
                     },
+                    which === "all"
+                      ? "Every browser, including this one, is signed out immediately."
+                      : "Every other browser is signed out immediately.",
                   ),
                 pending.value,
               ),
@@ -1741,6 +1756,8 @@ export const SellerFeaturePanel = defineComponent({
           Boolean(props.emailChange),
         ),
     ];
+    const exportDeletion =
+      "The encrypted files are deleted and cannot be downloaded again.";
     const portability = () => [
       h("p", "Download a private backup of your workspace and release files."),
       button("Refresh exports", () => void run(loadExports), pending.value),
@@ -1784,7 +1801,7 @@ export const SellerFeaturePanel = defineComponent({
                   );
                   if (bundle.value?.id === saved.id) bundle.value = null;
                   await loadExports();
-                }),
+                }, exportDeletion),
               pending.value || saved.status === "creating",
             ),
           ]),
@@ -1829,7 +1846,7 @@ export const SellerFeaturePanel = defineComponent({
                 );
                 bundle.value = null;
                 await loadExports();
-              }),
+              }, exportDeletion),
             pending.value,
           ),
         ]),
@@ -1955,8 +1972,7 @@ export const SellerFeaturePanel = defineComponent({
           "aria-busy": loading.value || pending.value,
         },
         [
-          !props.embedded &&
-            h(
+          h(
               "h2",
               {
                 commerce: "Tax settings",

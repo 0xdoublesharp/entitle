@@ -13,6 +13,7 @@ import { zipBytes } from "./helpers/zip.ts";
 import { createTenant } from "../src/db.ts";
 import { OidcPublishing } from "../src/oidc-publishing.ts";
 import { jwk } from "./helpers/oidc.ts";
+import { revokePublishingGrants } from "../src/auth-policy.ts";
 
 test("OIDC exchange requires a CI identity before accepting publishing credentials", async () => {
   const root = await mkdtemp("/Volumes/Scratch/entitle/tmp/oidc-");
@@ -600,6 +601,93 @@ test("issuer signing-key rotation refreshes the bounded cache without changing p
     assert.equal(refreshed.statusCode, 200, refreshed.body);
     assert.equal(fetches, 2);
     assert.equal((await f.db("oidc_publishers")).length, 1);
+  } finally {
+    await f.close();
+  }
+});
+
+test("revoking an owner's publishing grants kills CI tokens but keeps ID-token replay markers", async () => {
+  const f = await oidcFixture();
+  try {
+    const id = await f.seedPublisher(),
+      identity = await f.token();
+    const exchanged = await f.exchange(id, identity);
+    assert.equal(exchanged.statusCode, 200, exchanged.body);
+    const token = exchanged.json().accessToken;
+    const service = new OidcPublishing(f.db, f.config);
+    assert.equal(await service.authorize(f.db, token, "primary", "plugin"), id);
+    await f.db.transaction((tx) => revokePublishingGrants(tx, f.userId));
+    await assert.rejects(
+      service.authorize(f.db, token, "primary", "plugin"),
+      /expired|revoked|Invalid CI/,
+    );
+    assert.equal((await f.db("oidc_sessions")).length, 1);
+    // A newly trusted publisher must not accept the already-exchanged ID token.
+    const replacement = await f.seedPublisher();
+    const replay = await f.exchange(replacement, identity);
+    assert.equal(replay.statusCode, 409, replay.body);
+    assert.equal(replay.json().error.code, "oidc_replayed");
+  } finally {
+    await f.close();
+  }
+});
+
+test("suspended workspaces cannot add publishers but owners can still list and revoke them, and routes are rate limited", async () => {
+  const f = await oidcFixture();
+  try {
+    const url = "/api/v1/tenants/primary/seller/oidc/publishers";
+    const id = await f.seedPublisher();
+    await f.db("tenants").where({ id: "primary" }).update({ suspended: 1 });
+    // Owners need publisher IDs to revoke compromised trust during suspension.
+    const list = await f.app.inject({ url, headers: f.ownerHeaders });
+    assert.equal(list.statusCode, 200, list.body);
+    assert.deepEqual(
+      list.json().publishers.map((p: { id: string }) => p.id),
+      [id],
+    );
+    const create = await f.app.inject({
+      method: "POST",
+      url,
+      headers: f.ownerHeaders,
+      payload: publisherInput,
+    });
+    assert.equal(create.json().error.code, "tenant_suspended");
+    const revoke = await f.app.inject({
+      method: "POST",
+      url: `${url}/${id}/revoke`,
+      headers: f.ownerHeaders,
+      payload: {},
+    });
+    assert.equal(revoke.json().error.code, "reauth_required", revoke.body);
+    await f.db("tenants").where({ id: "primary" }).update({ suspended: 0 });
+    const statuses: number[] = [];
+    for (let i = 0; i < 31; i++)
+      statuses.push(
+        (
+          await f.app.inject({
+            url,
+            remoteAddress: "198.51.100.7",
+            headers: f.ownerHeaders,
+          })
+        ).statusCode,
+      );
+    assert.equal(statuses.filter((s) => s === 200).length, 30);
+    assert.equal(statuses.at(-1), 429);
+    const posts: number[] = [];
+    for (let i = 0; i < 21; i++)
+      posts.push(
+        (
+          await f.app.inject({
+            method: "POST",
+            url: `${url}/${id}/revoke`,
+            remoteAddress: "198.51.100.8",
+            headers: f.ownerHeaders,
+            payload: {},
+          })
+        ).statusCode,
+      );
+    assert.equal(posts.at(-2), 403);
+    assert.equal(posts.at(-1), 429);
   } finally {
     await f.close();
   }

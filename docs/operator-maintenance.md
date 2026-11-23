@@ -23,9 +23,24 @@ Every command requires:
 - `--quiesced`, the operator's explicit attestation that the shutdown and drain above have completed. The CLI cannot infer this from database locks.
 - `DATABASE_URL` and private `WORK_DIR` for the intended installation. Never point at a parent integration database or another installation by mistake.
 
-For the supplied Compose deployment, run these source commands on the host after the shutdown and drain above. The runtime image contains compiled JavaScript under `/app/dist/src`, not the source entry point or pnpm. Do not use `docker compose exec` against a running application for offline maintenance.
+For the supplied Compose deployments, run these source commands on the host after the shutdown and drain above. The runtime images contain compiled JavaScript, not the source entry point or pnpm. Do not use `docker compose exec` against a running application for offline maintenance.
 
-`ENTITLE_DATA_DIR` names the host directory mounted at `/data`. Set it explicitly in the host shell to the installation's actual absolute path. For the default SQLite deployment, supply `DATA_DIR="$ENTITLE_DATA_DIR"`, `DATABASE_URL="sqlite:$ENTITLE_DATA_DIR/entitle.sqlite"` and `WORK_DIR="$ENTITLE_DATA_DIR/work"` as environment overrides for the commands below. The container's `/data` and `/data/work` paths do not name those host files. For PostgreSQL or MySQL, use the installation's actual database URL reachable from the host instead of the SQLite example. Preserve the deployed secrets, provider mode and other configuration, and run as UID/GID 1000, the required data-directory owner, or restore that ownership for the data and work directories before restarting Compose. Keep Compose and all other workers stopped throughout maintenance.
+Both Compose files mount `${ENTITLE_DATA_DIR}/app` at `/data`. Set `ENTITLE_DATA_DIR` explicitly in the host shell to the installation's actual absolute path. For the default SQLite deployment, supply `DATA_DIR="$ENTITLE_DATA_DIR/app"`, `DATABASE_URL="sqlite:$ENTITLE_DATA_DIR/app/entitle.sqlite"` and `WORK_DIR="$ENTITLE_DATA_DIR/app/work"` as environment overrides for the commands below. The container's `/data` and `/data/work` paths do not name those host files. For PostgreSQL or MySQL, use the installation's actual database URL reachable from the host instead of the SQLite example. Preserve the deployed secrets, provider mode and other configuration, and run as UID/GID 1000, the required data-directory owner, or restore that ownership for the data and work directories before restarting Compose. Keep Compose and all other workers stopped throughout maintenance.
+
+### Move data into the app subdirectory
+
+Earlier Compose files mounted `ENTITLE_DATA_DIR` itself at `/data`. The current files mount only `${ENTITLE_DATA_DIR}/app`, so the proxy's certificate keys in the sibling `caddy-data` and `caddy-config` directories stay out of the application's reach. Because the mount does not create a missing directory, the new files refuse to start until you move the data. With the old stack stopped and a current backup:
+
+```sh
+cd "$ENTITLE_DATA_DIR"
+sudo install -d -o 1000 -g 1000 app
+# Move everything the application wrote, such as entitle.sqlite, its -wal and
+# -shm files, and work/. Leave caddy-data/ and caddy-config/ where they are.
+sudo mv entitle.sqlite* work app/
+sudo chown -R 1000:1000 app
+```
+
+List the directory first and move any other application files the same way. Then start the current Compose file and confirm readiness before resuming traffic.
 
 Keep temporary files, encrypted bundles, and run evidence on a private working volume. The examples below use `/secure/maintenance`; replace it with an existing private directory on that volume. Do not commit receipts, captures, secrets, or bundles.
 

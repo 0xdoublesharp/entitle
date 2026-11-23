@@ -5,7 +5,6 @@ import { randomUUID } from "node:crypto";
 import { createDb, createTenant, migrate } from "../src/db.ts";
 import { Billing, type BillingSnapshot } from "../src/billing.ts";
 import { Licenses } from "../src/licensing.ts";
-import { DeferredJob } from "../src/queue.ts";
 import { primaryTenant } from "./helpers/tenant.ts";
 import { loadConfig } from "../src/config.ts";
 import { PublisherSandboxes } from "../src/sandboxes.ts";
@@ -103,7 +102,9 @@ for (const state of ["suspended", "expired"] as const) {
           state === "suspended" ? { suspended: 1 } : { trial_ends_at: 0 },
         );
       release.resolve();
-      await assert.rejects(pending, DeferredJob);
+      await assert.rejects(pending, {
+        code: state === "suspended" ? "tenant_suspended" : "tenant_capacity",
+      });
       assert.equal((await f.db("licenses")).length, 0);
       assert.equal((await f.db("grants")).length, 0);
       assert.equal((await f.db("emails")).length, 0);
@@ -122,7 +123,7 @@ test("paid events stay unprocessed beyond the retry window during a capacity hol
   const payload = (await f.db("billing_events").first()).payload;
   await f.db("work").update({ created_at: Date.now() - 4 * 86400000 });
   await f.db("tenants").where({ id: f.authorityId }).update({ suspended: 1 });
-  await f.billing.run(async () => "sub");
+  await f.billing.run(async () => "sub", {});
   const held = await f.db("work").first();
   assert.equal(held.state, "pending");
   assert.equal(held.attempts, 0);
@@ -134,8 +135,8 @@ test("paid events stay unprocessed beyond the retry window during a capacity hol
   assert.equal((await f.db("emails")).length, 0);
   await f.db("tenants").where({ id: f.authorityId }).update({ suspended: 0 });
   await f.db("work").update({ available_at: 0 });
-  await f.billing.run(async () => "sub");
-  await f.billing.run(async () => "sub");
+  await f.billing.run(async () => "sub", {});
+  await f.billing.run(async () => "sub", {});
   assert.equal((await f.db("work").first()).state, "sent");
   assert.ok((await f.db("billing_events").first()).processed_at);
   assert.equal((await f.db("licenses")).length, 1);
@@ -165,7 +166,7 @@ for (const policy of [
       await billing.reconcile("sub");
       assert.equal((await f.db("licenses")).length, 1);
     } else {
-      await assert.rejects(billing.reconcile("sub"), DeferredJob);
+      await assert.rejects(billing.reconcile("sub"), { code: "tenant_capacity" });
       assert.equal((await f.db("licenses")).length, 0);
     }
   });
@@ -206,7 +207,9 @@ for (const state of ["suspended", "expired"] as const) {
         subscriptionId: "new_sub",
       }),
     });
-    await assert.rejects(newSubscription.reconcile("new_sub"), DeferredJob);
+    await assert.rejects(newSubscription.reconcile("new_sub"), {
+      code: state === "suspended" ? "tenant_suspended" : "tenant_capacity",
+    });
     assert.equal((await f.db("licenses")).length, 1);
   });
 }

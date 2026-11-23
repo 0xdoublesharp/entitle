@@ -25,7 +25,8 @@ a present empty string; omit optional price/account IDs until configured.
 | `STANDALONE_OWNER_EMAIL`    | Empty                           | Required in standalone production; normalized email allowed to sign in as owner.                                        |
 | `APP_SECRET`                | Required                        | Exactly 64 hexadecimal characters. Protect and back up for encrypted retry/outbox state.                                |
 | `OPERATOR_TOKEN`            | Required                        | At least 32 random characters; independent from seller keys and `APP_SECRET`. The published placeholder is rejected.     |
-| `TRUST_PROXY`               | Disabled                        | Required in production; identify the exact trusted proxy/subnet. Blanket `true`, `0.0.0.0/0` and `::/0` are refused.    |
+| `TRUST_PROXY`               | Disabled                        | Required in production. Comma-separated exact addresses, CIDR subnets with a nonzero prefix, or `loopback`, `linklocal` and `uniquelocal`. `true` and `/0` ranges are refused. |
+| `PRIVILEGED_AUTH_POLICY`    | `hardware`                      | `hardware` or `passkey`; which keys approve API-key changes, browser releases, trusted publishers and workspace removal. Other values fail at startup. |
 | `DEVELOPMENT_HOST_SUFFIXES` | Empty                           | Comma-separated explicit host/suffix exemptions for site seat accounting. Exact or dot-delimited matching.              |
 
 Development exemptions follow the current suffix configuration for existing and
@@ -36,6 +37,31 @@ enough installations are deactivated. Buyer and seller views use the current
 policy without rewriting installation records. A successful activation or retry
 refreshes stored exemption flags under the license's seat-admission lock. Device
 installations never receive development-host exemptions.
+
+`TRUST_PROXY` must name only the proxies in front of the app. Each entry is an
+exact IPv4 or IPv6 address, a subnet such as `172.30.81.4/32` or `10.0.0.0/8`,
+or one of the named ranges `loopback`, `linklocal` and `uniquelocal`, which
+cover the loopback, link-local and private address ranges. The two-container
+Compose stack uses `uniquelocal` because Docker assigns its private subnet and
+Caddy is the only other container on it. The split layout trusts the web
+runtime's fixed address, `172.30.81.4`. Any invalid entry fails startup.
+
+`PRIVILEGED_AUTH_POLICY` chooses how sellers approve privileged actions. Each
+approval is a fresh WebAuthn assertion bound to that one action either way.
+
+| Policy | Accepted approval | Use when |
+| --- | --- | --- |
+| `hardware` (default) | A key from a set of at least two hardware security keys that an operator has inventoried and approved with `pnpm auth:maintenance` | You can witness and inventory each publisher's physical keys |
+| `passkey` | Any user-verified passkey or security key the seller enrolled, except one added by an unfinished recovery | Sellers manage their own keys without operator inventory |
+
+The variable defaults to `hardware` when it is omitted, but `.env.example`
+sets `PRIVILEGED_AUTH_POLICY=passkey`, so a server configured from a copy of that
+file uses `passkey` until you change the line. Decide before onboarding
+publishers.
+
+Under either policy, privileged actions stay suspended after ordinary account
+recovery, and removing an operator-approved key still needs another approved
+key. See [authentication policy](authentication-policy.md).
 
 Standalone startup refuses a hosted database with unrelated tenants or connected
 account/platform billing mappings. Keep hosted databases in hosted mode. Do not
@@ -79,17 +105,20 @@ worker ownership between processes.
 
 | Variable               | Default                               | Purpose                                                                                                                       |
 | ---------------------- | ------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| `DATA_DIR`             | `/Volumes/Scratch/entitle/data/local` | Base for default SQLite and work paths. Set explicitly outside local macOS development.                                       |
+| `DATA_DIR`             | `/Volumes/Scratch/entitle/data/local` | Base for default SQLite and work paths. Set explicitly outside local macOS development, for example `./.data`.                 |
 | `DATABASE_URL`         | `sqlite:DATA_DIR/entitle.sqlite`      | SQLite, PostgreSQL or MySQL connection. Use a persistent private database.                                                    |
 | `WORK_DIR`             | `DATA_DIR/work`                       | Private artifact spools, verified cache and export work; must be outside public static files.                                 |
-| `BUILD_DIR`            | `/Volumes/Scratch/entitle/build/main` | Build output and fallback base for built web assets.                                                                          |
+| `BUILD_DIR`            | `/Volumes/Scratch/entitle/build/main` | Build output and fallback base for built web assets. Outside local macOS development, use a path such as `./dist`.            |
 | `WEB_DIR`              | `BUILD_DIR/web`                       | Static frontend directory served by the app.                                                                                  |
-| `ENTITLE_DATA_DIR`     | Required by Compose interpolation     | Host persistent volume path; Compose setting, not a `loadConfig` variable.                                                    |
+| `ENTITLE_DATA_DIR`     | Required by Compose interpolation     | Absolute host persistent directory; Compose mounts its `app` subdirectory. A Compose setting, not a `loadConfig` variable.     |
 | `ENTITLE_MEMORY_LIMIT` | `768m`                                | Compose application container memory limit; reserve enough for Node/database overhead as well as configured transfer buffers. |
 
-The Docker deployment uses `DATA_DIR=/data`, `WORK_DIR=/data/work`,
-`WEB_DIR=/app/dist/web` and a writable host volume owned by UID/GID 1000.
-Inspect [compose.yaml](../deploy/compose.yaml) before selecting its subnet and paths.
+Both Docker Compose layouts use `DATA_DIR=/data`, `WORK_DIR=/data/work` and
+`WEB_DIR=/app/web`, and bind only `${ENTITLE_DATA_DIR}/app` to `/data`. Create
+that directory owned by UID/GID 1000 before the first start. Inspect
+[compose.standalone.yaml](../deploy/compose.standalone.yaml) or
+[compose.yaml](../deploy/compose.yaml) before choosing paths; the split layout
+also uses a fixed subnet.
 Reserve enough filesystem capacity for publication, downloads, exports and the
 database together. Per-process reservations are not filesystem quotas.
 
@@ -162,7 +191,7 @@ portability import has a stricter empty/private-bucket preflight.
 | `SMTP_USER`, `SMTP_PASS`      | Empty                   | Provider credentials when needed.                                                               |
 | `MAIL_FROM`                   | `licenses@example.test` | Explicit valid deliverable address in production; `.test` is refused there.                     |
 | `DAILY_EMAIL_LIMIT`           | `1000`                  | Tenant SMTP attempts per UTC day, 1-1,000,000.                                                  |
-| `PLATFORM_DAILY_EMAIL_LIMIT`  | `1000`                  | Platform SMTP attempts per UTC day, 1-1,000,000.                                                |
+| `PLATFORM_DAILY_EMAIL_LIMIT`  | `1000`                  | Platform SMTP attempts per UTC day, 1-1,000,000 each for sign-in links and protected account/security mail. |
 | `MAX_SELLER_SIGNUPS_PER_HOUR` | `500`                   | 1-1,000,000 new seller creations per hour.                                                      |
 
 Mail budgets defer queued work without discarding encrypted keys. A healthy

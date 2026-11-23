@@ -95,6 +95,12 @@ export async function sandboxRoutes(
           },
         ],
       }),
+    }, {
+      stripeLiveMode: false,
+      purchasePolicy: {
+        deploymentMode: s.config.deploymentMode,
+        graceDays: s.config.graceDays,
+      },
     }).reconcile(subscriptionId);
     return { ok: true, test: true, subscriptionId, email: seller.user.email };
   });

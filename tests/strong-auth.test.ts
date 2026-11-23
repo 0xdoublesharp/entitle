@@ -458,3 +458,74 @@ test("security factor additions require an existing factor and proofs expire, bi
     await f.close();
   }
 });
+
+test("enrollment options exclude only credentials on the session's side of the recovery boundary", async () => {
+  const { randomUUID } = await import("node:crypto");
+  const { seal } = await import("../src/crypto.ts");
+  const f = await oidcFixture();
+  const post = (path: string, payload: object, proof?: string) =>
+    f.app.inject({
+      method: "POST",
+      url: `${account}${path}`,
+      headers: {
+        ...f.ownerHeaders,
+        ...(proof ? { "x-account-verification": proof } : {}),
+      },
+      payload,
+    });
+  const excluded = async (proof?: string) => {
+    const started = await post("/security/passkey/enroll", { name: "Next" }, proof);
+    assert.equal(started.statusCode, 200, started.body);
+    return (started.json().options.excludeCredentials as { id: string }[]).map(
+      (c) => c.id,
+    );
+  };
+  try {
+    const ordinary = passkeyFixture(f.config.origin);
+    await ordinary.seed(f.db, f.userId, f.config.secret);
+    const flow = randomUUID(),
+      recoveryCredential = "recovery-credential-id";
+    await f.db("auth_recoveries").insert({
+      id: flow,
+      user_id: f.userId,
+      mode: "infrastructure",
+      state: "restricted",
+      generation: 0,
+      not_before: 0,
+      expires_at: Date.now() + 3600000,
+      created_at: Date.now(),
+    });
+    await f.db("seller_factors").insert({
+      id: randomUUID(),
+      user_id: f.userId,
+      kind: "passkey",
+      name: "Recovery key",
+      provenance: "recovery",
+      recovery_id: flow,
+      backup_eligible: 0,
+      backed_up: 0,
+      user_verified: 1,
+      counter: 0,
+      credential_hash: hash(recoveryCredential),
+      payload: seal(
+        { id: recoveryCredential, publicKey: "unused" },
+        f.config.secret,
+      ),
+      created_at: Date.now(),
+    });
+    const options = await post("/reauth/options", { action: "security.manage" });
+    const proof = await post("/reauth/verify", {
+      challengeId: options.json().challengeId,
+      response: ordinary.authentication(options.json().options.challenge),
+    });
+    assert.equal(proof.statusCode, 200, proof.body);
+    assert.deepEqual(await excluded(proof.json().verification), [ordinary.id]);
+    await f
+      .db("seller_sessions")
+      .where({ id: hash(f.session) })
+      .update({ recovery_id: flow });
+    assert.deepEqual(await excluded(), [recoveryCredential]);
+  } finally {
+    await f.close();
+  }
+});

@@ -1,5 +1,5 @@
 import { primaryTenant, testTenantKey } from "./helpers/tenant.ts";
-import { InMemoryArtifactStore } from "../src/storage.ts";
+import { InMemoryArtifactStore, type ArtifactStore } from "../src/storage.ts";
 import test, { mock } from "node:test";
 import assert from "node:assert/strict";
 import filesystem from "node:fs/promises";
@@ -17,13 +17,15 @@ import { createServer, type Server } from "node:http";
 import { createServer as createSmtpServer, type Socket } from "node:net";
 import Stripe from "stripe";
 import { buildApp } from "../src/app.ts";
-import { createDb, migrate, reset } from "../src/db.ts";
+import { createDb, createTenant, migrate, reset } from "../src/db.ts";
 import { loadConfig, type Config } from "../src/config.ts";
 import { StripeBilling } from "../src/stripe.ts";
 import { csrf, hash, unseal } from "../src/crypto.ts";
-import type { Mailer, Message } from "../src/email.ts";
+import { enqueueEmail, Outbox, type Mailer, type Message } from "../src/email.ts";
 import { Auth } from "../src/auth.ts";
 import { AppError } from "../src/errors.ts";
+import { Billing } from "../src/billing.ts";
+import { PublisherSandboxes } from "../src/sandboxes.ts";
 
 process.env.NODE_ENV = "test";
 const scratch = "/Volumes/Scratch/entitle/tmp/";
@@ -62,6 +64,8 @@ async function stripeFixture() {
         id: "price_base",
         active: true,
         type: "recurring",
+        unit_amount: 1200,
+        currency: "usd",
         recurring: { interval: "year", interval_count: 1 },
       };
     else if (url.pathname === "/v1/checkout/sessions")
@@ -118,13 +122,15 @@ async function fixture(
     smtpPort?: number;
     smtpUser?: string;
     static?: boolean;
+    standalone?: boolean;
+    store?: InMemoryArtifactStore & ArtifactStore;
     databaseUrl?: string;
     provider?: Awaited<ReturnType<typeof stripeFixture>>;
   } = {},
 ) {
   const root = await mkdtemp(scratch + "api-coverage-");
   const databaseUrl = options.databaseUrl ?? process.env.TEST_API_DATABASE_URL;
-  const config: Config = loadConfig({ DEPLOYMENT_MODE: "hosted",
+  const config: Config = loadConfig({ DEPLOYMENT_MODE: options.standalone ? "standalone" : "hosted",
     APP_SECRET: "66".repeat(32),
     OPERATOR_TOKEN: "coverage-operator-token-1234567890123456789",
     DATA_DIR: root,
@@ -169,15 +175,19 @@ async function fixture(
         },
       });
   await seedTenantKey(db);
-  await db("tenants")
-    .where({ id: "primary" })
-    .update({ stripe_account_id: "acct_primary", stripe_status: "connected" });
-  const store = new InMemoryArtifactStore();
+  if (options.standalone) delete config.stripeLiveMode;
+  else
+    await db("tenants")
+      .where({ id: "primary" })
+      .update({ stripe_account_id: "acct_primary", stripe_status: "connected" });
+  const store = options.store ?? new InMemoryArtifactStore();
   const stripe = new StripeBilling(db, config, primaryTenant);
   if (!options.provider)
     mock.method(stripe.stripe.prices, "retrieve", async () => ({
       active: true,
       type: "recurring",
+      unit_amount: 1200,
+      currency: "usd",
       recurring: { interval: "year", interval_count: 1 },
     }));
   if (options.provider)
@@ -1179,7 +1189,14 @@ test("public liveness and catalog expose current product plans without private S
   assert.equal(catalog.statusCode, 200);
   assert.equal(catalog.json().products[0].id, product.id);
   assert.deepEqual(catalog.json().products[0].plans, [
-    { id: plan.id, name: "One site", site_allowance: 1 },
+    {
+      id: plan.id,
+      name: "One site",
+      site_allowance: 1,
+      unit_amount: 1200,
+      currency: "usd",
+      billing_interval: "year",
+    },
   ]);
   for (const secret of [
     "price_base",
@@ -1194,6 +1211,252 @@ test("public liveness and catalog expose current product plans without private S
     catalog.headers["x-request-id"],
     health.headers["x-request-id"],
   );
+});
+
+test("plan archive is tenant scoped and blocks checkout until a seller restores the plan", async (t) => {
+  const provider = await stripeFixture();
+  t.after(provider.close);
+  const f = await fixture({ provider });
+  t.after(f.close);
+  const { plan } = await seed(f);
+  await createTenant(f.db, { id: "foreign", slug: "foreign", name: "Foreign" });
+  await f.db("products").insert({
+    tenant_id: "foreign", id: "foreign-product", slug: "foreign-product", name: "Foreign",
+  });
+  await f.db("plans").insert({
+    tenant_id: "foreign", id: "foreign-plan", product_id: "foreign-product",
+    name: "Foreign", site_allowance: 1, stripe_price_id: "price_foreign",
+  });
+  const archive = `/seller/plans/${plan.id}/archive`;
+  const checkout = { planId: plan.id, email: "new-buyer@example.test" };
+  assert.equal((await f.post(archive, { archived: true, extra: true })).statusCode, 400);
+  assert.equal((await f.post("/seller/plans/foreign-plan/archive", { archived: true })).statusCode, 404);
+  const archived = await f.post(archive, { archived: true });
+  assert.equal(archived.statusCode, 200, archived.body);
+  assert.ok(Number((await f.db("plans").where({ id: plan.id }).first()).archived_at) > 0);
+  const catalog = () => f.app.inject("/api/v1/tenants/primary/catalog");
+  assert.deepEqual((await catalog()).json().products[0].plans, []);
+  const requestCount = provider.requests.length;
+  const denied = await f.post("/checkout", checkout, { origin: f.config.origin });
+  assert.equal(denied.statusCode, 409, denied.body);
+  assert.equal(denied.json().error.code, "plan_archived");
+  assert.equal(provider.requests.length, requestCount);
+
+  const restored = await f.post(archive, { archived: false });
+  assert.equal(restored.statusCode, 200, restored.body);
+  assert.equal((await catalog()).json().products[0].plans[0].id, plan.id);
+  const crossOrigin = await f.post("/checkout", checkout, { origin: "https://another.example.test" });
+  assert.equal(crossOrigin.statusCode, 403);
+  assert.equal(crossOrigin.json().error.code, "origin_denied");
+  assert.equal(provider.requests.length, requestCount);
+  const purchased = await f.post("/checkout", checkout, { origin: f.config.origin });
+  assert.equal(purchased.statusCode, 200, purchased.body);
+  assert.deepEqual(
+    new Set(await f.db("audit_events").whereIn("action", ["plan.archived", "plan.restored"]).pluck("action")),
+    new Set(["plan.archived", "plan.restored"]),
+  );
+});
+
+test("the Connect endpoint requires its configured secret", async (t) => {
+  const f = await fixture();
+  t.after(f.close);
+  delete f.config.stripeConnectWebhookSecret;
+  const result = await f.app.inject({
+    method: "POST", url: "/api/v1/stripe/connect-webhook", payload: {},
+  });
+  assert.equal(result.statusCode, 503, result.body);
+  assert.equal(result.json().error.code, "billing_unavailable");
+});
+
+test("native publication delegates file upload and verification to a streaming store", async (t) => {
+  const store: InMemoryArtifactStore & ArtifactStore = new InMemoryArtifactStore();
+  const bytes = Buffer.from("Native fixture contents");
+  let writes = 0;
+  let reads = 0;
+  store.putFile = async (tenantId, id, file, checksum, size) => {
+    writes++;
+    const content = await readFile(file);
+    assert.equal(size, bytes.length);
+    assert.deepEqual(content, bytes);
+    await store.put(tenantId, id, content, checksum);
+  };
+  store.getToFile = async (tenantId, id, checksum, size, destination) => {
+    reads++;
+    await writeFile(destination, await store.get(tenantId, id, checksum, size));
+  };
+  const f = await fixture({ store });
+  t.after(f.close);
+  await f.db("products").insert({
+    tenant_id: "primary",
+    id: "native",
+    slug: "native",
+    name: "Native",
+    framework: "generic",
+  });
+  const published = await f.app.inject({
+    method: "POST",
+    url: "/api/v1/tenants/primary/seller/assets/native/1.0.0",
+    headers: {
+      ...f.operator,
+      "content-type": "application/octet-stream",
+      "content-length": String(bytes.length),
+      "x-release-metadata": Buffer.from(JSON.stringify({
+        changelog: "First",
+        target: "any",
+        filename: "native.bin",
+      })).toString("base64url"),
+    },
+    payload: bytes,
+  });
+  assert.equal(published.statusCode, 200, published.body);
+  assert.equal((await f.db("release_assets").first()).size, bytes.length);
+  assert.equal(writes, 1);
+  assert.equal(reads, 1);
+});
+
+for (const phase of ["setup", "deadline", "apply", "manual"] as const) {
+  test(`billing turn handles failure or expiry during ${phase}`, async (t) => {
+    const f = await fixture({ local: true });
+    t.after(f.close);
+    const queued = await f.post("/seller/reconcile", { subscriptionId: "sub_worker" });
+    assert.equal(queued.statusCode, 200, queued.body);
+    let offset = 0;
+    const realNow = performance.now.bind(performance);
+    t.mock.method(performance, "now", () => realNow() + offset);
+    const runtime = PublisherSandboxes.prototype.runtime;
+    let checked = false;
+    t.mock.method(PublisherSandboxes.prototype, "runtime", async function (
+      this: PublisherSandboxes,
+      ...args: Parameters<typeof runtime>
+    ) {
+      if (args[1]?.reconciliation && !checked) {
+        checked = true;
+        if (phase === "setup") throw Error("tenant setup failed");
+        if (phase === "deadline") offset += 6000;
+      }
+      return runtime.apply(this, args);
+    });
+    const run = t.mock.method(Billing.prototype, "run", async (
+      ...[, worker]: Parameters<Billing["run"]>
+    ) => {
+      if (phase === "manual") throw Error("billing worker failed");
+      if (phase === "apply") {
+        assert.ok(worker?.onBeginApply && worker.signal);
+        offset += 6000;
+        worker.onBeginApply();
+        assert.equal(worker.signal.aborted, true);
+      }
+    });
+    if (phase === "manual") {
+      const response = await f.post("/seller/jobs/run");
+      assert.equal(response.statusCode, 500, response.body);
+      assert.equal(run.mock.callCount(), 1);
+    } else {
+      await f.app.getDecorator<() => Promise<void>>("tick")();
+      assert.equal(checked, true);
+      if (phase === "deadline") assert.equal(run.mock.callCount(), 0);
+      else assert.ok(run.mock.callCount() > 0);
+    }
+    assert.equal((await f.db("work").first()).state, "pending");
+  });
+}
+
+test("closing the app stops the tenant email outbox from claiming its next job", { timeout: 5000 }, async (t) => {
+  const sending = Promise.withResolvers<void>();
+  const resume = Promise.withResolvers<void>();
+  const signalSeen = Promise.withResolvers<AbortSignal | undefined>();
+  let delivered = 0;
+  const f = await fixture({
+    local: true,
+    mailer: {
+      async send() {
+        delivered++;
+        sending.resolve();
+        await resume.promise;
+      },
+    },
+  });
+  t.after(f.close);
+  const run = Outbox.prototype.run;
+  t.mock.method(Outbox.prototype, "run", async function (
+    this: Outbox,
+    limit: number,
+    signal?: AbortSignal,
+  ) {
+    signalSeen.resolve(signal);
+    await run.call(this, limit, signal);
+  });
+  await f.db("customers").insert({
+    tenant_id: "primary", id: "recipient", email: "recipient@example.test",
+  });
+  for (const id of ["outbox-1", "outbox-2"])
+    await enqueueEmail(f.db, f.config.secret, id, "recipient", null, "login", {
+      to: "recipient@example.test", subject: "Test", text: "Queued email",
+    }, "primary");
+  const tick = f.app.getDecorator<() => Promise<void>>("tick")();
+  try {
+    const signal = await signalSeen.promise;
+    assert.ok(signal);
+    await sending.promise;
+    const aborted = new Promise<void>((resolve) =>
+      signal.addEventListener("abort", () => resolve(), { once: true }),
+    );
+    const stopping = f.app.close();
+    await aborted;
+    resume.resolve();
+    await stopping;
+    assert.equal(delivered, 1);
+    assert.equal((await f.db("emails").where({ attempts: 0 }).select("id")).length, 2);
+  } finally {
+    resume.resolve();
+    await tick;
+  }
+});
+
+test("standalone merchants accept test webhook events when the Stripe mode is omitted", async (t) => {
+  const f = await fixture({ standalone: true });
+  t.after(f.close);
+  for (const livemode of [false, true]) {
+    const payload = JSON.stringify({
+      id: `evt_merchant_${livemode}`, livemode, type: "customer.subscription.updated",
+      data: { object: { id: "sub_merchant" } },
+    });
+    const result = await f.app.inject({
+      method: "POST", url: "/api/v1/stripe/merchant-webhook",
+      headers: {
+        "content-type": "application/json",
+        "stripe-signature": Stripe.webhooks.generateTestHeaderString({
+          payload, secret: f.config.stripeWebhookSecret,
+        }),
+      },
+      payload,
+    });
+    assert.equal(result.statusCode, 200, result.body);
+    assert.deepEqual(result.json(), livemode ? { ok: true, ignored: true } : { ok: true });
+  }
+  assert.deepEqual(await f.db("billing_events").pluck("id"), ["evt_merchant_false"]);
+});
+
+test("standalone local product setup and purchases work without hosted platform capacity", async (t) => {
+  const f = await fixture({ local: true, standalone: true });
+  t.after(f.close);
+  await f.db("tenants").where({ id: "primary" }).update({
+    exempt: 0, trial_ends_at: 0, paid_through: 0,
+  });
+  const saved = await f.post("/seller/products", {
+    slug: "standalone", name: "Standalone",
+    plans: [{ name: "Annual", siteAllowance: 1, priceId: "price_local_1" }],
+  });
+  assert.equal(saved.statusCode, 200, saved.body);
+  const [plan] = saved.json().plans;
+  assert.equal(plan.unit_amount, 10000);
+  assert.equal(plan.currency, "usd");
+  assert.equal(plan.billing_interval, "year");
+  const purchased = await f.post("/seller/local/purchase", {
+    planId: plan.id, email: "local-buyer@example.test",
+  });
+  assert.equal(purchased.statusCode, 200, purchased.body);
+  assert.equal((await f.db("licenses").first()).plan_id, plan.id);
 });
 
 test("readiness tolerates a transient probe cleanup failure and does not leave cleanup hooks patched", async (t) => {

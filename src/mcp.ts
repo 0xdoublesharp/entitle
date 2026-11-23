@@ -56,6 +56,46 @@ const commands: Record<string, string> = {
     "Call any /api/v1/ route with explicitly configured ENTITLE_AUTHORIZATION or ENTITLE_COOKIE and CSRF/verification environment. Arguments are the same as api. Interactive routes retain session and verification requirements.",
 };
 
+const destructiveCommands = new Set([
+  "product",
+  "revoke",
+  "withdraw",
+  "tenant-status",
+  "tenant-owner",
+  "local-tenant",
+]);
+
+function inputSchema(input: z.ZodType) {
+  const { anyOf, oneOf, ...schema } = z.toJSONSchema(input);
+  const alternatives = anyOf ?? oneOf;
+  if (!alternatives) return { ...schema, type: "object" as const };
+
+  // Tool discovery needs an object at the root. The operation still validates
+  // each action's required and allowed fields against the original union.
+  const properties = Map.groupBy(
+    alternatives.flatMap((option) => Object.entries(option.properties ?? {})),
+    ([name]) => name,
+  );
+  return {
+    ...schema,
+    type: "object" as const,
+    properties: Object.fromEntries(
+      [...properties].map(([name, entries]) => {
+        const options = [
+          ...new Map(
+            entries.map(([, value]) => [JSON.stringify(value), value]),
+          ).values(),
+        ];
+        return [name, options.length === 1 ? options[0] : { anyOf: options }];
+      }),
+    ),
+    required: (alternatives[0]?.required ?? []).filter((name) =>
+      alternatives.every((option) => (option.required ?? []).includes(name)),
+    ),
+    additionalProperties: false,
+  };
+}
+
 function toolError(error: unknown, fallback: string) {
   let message = error instanceof Error ? error.message : fallback;
   for (const secret of [
@@ -262,13 +302,10 @@ export function createMcpServer() {
       ...Object.entries(agentOperations).map(([name, operation]) => ({
         name: `entitle_op_${name.replaceAll("-", "_")}`,
         description: operation.description,
-        inputSchema: { ...z.toJSONSchema(operation.schema), type: "object" } as {
-          type: "object";
-          [key: string]: unknown;
-        },
+        inputSchema: inputSchema(operation.schema),
         annotations: {
           readOnlyHint: operation.readOnly === true && !operation.output,
-          destructiveHint: operation.readOnly !== true,
+          destructiveHint: operation.destructive === true,
           openWorldHint: true,
         },
       })),
@@ -300,7 +337,7 @@ export function createMcpServer() {
             "tenants",
             "platform-jobs",
           ].includes(name),
-          destructiveHint: ["revoke", "withdraw"].includes(name),
+          destructiveHint: destructiveCommands.has(name),
           openWorldHint: true,
         },
       })),
@@ -322,7 +359,6 @@ export function createMcpServer() {
         },
         annotations: {
           readOnlyHint: false,
-          destructiveHint: true,
           openWorldHint: true,
         },
       })),

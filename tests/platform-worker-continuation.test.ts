@@ -183,6 +183,19 @@ async function fixture(t: TestContext) {
         return { id: "dp", charge: "charge" };
       },
     },
+    refunds: {
+      async retrieve() {
+        calls.push({ route: "refund-customer" });
+        return { id: "re", customer: null, charge: null, payment_intent: "pi_refund" };
+      },
+    },
+    paymentIntents: {
+      async retrieve(id: string) {
+        calls.push({ route: "intent-customer" });
+        assert.equal(id, "pi_refund");
+        return { id, customer: "cus", livemode: false };
+      },
+    },
   };
   const lines = provider.invoices.listLineItems;
   provider.invoices.listLineItems = ((
@@ -223,6 +236,28 @@ async function finish(f: Awaited<ReturnType<typeof fixture>>, maxRequests = 2) {
   }
   assert.fail("platform continuation made no bounded progress");
 }
+
+test("platform refund attribution resumes at the PaymentIntent and revokes mixed settlement", async (t) => {
+  const f = await fixture(t);
+  f.provider.invoices.list = f.list("invoices", () => [{
+    id: "invoice", customer: "cus", livemode: false,
+    parent: { subscription_details: { subscription: "sub" } },
+    status: "paid", amount_paid: 100, total: 200, amount_due: 100,
+    amount_remaining: 0, currency: "usd", created: f.now,
+    status_transitions: { paid_at: f.now },
+  }]);
+  await f.billing().reconcile(f.tenant.id);
+  f.setRefunded(true);
+  await f.billing().receive({
+    id: "evt_refund", type: "charge.refund.updated", livemode: false,
+    data: { object: { id: "re" } },
+  });
+  await finish(f, 1);
+  assert.equal(f.calls.filter(({ route }) => route === "refund-customer").length, 1);
+  assert.equal(f.calls.filter(({ route }) => route === "intent-customer").length, 1);
+  assert.equal((await f.db("platform_grants").first()).revoked, 1);
+  assert.equal((await f.db("tenants").where({ id: f.tenant.id }).first()).max_products, 3);
+});
 
 test("failed platform apply refreshes completed evidence before retrying changed refunds", async (t) => {
   const f = await fixture(t);
@@ -338,6 +373,123 @@ test("platform event attribution and subscription discovery resume with a one-re
       .platform_subscription_id,
     "sub",
   );
+});
+
+test("platform continuation verifies legacy prices and settles a same-second replacement with a direct charge", async (t) => {
+  const f = await fixture(t);
+  const defaulted: { stripeLiveMode?: boolean; graceDays?: number; paidMaxProducts?: number; paidStorageBytes?: number } = f.config;
+  delete defaulted.stripeLiveMode;
+  delete defaulted.graceDays;
+  delete defaulted.paidMaxProducts;
+  delete defaulted.paidStorageBytes;
+  await f.db("platform_grants").insert({
+    tenant_id: f.tenant.id, id: "legacy", subscription_id: "sub", invoice_id: "legacy_invoice",
+    tier: "pro", price_id: "price_legacy", period_start: 1, period_end: 2,
+  });
+  Object.assign(f.provider, { prices: { retrieve: async (id: string) => {
+    f.calls.push({ route: "legacy-price" });
+    assert.equal(id, "price_legacy");
+    return { id, livemode: false, active: false };
+  } } });
+  const subscription = (id: string) => ({
+    id, customer: "cus", status: id === "sub" ? "canceled" : "active", livemode: false,
+    created: f.now, items: { data: [{ price: { id: "price_legacy" } }] },
+  });
+  f.provider.subscriptions.retrieve = async (id) => {
+    f.calls.push({ route: `subscription:${id}` });
+    return subscription(id);
+  };
+  f.provider.subscriptions.list = f.list("subscriptions", () => [subscription("sub"), subscription("replacement")]);
+  const invoice = (id: string, subscriptionId: string, extra: Record<string, unknown> = {}) => ({
+    id, customer: "cus", livemode: false, parent: { subscription_details: { subscription: subscriptionId } },
+    status: "paid", amount_paid: 100, total: 100, amount_due: 100, amount_remaining: 0,
+    currency: "usd", created: f.now, status_transitions: { paid_at: f.now }, ...extra,
+  });
+  f.provider.invoices.list = f.list("invoices", ({ subscription: id }) => id === "sub" ? [] : [
+    invoice("unrelated", id, { customer: "another_customer" }),
+    invoice("open", id, { status: "open", amount_paid: 0 }),
+    invoice("settled", id),
+  ]);
+  const invoiceLines = f.list("lines", () => [
+    { id: "manual_line", amount: 200, period: { start: f.now - 1, end: f.now + 86401 }, parent: null },
+    { id: "paid_line", amount: 100, pricing: { price_details: { price: "price_legacy" } },
+      parent: { subscription_item_details: {} }, period: { start: f.now - 1, end: f.now + 86400 } },
+  ]);
+  f.provider.invoices.listLineItems = ((_id: string, parameters: object, options: Stripe.RequestOptions) =>
+    invoiceLines(parameters, options)) as typeof f.provider.invoices.listLineItems;
+  f.provider.invoicePayments.list = f.list("payments", () => [
+    { id: "direct", payment: { charge: "ch_direct" } },
+    { id: "external", payment: { type: "payment_record" } },
+  ]);
+  f.provider.charges.retrieve = async (id) => {
+    f.calls.push({ route: "direct-charge" });
+    assert.equal(id, "ch_direct");
+    return { id, customer: "cus", livemode: false, paid: true, amount_refunded: 0, disputed: true };
+  };
+  f.provider.disputes.list = f.list("disputes", () => []);
+  const billing = f.billing();
+  await billing.receive({ id: "evt", type: "invoice.paid", livemode: false, data: { object: { customer: "cus" } } });
+  for (let turn = 0; turn < 5; turn++) {
+    await f.db("platform_work").update({ available_at: 0 });
+    await billing.run({ maxRequests: 1 });
+  }
+  assert.ok(f.calls.some(call => call.route === "subscription:replacement"));
+  await f.db("tenants").where({ id: f.tenant.id }).update({ platform_subscription_id: "replacement" });
+  await finish(f, 1);
+  assert.equal(f.calls.filter(call => call.route === "legacy-price").length, 1);
+  assert.equal(f.calls.filter(call => call.route === "direct-charge").length, 1);
+  assert.equal((await f.db("platform_price_history").where({ price_id: "price_legacy" }).first()).tier, "pro");
+  const grants = await f.db("platform_grants").orderBy("id");
+  assert.deepEqual(grants.map(grant => grant.id), ["legacy", "paid_line"]);
+  assert.equal(grants[1]!.revoked, 1, "a disputed charge missing dispute evidence fails closed");
+});
+
+test("the platform worker settles an event if its customer mapping disappears before reconciliation", async (t) => {
+  const f = await fixture(t);
+  const billing = f.billing();
+  const reconcile = billing.reconcile.bind(billing);
+  t.mock.method(billing, "reconcile", async (id: string) => {
+    await f.db("tenants").where({ id }).update({ platform_customer_id: null });
+    await reconcile(id);
+  });
+  await billing.receive({ id: "evt", type: "invoice.paid", livemode: false, data: { object: { customer: "cus" } } });
+  await billing.run({ maxRequests: 1 });
+  assert.equal((await f.db("platform_work").first()).state, "sent");
+  assert.deepEqual(f.calls, []);
+  assert.deepEqual(await f.db("platform_grants"), []);
+});
+
+test("the platform worker restarts if the billing revision changes during its provider scan", async (t) => {
+  const f = await fixture(t);
+  const billing = f.billing();
+  f.onCall(async route => {
+    if (route !== "charges") return;
+    f.onCall(undefined);
+    await f.db("tenants").where({ id: f.tenant.id }).increment("platform_billing_revision", 1);
+  });
+  await billing.receive({ id: "evt", type: "invoice.paid", livemode: false, data: { object: { customer: "cus" } } });
+  await billing.run({ maxRequests: 100 });
+  const job = await f.db("platform_work").first();
+  assert.equal(job.state, "pending");
+  assert.equal(job.attempts, 0);
+  assert.equal((await f.db("worker_continuations").where({ slot: "platform-reconcile" })).length, 0);
+  assert.deepEqual(await f.db("platform_grants"), []);
+  await finish(f, 100);
+  assert.equal((await f.db("platform_grants")).length, 12);
+});
+
+test("platform refund attribution restarts when its Stripe credential changes during a continuation", async (t) => {
+  const f = await fixture(t);
+  const billing = f.billing();
+  await billing.receive({ id: "evt", type: "refund.updated", livemode: false, data: { object: { id: "re" } } });
+  await billing.run({ maxRequests: 1 });
+  f.config.stripeSecret = "sk_test_changed";
+  await f.db("platform_work").update({ available_at: 0 });
+  await f.billing().run({ maxRequests: 1 });
+  assert.equal((await f.db("platform_work").first()).attempts, 0);
+  assert.equal((await f.db("worker_continuations").where({ slot: "platform-customer" })).length, 0);
+  await finish(f, 2);
+  assert.equal(f.calls.filter(call => call.route === "refund-customer").length, 2);
 });
 
 test("a newer canonical platform revision discards the partial scan before stale quota can apply", async (t) => {

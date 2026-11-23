@@ -8,7 +8,7 @@ import {
   ref,
 } from "vue";
 import { ApiClient, ApiError, errorMessage, watchLoginTokens } from "./api.ts";
-import type { Account, License, Product } from "./api.ts";
+import type { Account, License, Plan, Product } from "./api.ts";
 import "./style.css";
 import { mountSellerApp } from "./site.ts";
 import { mountDocumentation } from "./documentation.ts";
@@ -28,13 +28,19 @@ import { site } from "../packages/shared/site.ts";
 import {
   CheckoutController,
   emptyCheckoutState,
+  planInterval,
+  planPrice,
   stripeLoader,
 } from "./checkout.ts";
 import type {
   CheckoutLoader,
   CheckoutState,
   ElementsCheckout,
+  PlanPricing,
 } from "./checkout.ts";
+
+type CatalogPlan = Plan & PlanPricing;
+type CatalogProduct = Omit<Product, "plans"> & { plans: CatalogPlan[] };
 
 const icon = (symbol: string) =>
   h("span", { "aria-hidden": "true", class: "icon" }, symbol);
@@ -101,14 +107,29 @@ export function mountCustomerApp(
   const tenant = /^\/t\/([a-z0-9][a-z0-9-]*)(?:\/)?$/.exec(
     applicationRoute(),
   )?.[1];
-  if (!tenant)
-    throw new Error("A tenant route is required to mount the buyer account.");
+  if (!tenant) {
+    const invalid = createApp({
+      render: () =>
+        h("main", { id: "main", class: "page-main" }, [
+          h("section", { class: "panel", role: "alert" }, [
+            h("h1", "Invalid workspace address."),
+            h(
+              "p",
+              "Check the link from the publisher and try again. Workspace addresses use lowercase letters, numbers, and hyphens.",
+            ),
+            h("a", { href: applicationHref("/") }, `Go to ${site.name}`),
+          ]),
+        ]),
+    });
+    invalid.mount(target);
+    return invalid;
+  }
   const api = new ApiClient(transport, `/api/v1/tenants/${tenant}`);
   const App = defineComponent({
     setup() {
       const account = ref<Account | null>(null);
       const privacyOpen = ref(false);
-      const products = ref<Product[]>([]);
+      const products = ref<CatalogProduct[]>([]);
       const billingAvailable = ref(true);
       const loading = ref(true);
       const catalogLoading = ref(true);
@@ -205,13 +226,14 @@ export function mountCustomerApp(
         catalogError.value = "";
         try {
           const catalog = await api.get<{
-            products: Product[];
+            products: CatalogProduct[];
             billingAvailable?: boolean;
           }>("/catalog");
           billingAvailable.value = catalog.billingAvailable !== false;
           products.value = catalog.products;
           if (!selectedPlan.value)
-            selectedPlan.value = products.value[0]?.plans[0]?.id || "";
+            selectedPlan.value =
+              products.value.flatMap((product) => product.plans)[0]?.id || "";
         } catch (failure) {
           catalogError.value = errorMessage(failure);
         } finally {
@@ -381,6 +403,13 @@ export function mountCustomerApp(
         void fetchCatalog();
       });
 
+      // Checkout opens only for a selected catalog plan, so the lookup always succeeds.
+      const selectedPlanDetails = () =>
+        products.value
+          .flatMap((product) => product.plans)
+          .find((plan) => plan.id === selectedPlan.value)!;
+      const purchasable = () =>
+        products.value.filter((product) => product.plans.length > 0);
       const renderCheckout = () => {
         const state = checkoutState.value;
         const finished =
@@ -402,7 +431,7 @@ export function mountCustomerApp(
                 h("strong", `${state.amount} ${state.currency.toUpperCase()}`),
                 h(
                   "p",
-                  "Renews annually until canceled. Manage or cancel your subscription from your account billing page.",
+                  `${planInterval(selectedPlanDetails()).renewal} Manage or cancel your subscription from your account billing page.`,
                 ),
               ]),
             state.phase === "loading" &&
@@ -421,6 +450,17 @@ export function mountCustomerApp(
                     "p",
                     "Your license will appear after our server confirms payment. Check your email or refresh your licenses.",
                   ),
+                  account.value &&
+                    button(
+                      busy.value === "refresh"
+                        ? "Refreshing licenses…"
+                        : "Refresh licenses",
+                      () => void run("refresh", fetchAccount),
+                      {
+                        class: "button-secondary",
+                        disabled: interactionBusy(),
+                      },
+                    ),
                 ])
               : h(
                   "form",
@@ -880,11 +920,13 @@ export function mountCustomerApp(
                     h(
                       "h1",
                       { id: "login-confirm-title" },
-                      "Continue to your account",
+                      account.value
+                        ? "Switch to the account from this link?"
+                        : "Continue to your account",
                     ),
                     h(
                       "p",
-                      "Confirm below to use your emailed sign-in link. Links expire after 15 minutes and can only be used once.",
+                      `${account.value ? `You are signed in as ${account.value.customer.email}. Confirm to sign in with the emailed link instead, or cancel to stay signed in. ` : "Confirm below to use your emailed sign-in link. "}Links expire after 15 minutes and can only be used once.`,
                     ),
                     h("div", { class: "button-row" }, [
                       button(
@@ -1133,7 +1175,7 @@ export function mountCustomerApp(
                     h(
                       "p",
                       { class: "muted" },
-                      "Annual plans include downloads and updates for the licensed product. Review pricing at secure checkout.",
+                      "Every plan includes downloads and updates for the licensed product. Confirm the total at secure checkout.",
                     ),
                   ]),
                 ]),
@@ -1162,11 +1204,17 @@ export function mountCustomerApp(
                             { class: "empty-message" },
                             "No plans are available yet. Please check back soon.",
                           )
+                        : purchasable().length === 0
+                          ? h(
+                              "p",
+                              { class: "empty-message" },
+                              "No paid plans are available yet.",
+                            )
                         : h(
                             "form",
                             { onSubmit: checkout, class: "checkout-form" },
                             [
-                              ...products.value.map((product) =>
+                              ...purchasable().map((product) =>
                                 h(
                                   "fieldset",
                                   { key: product.id, class: "product-plans" },
@@ -1211,10 +1259,16 @@ export function mountCustomerApp(
                                                 ` ${seatUnit(product)}${plan.site_allowance === 1 ? "" : "s"}`,
                                               ),
                                             ]),
+                                            planPrice(plan) &&
+                                              h(
+                                                "span",
+                                                { class: "plan-price" },
+                                                planPrice(plan),
+                                              ),
                                             h(
                                               "span",
                                               { class: "muted small" },
-                                              "Annual subscription",
+                                              planInterval(plan).label,
                                             ),
                                           ],
                                         ),
@@ -1263,7 +1317,7 @@ export function mountCustomerApp(
                               h(
                                 "p",
                                 { class: "small muted checkout-note" },
-                                "Your license becomes available after payment is confirmed. Expired licenses do not disable installed plugin features.",
+                                "Your license becomes available after payment is confirmed. Expired licenses do not disable installed software.",
                               ),
                             ],
                           ),

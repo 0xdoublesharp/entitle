@@ -136,6 +136,7 @@ test("SQLite migration preserves constraints and reruns without deleting records
       "019_oidc_publishing",
       "020_strong_reauthentication",
       "021_auth_capabilities",
+      "022_plan_catalog_fields",
     ]);
     await assert.rejects(
       db("plans").insert({
@@ -154,6 +155,40 @@ test("SQLite migration preserves constraints and reruns without deleting records
   } finally {
     await db.destroy();
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("plan catalog migration resumes after a partially applied schema change", async () => {
+  const db = createDb("sqlite::memory:");
+  try {
+    const { up, down, config } = await import("../src/migrations/022_plan_catalog_fields.ts");
+    assert.equal(config.transaction, false);
+    await migrate(db);
+    await db.schema.alterTable("plans", (table) => {
+      table.dropColumns("unit_amount", "billing_interval", "archived_at");
+    });
+    await db("knex_migrations").where({ name: "022_plan_catalog_fields" }).delete();
+    await db("products").insert({
+      tenant_id: "primary", id: "legacy", slug: "legacy", name: "Legacy",
+    });
+    await db("plans").insert({
+      tenant_id: "primary", id: "legacy-plan", product_id: "legacy", name: "Legacy",
+      site_allowance: 1, stripe_price_id: "price_legacy",
+    });
+    await migrate(db);
+    await up(db);
+    const plan = await db("plans").where({ id: "legacy-plan" }).first();
+    assert.equal(plan.unit_amount, null);
+    assert.equal(plan.currency, null);
+    assert.equal(plan.billing_interval, null);
+    assert.equal(plan.archived_at, null);
+    const snapshot = { unit_amount: 2400, currency: "usd", billing_interval: "month", archived_at: Date.now() };
+    await db("plans").where({ id: plan.id }).update(snapshot);
+    await up(db);
+    assert.deepEqual(await db("plans").where({ id: plan.id }).first(), { ...plan, ...snapshot });
+    await assert.rejects(down(), /Restore a backup/);
+  } finally {
+    await db.destroy();
   }
 });
 
@@ -283,6 +318,7 @@ test(
         { name: "019_oidc_publishing" },
         { name: "020_strong_reauthentication" },
         { name: "021_auth_capabilities" },
+        { name: "022_plan_catalog_fields" },
       ]);
     } finally {
       try {
@@ -334,6 +370,7 @@ test("migration002 upgrades existing products without changing original migratio
       "019_oidc_publishing",
       "020_strong_reauthentication",
       "021_auth_capabilities",
+      "022_plan_catalog_fields",
     ]);
     assert.equal(
       (await db("products").where({ id: "legacy" }).first()).plugin_basename,

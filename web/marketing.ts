@@ -74,7 +74,7 @@ const publicHome = () => [
       h(
         "p",
         { class: "intro" },
-        "Use your AI agent through MCP to set up a plugin, publish updates and track sales stats. Start with complimentary pilot licenses, then connect Stripe when you’re ready to sell.",
+        "Ship private updates and license WordPress, Joomla, Electron, Tauri, Sparkle, JetBrains, and other software. Start with complimentary pilot licenses, then sell monthly or annual subscriptions through your own Stripe account.",
       ),
       h("div", { class: "button-row hero-actions" }, [
         h(
@@ -90,7 +90,7 @@ const publicHome = () => [
       h(
         "p",
         { class: "hero-note" },
-        "Start an invited pilot before configuring Stripe.",
+        "Automate with MCP, the CLI, or OIDC from CI. Export your workspace or self-host anytime.",
       ),
     ]),
     h(
@@ -204,7 +204,7 @@ const publicHome = () => [
         ),
         h(
           "p",
-          "Connect an MCP-compatible AI agent to Entitle. Set up products, publish private releases and check your workspace’s stats from the conversation where you already build.",
+          "Connect an MCP-compatible AI agent to Entitle. Set up products, publish private releases, and check your workspace’s stats from the conversation where you already build.",
         ),
       ]),
       h("div", { class: "home-feature-grid home-agent-grid" }, [
@@ -213,12 +213,12 @@ const publicHome = () => [
           h("h3", "Set up your plugin for sale"),
           h(
             "p",
-            "Have your agent create a product, map an existing annual Stripe price to a paid plan and publish your release. Or start with a complimentary pilot.",
+            "Have your agent create a product, map an existing monthly or annual Stripe price to a paid plan, and publish your release. Or start with a complimentary pilot.",
           ),
           h(
             "p",
             { class: "agent-example" },
-            "“Set up my WordPress plugin with this annual price and publish version 1.0.0 from my build.”",
+            "“Set up my WordPress plugin with this monthly price and publish version 1.0.0 from my build.”",
           ),
         ]),
         h("article", { class: "home-feature" }, [
@@ -226,7 +226,7 @@ const publicHome = () => [
           h("h3", "Ask how your business is doing"),
           h(
             "p",
-            "Ask for a workspace overview of licenses, seats, downloads, storage and payments by currency. Daily download and bandwidth reports are available with Hosted Pro or self-hosting.",
+            "Ask for a workspace overview of licenses, seats, downloads, storage, and payments by currency. Daily download and bandwidth reports come with Hosted Pro or self-hosting.",
           ),
           h(
             "p",
@@ -258,7 +258,7 @@ const publicHome = () => [
         h("h2", { id: "journey-title" }, "One connected customer journey."),
         h(
           "p",
-          "From an invited pilot or a first purchase to the next release, give your customers a clear path forward.",
+          "Take customers from an invited pilot or first purchase to every release that follows.",
         ),
       ]),
       h(
@@ -268,17 +268,17 @@ const publicHome = () => [
           [
             "01",
             "Start with your product",
-            "Publish a private release and issue complimentary licenses to invited customers. No Stripe account, price or payment is required.",
+            "Publish a private release and issue complimentary licenses to invited customers. No Stripe account, price, or payment is required.",
           ],
           [
             "02",
             "Add payments when you’re ready",
-            "Connect Stripe for hosted checkout or an embedded payment form. Confirmed payments create separate paid licenses; pilot customers are never enrolled automatically.",
+            "Connect your Stripe account and sell monthly or annual plans through hosted checkout or an embedded payment form. Confirmed payments create separate paid licenses, and pilot customers are never enrolled automatically.",
           ],
           [
             "03",
             "Keep good software moving",
-            "Publish private releases. Customers get eligible updates and manage their keys, downloads and installations.",
+            "Publish private releases. Customers get eligible updates and manage their keys, downloads, and installations.",
           ],
         ].map(([number, title, copy]) =>
           h("li", [
@@ -311,7 +311,7 @@ const publicHome = () => [
         ),
         h(
           "p",
-          "Keep the connection between payments, people and software without stitching together a storefront and a licensing server.",
+          "Manage payments, customers, and releases together.",
         ),
       ]),
       h(
@@ -321,32 +321,32 @@ const publicHome = () => [
           [
             icons.key,
             "Paid and complimentary licenses",
-            "Set expiration dates and site or device allowances for invited pilots. Paid plans add annual renewals, refunds and dispute handling. Installed software stays available after expiry.",
+            "Give invited pilots an expiration date and a site or device allowance. Paid plans add monthly or annual renewals, refunds, and dispute handling. Installed software stays available after expiry.",
           ],
           [
             icons.box,
             "Private releases, ready to ship",
-            "Immutable packages, checksums and framework metadata. Each download checks current entitlement before the bytes leave private storage.",
+            "Publish immutable packages with checksums and framework metadata. Each download checks current entitlement before the bytes leave private storage.",
           ],
           [
             icons.card,
             "Your customers, your payments",
-            "Connect your own Stripe account when you’re ready for buyer checkout and billing. Complimentary issuance needs no payment provider. Hosted platform charges are separate.",
+            "Connect your own Stripe account when you’re ready for buyer checkout and billing. Complimentary licenses need no payment provider. Hosted platform charges are separate.",
           ],
           [
             icons.chart,
             "See what is happening",
-            "See licenses, seats, storage and served downloads. Complimentary licenses are separate from payment revenue. Track payments by currency and review daily bandwidth with Hosted Pro.",
+            "See licenses, seats, storage, and served downloads. Complimentary licenses are counted apart from payment revenue. Track payments by currency and review daily bandwidth with Hosted Pro.",
           ],
           [
             icons.layers,
             "Room for your next product",
-            "Manage different plugins, apps, plans and purchase flows. Isolated workspaces keep each seller's customers and releases separate.",
+            "Manage several plugins, apps, plans, and purchase flows. Each seller’s workspace keeps its customers and releases isolated.",
           ],
           [
             icons.code,
-            "Your AI agent, dashboard or build pipeline",
-            "Use MCP tools to configure products, publish releases and read stats with your AI agent. The dashboard, API and scoped CI keys keep the same workflows within reach.",
+            "Your AI agent, dashboard, or build pipeline",
+            "Use MCP tools to configure products, publish releases, and read stats. The CLI, API, and scoped API keys cover the same work, and trusted OIDC publishers release from CI without a stored API key.",
           ],
         ].map(([icon, title, copy]) =>
           h("article", { class: "home-feature" }, [
@@ -367,7 +367,7 @@ const publicHome = () => [
         h("h2", { id: "wordpress-title" }, "First-class WordPress support"),
         h(
           "p",
-          "Sell your Pro plugin with the update experience your customers already know. Site activations, compatibility checks and authenticated packages work with the normal WordPress update screen. Your free plugin can stay on WordPress.org.",
+          "Sell your Pro plugin with the update experience your customers already know. Site activations, compatibility checks, and authenticated packages work with the normal WordPress update screen. Your free plugin can stay on WordPress.org.",
         ),
         h("a", { href: "/docs#framework-support" }, [
           "Explore WordPress support",
@@ -402,7 +402,7 @@ const publicHome = () => [
         ),
         h(
           "p",
-          "License expiration stops new activations, downloads and updates. It never remotely disables installed functionality. Paid and complimentary customers keep using the software they already installed, including during server outages.",
+          "License expiration stops new activations, downloads, and updates. It never remotely disables installed functionality. Paid and complimentary customers keep using the software they already installed, including during server outages.",
         ),
       ]),
       h("div", { class: "confidence-details" }, [
@@ -442,12 +442,12 @@ const publicHome = () => [
             {
               href: applicationHref("/seller"),
               title: "Open your seller dashboard",
-              copy: "Manage products, licenses and private releases.",
+              copy: "Manage products, licenses, and private releases.",
             },
             {
               href: "/docs#customer-accounts",
               title: "Explore customer accounts",
-              copy: "See how buyers manage keys, downloads and installations.",
+              copy: "See how buyers manage keys, downloads, and installations.",
             },
             {
               href: "/docs#getting-started",
@@ -486,10 +486,10 @@ const publicHome = () => [
       h("div", { class: "home-section-heading" }, [
         h("p", { class: "eyebrow" }, "Choose who runs it"),
         h("h2", { id: "hosting-title" }, "Your business. Your way to run it."),
-        h(
-          "p",
-          "Use the same licensing engine and framework adapters with hosted publishing or your own standalone installation.",
-        ),
+        h("p", [
+          "Both options run the same licensing engine and framework adapters. Once your verified Stripe account is connected, you can export an encrypted copy of your hosted workspace and restore it on your own server. ",
+          h("a", { href: "/docs#portability" }, "How exports work"),
+        ]),
       ]),
       h("div", { class: "hosting-grid" }, [
         h("article", { class: "hosting-option" }, [
@@ -497,12 +497,12 @@ const publicHome = () => [
           h("h3", "Hosted service"),
           h(
             "p",
-            "Create a publisher workspace for your products and invited pilots. Connect payments when you’re ready to sell. The service operator runs the app, private storage and backups.",
+            "Create a publisher workspace for your products and invited pilots, and connect payments when you’re ready to sell. The service operator runs the app, private storage, and backups.",
           ),
           h("ul", [
             h(
               "li",
-              "Starter includes licensing, private updates, buyer accounts, recovery and sandbox testing.",
+              "Starter includes licensing, private updates, buyer accounts, recovery, and sandbox testing.",
             ),
             h(
               "li",
@@ -512,7 +512,7 @@ const publicHome = () => [
           h(
             "p",
             { class: "hosting-cost" },
-            "Platform subscription and configured application fee, plus separate payment processing fees. Subscription amounts are shown at checkout; the dashboard shows the fee rate.",
+            "You pay a platform subscription and the configured application fee on customer payments, plus Stripe’s processing fees. Subscription amounts are shown at checkout, and the dashboard shows the fee rate.",
           ),
           h(
             "a",
@@ -530,19 +530,22 @@ const publicHome = () => [
           h("h3", "Self-hosted standalone"),
           h(
             "p",
-            "Run Entitle for your own software business. Manage multiple products with your own billing, database and private storage.",
+            "Run Entitle for your own software business, with your own Stripe account, database, and private storage.",
           ),
           h("ul", [
             h(
               "li",
               "All local capabilities, including signed events and advanced reports.",
             ),
-            h("li", "One app serves the API and dashboard. Redis is optional."),
+            h(
+              "li",
+              "One app serves the API and dashboard. The Docker Compose setup adds an HTTPS proxy, and Redis is optional.",
+            ),
           ]),
           h(
             "p",
             { class: "hosting-cost" },
-            "No platform subscription or application fee. You supply hosting, storage, email and backups, and pay your infrastructure and payment processing costs.",
+            "No platform subscription or application fee. You supply hosting, storage, email, and backups, and pay your own infrastructure and payment processing costs.",
           ),
           h(
             "a",
@@ -577,7 +580,7 @@ const publicHome = () => [
       ...[
         [
           "Can I run a pilot before setting up Stripe?",
-          "Yes. Create a product without a paid plan, publish its release and issue a complimentary license with an installation allowance and expiration. The customer receives a normal key by email and uses the same activation and updater flow. No payment or subscription is created; workspace limits still apply.",
+          "Yes. Create a product without a paid plan, publish its release, and issue a complimentary license with an installation allowance and expiration. The customer receives a normal key by email and uses the same activation and update flow. No payment or subscription is created, and workspace limits still apply. Add monthly or annual plans to the same product when you’re ready to sell.",
           "/docs#complimentary-licenses",
           "Set up an invited pilot",
         ],
@@ -595,13 +598,13 @@ const publicHome = () => [
         ],
         [
           "Can I use this beyond WordPress?",
-          "Yes. Choose adapters for Joomla, Electron, Tauri, Sparkle and JetBrains, or integrate a generic client through the API. WordPress has its own site activation and update flow.",
+          "Yes. Choose adapters for Joomla, Electron, Tauri, Sparkle, and JetBrains, or integrate a generic client through the API. WordPress has its own site activation and update flow.",
           "/docs#framework-support",
           "Find your framework",
         ],
         [
           "How do customers recover a key or move a site?",
-          "Their workspace customer page provides email sign-in, license replacement, installation deactivation, downloads and billing management. Publishers can check access and payment state without asking for secret keys.",
+          "Their customer page offers email sign-in, license replacement, installation deactivation, downloads, and billing management. Publishers can check access and payment state, and deactivate an installation for a customer, without asking for secret keys.",
           "/docs#customer-accounts",
           "Read the buyer support guide",
         ],
@@ -620,7 +623,7 @@ const publicHome = () => [
       h("h2", { id: "start-title" }, "Build the software. Grow the business."),
       h(
         "p",
-        "Give your customers a better way to buy, activate and stay up to date.",
+        "Give your customers a simple way to buy, activate, and stay up to date.",
       ),
     ]),
     h("div", { class: "home-cta-actions" }, [

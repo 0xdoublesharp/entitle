@@ -6,9 +6,11 @@ import { mkdtemp, rm } from "node:fs/promises";
 import Stripe from "stripe";
 import { createDb, migrate, reset, type Plan } from "../src/db.ts";
 import { StripeBilling } from "../src/stripe.ts";
-import { Billing } from "../src/billing.ts";
+import { Billing, type BillingEvent } from "../src/billing.ts";
 import { Licenses } from "../src/licensing.ts";
 import { loadConfig } from "../src/config.ts";
+import { stripeWorkerHttpClient } from "../src/worker-continuation.ts";
+import { seal, unseal } from "../src/crypto.ts";
 
 const root = await mkdtemp(
   "/Volumes/Scratch/entitle/tmp/stripe-coverage-",
@@ -78,6 +80,7 @@ function adapter(local = false) {
     port,
     protocol: "http",
     maxNetworkRetries: 0,
+    httpClient: stripeWorkerHttpClient(),
   });
   return source;
 }
@@ -152,6 +155,7 @@ beforeEach(async () => {
     id: "price_one",
     active: true,
     type: "recurring",
+    unit_amount: 1000,
     recurring: { interval: "year", interval_count: 1 },
   }));
   routes.set("POST /v1/customers", () => ({ id: "cus_new" }));
@@ -169,6 +173,28 @@ afterEach(() => {
   for (const request of requests)
     assert.equal(request.account, expectedAccount, request.path);
 });
+
+let workerEventNumber = 0;
+async function merchantWorker<T>(source: StripeBilling, action: (event: BillingEvent) => Promise<T>, type = "customer.created", id = "fixture"): Promise<T> {
+  const billing = new Billing(db, new Licenses(db, config.secret, [], primaryTenant), source);
+  const eventId = `evt_worker_${workerEventNumber++}`;
+  await billing.receive({ id: eventId, type, data: { object: { id } } });
+  let result!: T;
+  for (let turn = 0; turn < 30; turn++) {
+    const previous = requests.length;
+    await billing.run(async event => {
+      result = await action(event);
+      return null;
+    }, { maxRequests: 2 });
+    assert.ok(requests.length - previous <= 2);
+    const job = await db("work").where({ id: eventId }).first();
+    if (job.state === "sent") return result;
+    assert.equal(job.state, "pending", job.last_error);
+    assert.equal(job.attempts, 0, job.last_error);
+    await db("work").where({ id: eventId }).update({ available_at: 0 });
+  }
+  assert.fail(`Worker made no bounded progress on ${type}`);
+}
 
 test("snapshot follows invoice, charge and line pagination while ignoring unpaid and non-subscription evidence", async () => {
   routes.set("GET /v1/invoices", (r) =>
@@ -246,6 +272,8 @@ test("snapshot follows invoice, charge and line pagination while ignoring unpaid
       .query.get("status"),
     "paid",
   );
+  const source = adapter();
+  assert.deepEqual(await merchantWorker(source, () => source.snapshot("sub_1")), s);
 });
 
 test("snapshot handles direct charges, unsupported external payment records, timestamp fallback and dispute resolution", async () => {
@@ -257,11 +285,10 @@ test("snapshot handles direct charges, unsupported external payment records, tim
   routes.set("GET /v1/invoices", () =>
     list("/v1/invoices", [invoice({ status_transitions: { paid_at: null } })]),
   );
-  routes.set("GET /v1/invoice_payments", () =>
-    list("/v1/invoice_payments", [
-      { id: "ip_external", payment: { type: "payment_record" } },
-      { id: "ip_direct", payment: { charge: { id: "ch_direct" } } },
-    ]),
+  routes.set("GET /v1/invoice_payments", ({ query }) =>
+    query.has("starting_after")
+      ? list("/v1/invoice_payments", [{ id: "ip_direct", payment: { charge: { id: "ch_direct" } } }])
+      : list("/v1/invoice_payments", [{ id: "ip_external", payment: { type: "payment_record" } }], true),
   );
   routes.set("GET /v1/charges/ch_direct", () => ({
     id: "ch_direct",
@@ -286,10 +313,155 @@ test("snapshot handles direct charges, unsupported external payment records, tim
   assert.equal(s.suspended, true);
   assert.equal(s.grants[0]!.paidAt, 50000);
   assert.equal(s.billingStatus, "canceled");
+  const source = adapter();
+  assert.deepEqual(await merchantWorker(source, () => source.snapshot("sub_1")), s);
   routes.set("GET /v1/disputes", () =>
     list("/v1/disputes", [{ id: "dp_resolved", status: "warning_closed" }]),
   );
   assert.equal((await adapter().snapshot("sub_1")).suspended, false);
+  routes.set("GET /v1/disputes", () => list("/v1/disputes", []));
+  assert.equal((await adapter().snapshot("sub_1")).suspended, true);
+});
+
+test("the merchant worker discards incompatible resolver and snapshot checkpoints", async () => {
+  await mappedPlan();
+  const source = adapter();
+  const billing = new Billing(db, new Licenses(db, config.secret, [], primaryTenant), source);
+  await billing.receive({ id: "evt_stale", type: "customer.subscription.updated", data: { object: { id: "sub_1" } } });
+  const run = (maxRequests: number) => billing.run(event => source.resolveSubscription(event), { maxRequests });
+  await run(1);
+  const checkpoints = await db("worker_continuations");
+  assert.deepEqual(checkpoints.map(row => row.slot).sort(), ["merchant.resolve", "merchant.snapshot"]);
+  for (const row of checkpoints) {
+    const state = unseal<Record<string, unknown>>(row.payload, config.secret);
+    await db("worker_continuations").where({ scope: row.scope, slot: row.slot }).update({
+      payload: seal({ ...state, version: 1, result: "sub_stale" }, config.secret),
+    });
+  }
+  await db("work").where({ id: "evt_stale" }).update({ available_at: 0 });
+  await run(20);
+  assert.equal((await db("work").first()).state, "sent");
+  assert.equal((await db("licenses").first()).subscription_id, "sub_1");
+  assert.equal(requests.filter(request => request.path === "/v1/subscriptions/sub_1").length, 3);
+});
+
+test("cash and credit invoices reconcile linked proration and balance reversals in both billing paths", async () => {
+  await db("products").insert({ tenant_id: "primary", id: "prod", slug: "fixture", name: "Fixture" });
+  await db("plans").insert(plan);
+  const start = Math.floor(Date.now() / 1000) - 100;
+  const cut = start + 20;
+  const end = start + 200;
+  const renewal = {
+    id: "in_credit",
+    amount_paid: 0,
+    amount_due: 0,
+    amount_remaining: 0,
+    total: 1200,
+    customer: "cus_1",
+  };
+  const credit = {
+    id: "cbtxn_1",
+    type: "applied_to_invoice",
+    amount: 1200,
+    invoice: renewal.id,
+    customer: "cus_1",
+    currency: "usd",
+    livemode: false,
+  };
+  let reversed = false;
+  let includeAdjustments = false;
+  routes.set("GET /v1/refunds/re_credit", () => ({ id: "re_credit", charge: null, payment_intent: "pi_1" }));
+  routes.set("GET /v1/invoices", () =>
+    list("/v1/invoices", includeAdjustments ? [
+      invoice(renewal),
+      invoice({ ...renewal, id: "in_returned", total: -100 }),
+      invoice({ ...renewal, id: "in_coupon", total: 0 }),
+      invoice(),
+    ] : [invoice()]),
+  );
+  routes.set("GET /v1/customers/cus_1/balance_transactions", (request) =>
+    request.query.has("starting_after")
+      ? list("/v1/customers/cus_1/balance_transactions", reversed
+        ? [{ ...credit, id: "cbtxn_reversed", type: "unapplied_from_invoice", amount: -1200 }]
+        : [])
+      : list("/v1/customers/cus_1/balance_transactions", [
+        { ...credit, id: "cbtxn_other_customer", customer: "cus_other" },
+        { ...credit, id: "cbtxn_other_invoice", invoice: "in_other" },
+        { ...credit, id: "cbtxn_adjustment", type: "adjustment" },
+        credit,
+        { ...credit, id: "cbtxn_other", currency: "eur" },
+      ], true),
+  );
+  routes.set("GET /v1/invoices/in_paid/lines", () =>
+    list("/v1/invoices/in_paid/lines", [line({ period: { start, end } })]),
+  );
+  routes.set("GET /v1/invoices/in_credit/lines", () =>
+    list("/v1/invoices/in_credit/lines", [
+      line({ id: "il_credit", period: { start: cut, end: end + 100 } }),
+    ]),
+  );
+  routes.set("GET /v1/invoices/in_coupon/lines", () =>
+    list("/v1/invoices/in_coupon/lines", [line({ id: "il_free", period: { start, end: end + 300 } })]),
+  );
+  routes.set("GET /v1/invoices/in_returned/lines", () =>
+    list("/v1/invoices/in_returned/lines", [line({
+      id: "il_returned", amount: -100, period: { start: cut, end },
+      parent: { subscription_item_details: {
+        proration: true,
+        proration_details: { credited_items: { invoice: "in_paid", invoice_line_items: ["il_paid"] } },
+      } },
+    })]),
+  );
+  const direct = adapter();
+  const licenses = new Licenses(db, config.secret, [], primaryTenant);
+  const billing = new Billing(db, licenses, direct);
+  await billing.reconcile("sub_1");
+  assert.equal(Number((await db("licenses").first()).paid_through), end * 1000);
+  includeAdjustments = true;
+  await billing.reconcile("sub_1");
+  assert.deepEqual(
+    (await db("grants").orderBy("id")).map((grant) => [grant.id, Number(grant.period_end)]),
+    [["il_credit", (end + 100) * 1000], ["il_paid", cut * 1000]],
+  );
+  assert.equal(Number((await db("licenses").first()).paid_through), (end + 100) * 1000);
+  reversed = true;
+  routes.set("GET /v1/charges", () =>
+    list("/v1/charges", [{ id: "ch_paid", paid: true, amount_refunded: 0, disputed: true }]),
+  );
+  routes.set("GET /v1/disputes", () => list("/v1/disputes", []));
+  async function processRefund(id: string) {
+    await billing.receive({ id, type: "charge.refund.updated", data: { object: { id: "re_credit" } } });
+    for (let turn = 0; turn < 40; turn++) {
+      const source = adapter();
+      const startRequests = requests.length;
+      await new Billing(db, licenses, source).run(
+        (event) => source.resolveSubscription(event),
+        { maxRequests: 2, budgetMs: 2000 },
+      );
+      assert.ok(requests.length - startRequests <= 2);
+      const job = await db("work").where({ id }).first();
+      if (job.state === "sent") return;
+      assert.equal(job.state, "pending");
+      assert.equal(job.attempts, 0);
+      await db("work").where({ id }).update({ available_at: 0 });
+    }
+    assert.fail("Refund reconciliation made no bounded progress");
+  }
+  await processRefund("evt_credit_reversed");
+  assert.deepEqual(
+    (await db("grants")).map((grant) => [grant.id, Number(grant.period_end)]),
+    [["il_paid", cut * 1000]],
+  );
+  assert.equal(Number((await db("licenses").first()).paid_through), cut * 1000);
+  assert.equal((await db("licenses").first()).suspended, 1);
+  await billing.reconcile("sub_1");
+  assert.equal(Number((await db("licenses").first()).paid_through), cut * 1000);
+  reversed = false;
+  routes.set("GET /v1/disputes", () => list("/v1/disputes", [{ id: "dp_won", status: "won" }]));
+  await processRefund("evt_credit_restored");
+  const restored = await db("licenses").first();
+  assert.equal(Number(restored.paid_through), (end + 100) * 1000);
+  assert.equal(restored.suspended, 0);
 });
 
 test("deleted or email-less customers still return canonical billing evidence", async () => {
@@ -299,9 +471,11 @@ test("deleted or email-less customers still return canonical billing evidence", 
     { id: "cus_1", email: "" },
   ]) {
     routes.set("GET /v1/customers/cus_1", () => customer);
-    const snapshot = await adapter().snapshot("sub_1");
+    const source = adapter();
+    const snapshot = await source.snapshot("sub_1");
     assert.equal(snapshot.email, "");
     assert.equal(snapshot.grants.length, 1);
+    assert.deepEqual(await merchantWorker(source, () => source.snapshot("sub_1")), snapshot);
   }
   assert.equal(
     requests.some((r) => r.path === "/v1/invoices"),
@@ -412,8 +586,11 @@ test("a mapped paid purchase without customer email remains retryable without cr
 
 test("events resolve canonical subscriptions and acknowledge unrelated invoices, sessions and events", async () => {
   const source = adapter();
-  const resolve = (type: string, id = "object") =>
-    source.resolveSubscription({ id: "evt", type, data: { object: { id } } });
+  const resolve = async (type: string, id = "object") => {
+    const direct = await source.resolveSubscription({ id: "evt", type, data: { object: { id } } });
+    assert.equal(await merchantWorker(source, event => source.resolveSubscription(event), type, id), direct);
+    return direct;
+  };
   assert.equal(
     await resolve("customer.subscription.deleted", "sub_1"),
     "sub_1",
@@ -443,6 +620,11 @@ test("PaymentIntent refund/dispute lookup skips unrelated invoice payments and f
     id: "re_1",
     charge: { id: "ch_1" },
   }));
+  routes.set("GET /v1/refunds/re_intent", () => ({
+    id: "re_intent",
+    charge: null,
+    payment_intent: { id: "pi_1" },
+  }));
   routes.set("GET /v1/disputes/dp_1", () => ({
     id: "dp_1",
     charge: { id: "ch_1" },
@@ -452,7 +634,7 @@ test("PaymentIntent refund/dispute lookup skips unrelated invoice payments and f
       ? list("/v1/invoice_payments", [{ id: "ip_paid", invoice: "in_paid" }])
       : list(
           "/v1/invoice_payments",
-          [{ id: "ip_other", invoice: { id: "in_other" } }],
+          [{ id: "ip_missing", invoice: null }, { id: "ip_other", invoice: { id: "in_other" } }],
           true,
         ),
   );
@@ -460,9 +642,12 @@ test("PaymentIntent refund/dispute lookup skips unrelated invoice payments and f
     invoice({ id: "in_other", parent: null }),
   );
   const source = adapter();
+  const resolve = (type: string, id: string) =>
+    merchantWorker(source, event => source.resolveSubscription(event), type, id);
   for (const [type, id] of [
     ["charge.refunded", "ch_1"],
     ["refund.updated", "re_1"],
+    ["charge.refund.updated", "re_intent"],
     ["charge.dispute.closed", "dp_1"],
   ]) {
     assert.equal(
@@ -473,6 +658,7 @@ test("PaymentIntent refund/dispute lookup skips unrelated invoice payments and f
       }),
       "sub_1",
     );
+    assert.equal(await resolve(type!, id!), "sub_1");
   }
   assert.equal(
     requests
@@ -491,6 +677,7 @@ test("PaymentIntent refund/dispute lookup skips unrelated invoice payments and f
     }),
     null,
   );
+  assert.equal(await resolve("charge.refunded", "ch_1"), null);
   routes.set("GET /v1/refunds/re_1", () => ({ id: "re_1", charge: null }));
   assert.equal(
     await source.resolveSubscription({
@@ -500,6 +687,9 @@ test("PaymentIntent refund/dispute lookup skips unrelated invoice payments and f
     }),
     null,
   );
+  assert.equal(await resolve("refund.created", "re_1"), null);
+  routes.set("GET /v1/disputes/dp_1", () => ({ id: "dp_1", charge: null }));
+  assert.equal(await resolve("charge.dispute.closed", "dp_1"), null);
 });
 
 test("legacy charge recovery follows customer invoices and payment pages without matching unrelated charges", async () => {
@@ -535,6 +725,8 @@ test("legacy charge recovery follows customer invoices and payment pages without
     data: { object: { id: "ch_legacy" } },
   };
   assert.equal(await source.resolveSubscription(event), "sub_1");
+  const resolve = () => merchantWorker(source, event => source.resolveSubscription(event), "charge.refunded", "ch_legacy");
+  assert.equal(await resolve(), "sub_1");
   assert.equal(
     requests.find((r) => r.path === "/v1/invoices")!.query.get("customer"),
     "cus_1",
@@ -543,15 +735,17 @@ test("legacy charge recovery follows customer invoices and payment pages without
     list("/v1/invoice_payments", [{ id: "ip_unrelated", payment: {} }]),
   );
   assert.equal(await source.resolveSubscription(event), null);
+  assert.equal(await resolve(), null);
   routes.set("GET /v1/charges/ch_legacy", () => ({
     id: "ch_legacy",
     customer: null,
     payment_intent: null,
   }));
   assert.equal(await source.resolveSubscription(event), null);
+  assert.equal(await resolve(), null);
 });
 
-test("checkout rejects inactive and nonannual prices before creating Stripe customers or sessions", async () => {
+test("checkout rejects inactive, unsupported and free prices before creating Stripe customers or sessions", async () => {
   let candidate = 0;
   for (const price of [
     {
@@ -564,21 +758,34 @@ test("checkout rejects inactive and nonannual prices before creating Stripe cust
     {
       active: true,
       type: "recurring",
-      recurring: { interval: "month", interval_count: 1 },
+      recurring: { interval: "week", interval_count: 1 },
     },
     {
       active: true,
       type: "recurring",
       recurring: { interval: "year", interval_count: 2 },
     },
+    {
+      active: true,
+      type: "recurring",
+      recurring: { interval: "month", interval_count: 1 },
+      unit_amount: 0,
+    },
+    {
+      active: true,
+      type: "recurring",
+      recurring: { interval: "month", interval_count: 1 },
+      unit_amount: null,
+    },
   ]) {
     routes.set("GET /v1/prices/price_one", () => ({
       id: "price_one",
+      unit_amount: 1000,
       ...price,
     }));
     await assert.rejects(
       adapter().checkout(plan, `new${candidate++}@example.test`),
-      /active annual/,
+      { code: "invalid_price" },
     );
   }
   assert.equal(
@@ -586,6 +793,20 @@ test("checkout rejects inactive and nonannual prices before creating Stripe cust
       (r) => r.path === "/v1/customers" || r.path === "/v1/checkout/sessions",
     ),
     false,
+  );
+});
+
+test("checkout starts a subscription for a paid monthly price", async () => {
+  routes.set("GET /v1/prices/price_one", () => ({
+    active: true,
+    type: "recurring",
+    unit_amount: 1000,
+    recurring: { interval: "month", interval_count: 1 },
+  }));
+  await adapter().checkout(plan, "monthly@example.test");
+  assert.equal(
+    requests.find((request) => request.path === "/v1/checkout/sessions")?.body.get("mode"),
+    "subscription",
   );
 });
 
@@ -872,6 +1093,9 @@ test("privacy attribution uses the standalone merchant directly and supports the
     null,
   );
   assert.equal(requests.length, 1);
+  assert.equal(await merchantWorker(source, event => source.resolveSubscription(event), "invoice.paid", "in_guest"), null);
+  standalone.standaloneStripeAccountId = "acct_standalone";
+  assert.equal(await merchantWorker(source, event => source.resolveSubscription(event), "invoice.paid", "in_guest"), null);
 });
 
 test("privacy attribution rejects missing or malformed canonical customer and refund context", async () => {

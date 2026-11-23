@@ -9,7 +9,7 @@ This build setting controls metadata URLs only. Keep `PUBLIC_ORIGIN` configured
 on the API for authentication and checkout. Customer previews are generic,
 exclude account data and request no indexing.
 
-Run the server and a static web runtime behind HTTPS. The server runs the API and database-backed jobs. The web runtime serves independently published Vue assets and forwards API requests on the same origin. SQLite needs persistent local storage; PostgreSQL/MySQL are alternatives. Artifacts live in a private S3-compatible bucket. Redis is an optional cache. Use the [configuration reference](configuration.md) for environment defaults and validation, [CLI reference](cli.md) for automation, and [troubleshooting](troubleshooting.md) for failed setup or delivery.
+Run Entitle behind HTTPS in one of two layouts. The [two-container standalone stack](#quick-start-two-container-stack) builds the app and API into one image behind a Caddy proxy. The split layout runs the server and a static web runtime: the server runs the API and database-backed jobs, and the web runtime serves independently published Vue assets and forwards API requests on the same origin. SQLite needs persistent local storage; PostgreSQL/MySQL are alternatives. Artifacts live in a private S3-compatible bucket. Redis is an optional cache. Use the [configuration reference](configuration.md) for environment defaults and validation, [CLI reference](cli.md) for automation, and [troubleshooting](troubleshooting.md) for failed setup or delivery.
 
 ## Using the hosted service
 
@@ -18,8 +18,8 @@ storage, SMTP or server credentials. Sign in at `/app/seller`, open the emailed
 link in the same browser and create a workspace. For an invited pilot, add a
 product without a paid plan, publish its release and issue complimentary licenses
 from Licenses. Connect your Stripe account from Billing when you are ready to
-sell; create annual recurring prices and configure its Customer Portal before
-adding paid plans. Copy the generated client setup for your product.
+sell; create monthly or annual recurring prices and configure its Customer
+Portal before adding paid plans. Copy the generated client setup for your product.
 Buyers use `/app/t/YOUR_SLUG`; integrations use `/api/v1/tenants/YOUR_SLUG`.
 Create scoped API keys for your own automation, never for distributed clients.
 
@@ -30,10 +30,9 @@ fees. Existing subscriptions retain their original fee. Application fees are
 retained on refunds by default; see [hosted pricing](hosted-pricing.md).
 Your Stripe account receives buyer payments. Entitle is not a merchant of record.
 
-The operator runs application updates, infrastructure, email, backups and restore
-procedures. This repository documents the implementation and planned hosted
-address; it does not establish public launch availability, an SLA or backup
-retention terms. The remaining sections are for the person operating a server.
+The operator runs application updates, infrastructure, email, backups, and
+restore procedures. This repository defines no SLA or backup retention terms.
+The remaining sections are for the person operating a server.
 
 ## Self-hosted standalone
 
@@ -44,6 +43,42 @@ the same dashboard, buyer portal and scoped APIs used by the hosted service.
 There is no platform subscription or application fee; your infrastructure,
 Stripe, storage and email providers may charge separately. Configured capacity
 and security limits remain enforced.
+
+### Quick start: two-container stack
+
+[`deploy/compose.standalone.yaml`](../deploy/compose.standalone.yaml) is the
+shortest path to a running server. It builds
+[`deploy/standalone.Dockerfile`](../deploy/standalone.Dockerfile) into one `app`
+container that serves the API and the standalone app at the root of
+`PUBLIC_ORIGIN`, and runs a `proxy` container with Caddy for automatic HTTPS. The
+image includes the frontend, so there is no frontend release pack or activate
+step and no separate web runtime.
+
+1. Point DNS for the `PUBLIC_ORIGIN` host at the server and open ports 80 and 443.
+2. Copy `.env.example` to `.env` with mode 0600. Supply the standalone settings
+   below and the shared production settings in
+   [shared production infrastructure](#shared-production-infrastructure). Set
+   `ENTITLE_DATA_DIR` to an absolute persistent host directory. The copied file
+   sets `PRIVILEGED_AUTH_POLICY=passkey`; omit the line or set `hardware` to
+   require operator-inventoried hardware keys instead.
+3. Create `${ENTITLE_DATA_DIR}/app` owned by UID/GID 1000, then start the stack:
+
+```sh
+sudo install -d -o 1000 -g 1000 /srv/entitle/app   # ENTITLE_DATA_DIR=/srv/entitle
+docker compose --env-file .env -f deploy/compose.standalone.yaml up -d --build
+```
+
+The `app` container mounts only `${ENTITLE_DATA_DIR}/app` at `/data`. Caddy keeps
+its ACME account and certificate keys in the sibling `caddy-data` and
+`caddy-config` directories, which the application never mounts. Because the bind
+mount sets `create_host_path: false`, a missing `app` directory stops startup
+instead of creating an empty database. The stack sets `TRUST_PROXY=uniquelocal`
+because Caddy is the only other container on its private network and Docker
+assigns the subnet; the app publishes no ports. Compose sets `NODE_ENV`,
+`LOCAL_BILLING=false`, `DATA_DIR`, `WORK_DIR`, `WEB_DIR`, and an empty
+`APP_BASE_PATH` for you. `ENTITLE_MEMORY_LIMIT` sets the app memory limit,
+default `768m`. To apply an upgrade, pull the new source and rerun the same
+`up -d --build` command after taking a backup.
 
 Start from `.env.example` and supply all shared production settings below.
 This fragment selects the mode and owner; it is not a complete environment:
@@ -76,8 +111,8 @@ bypass the guard. Keep the same Stripe account when restoring merchant data.
 For production payments, set `LOCAL_BILLING=false`, matching
 `STRIPE_SECRET_KEY` / `STRIPE_PUBLISHABLE_KEY`, `STRIPE_LIVE_MODE` and
 `STRIPE_WEBHOOK_SECRET`. Register the signed merchant webhook on your Stripe
-account, using the events listed under buyer billing below. Configure annual
-recurring prices and your account's Customer Portal. Do not reuse a Connect
+account, using the events listed under buyer billing below. Configure monthly or
+annual recurring prices and your account's Customer Portal. Do not reuse a Connect
 webhook secret for the merchant endpoint.
 
 | Standalone endpoint       | URL                                               |
@@ -113,7 +148,8 @@ by those terms. Enabling hosted mode does not grant additional license rights.
 
 ## Independent marketing and application sites
 
-Self-hosting needs only `pnpm build:server` and `pnpm build:web`. The app-only web
+The standalone Compose stack builds the app into its image. The split layout
+needs only `pnpm build:server` and `pnpm build:web`. The app-only web
 artifact opens the seller dashboard at `/`, provides customer routes under `/t/`,
 and includes local documentation. It contains no marketing entry point. The
 marketing site is optional and has its own `pnpm build:marketing` target and
@@ -149,11 +185,11 @@ the hosted artifact and retains explicit compatibility with older single-site re
 
 ## Shared production infrastructure
 
-Set `PUBLIC_ORIGIN` to your actual HTTPS service origin. Use your own domain for standalone; `https://entitle.doublesharp.com` is the planned hosted deployment. This is the common runtime origin for the application, HTTPS proxy, emailed links, Stripe callbacks and package URLs. There is no separate proxy hostname setting. Public brand text and the planned hosted link are shared in [../src/site.ts](../src/site.ts). Keep local development at `http://localhost:3211`. Recording this hostname does not provision DNS, certificates or a production deployment.
+Set `PUBLIC_ORIGIN` to your actual HTTPS service origin. Use your own domain for standalone; `https://entitle.doublesharp.com` is the planned hosted deployment. This is the common runtime origin for the application, HTTPS proxy, emailed links, Stripe callbacks and package URLs. There is no separate proxy hostname setting. Public brand text and the planned hosted link are shared in [packages/shared/site.ts](../packages/shared/site.ts). Keep local development at `http://localhost:3211`. Recording this hostname does not provision DNS, certificates or a production deployment.
 
-Create a private persistent directory owned by UID/GID 1000, copy `.env.example` to `.env`, and protect it with mode 0600. Set `ENTITLE_DATA_DIR`, `PUBLIC_ORIGIN`, `NODE_ENV=production`, `LOCAL_BILLING=false`, `DATA_DIR=/data`, `WORK_DIR=/data/work` and `WEB_DIR=/app/web`. Set `ENTITLE_PUBLIC_HOST` to the hostname in `PUBLIC_ORIGIN` and `ENTITLE_WEB_RELEASE_DIR` to the absolute frontend publication directory. The Compose network uses a fixed subnet; ensure it is unused. The API trusts only the web runtime at `TRUST_PROXY=172.30.81.4`; the web runtime trusts Caddy at `172.30.81.2/32` for client IPs. Production requires an explicit deliverable `MAIL_FROM` and matching Stripe secret/publishable key modes. SMTP requires TLS in production, including STARTTLS when `SMTP_SECURE=false`.
+Create a private persistent directory for `ENTITLE_DATA_DIR` and an `app` subdirectory inside it owned by UID/GID 1000; both Compose layouts mount only `${ENTITLE_DATA_DIR}/app`. Copy `.env.example` to `.env` and protect it with mode 0600. For the split layout, set `ENTITLE_DATA_DIR`, `PUBLIC_ORIGIN`, `NODE_ENV=production`, `LOCAL_BILLING=false`, `DATA_DIR=/data`, `WORK_DIR=/data/work` and `WEB_DIR=/app/web`. Set `ENTITLE_PUBLIC_HOST` to the hostname in `PUBLIC_ORIGIN` and `ENTITLE_WEB_RELEASE_DIR` to the absolute frontend publication directory. The split layout's Compose network uses a fixed subnet; ensure it is unused. The API trusts only the web runtime at `TRUST_PROXY=172.30.81.4`; the web runtime trusts Caddy at `172.30.81.2/32` for client IPs. Production requires an explicit deliverable `MAIL_FROM` and matching Stripe secret/publishable key modes. SMTP requires TLS in production, including STARTTLS when `SMTP_SECURE=false`.
 
-Generate independent `APP_SECRET` (64 hex) and `OPERATOR_TOKEN` (at least 32 random characters). Back up APP_SECRET permanently: outbox credentials and activation retry material depend on it. Supply SMTP host/port/user/password/from; port 587 uses STARTTLS, port 465 normally needs SMTP_SECURE=true. Mailpit is development-only.
+Generate independent `APP_SECRET` (64 hex) and `OPERATOR_TOKEN` (at least 32 random characters). Back up APP_SECRET permanently: outbox credentials and activation retry material depend on it. Choose `PRIVILEGED_AUTH_POLICY` before onboarding publishers: `hardware`, the default when the variable is omitted, requires operator-inventoried hardware keys for privileged actions, and `passkey`, the value in `.env.example`, lets sellers approve them with their own passkeys. See [configuration](configuration.md#deployment-and-identity). Supply SMTP host/port/user/password/from; port 587 uses STARTTLS, port 465 normally needs SMTP_SECURE=true. Mailpit is development-only.
 
 Configure `S3_BUCKET`, `S3_REGION`, optional `S3_ENDPOINT`, and credentials through `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY` or the AWS credential chain. Some providers require `S3_FORCE_PATH_STYLE=true`. Production rejects HTTP endpoints, embedded credentials, queries and fragments. Sellers cannot override storage settings or choose object keys. Block public bucket/object access; enable provider encryption, versioning and independent backups. Restrict the application credential to bucket metadata access and GetObject/PutObject/DeleteObject under `tenants/`. Test your provider's conditional `If-None-Match: *` behavior before use; the local MinIO result does not qualify every provider.
 
@@ -214,7 +250,7 @@ Use the common `PUBLIC_ORIGIN` value when configuring each endpoint:
 
 Expand the variable before entering URLs in Stripe; its dashboard expects complete URLs.
 
-On each connected account, create annual recurring prices and configure its Customer Portal for payment methods, invoices, cancellation and permitted plan changes. Map prices through the tenant seller UI/API/CLI. Downgrades should take effect at period end; upgrades require a paid invoice. Zero-payment invoices and trials never issue initial licenses. Browser success and Elements confirmation never grant entitlement.
+On each connected account, create monthly or annual recurring prices and configure its Customer Portal for payment methods, invoices, cancellation and permitted plan changes. Map prices through the tenant seller UI/API/CLI. Downgrades should take effect at period end; upgrades require a paid invoice. Zero-payment invoices and trials never issue initial licenses. Browser success and Elements confirmation never grant entitlement.
 
 ## Buyer checkout and billing in both versions
 
@@ -292,11 +328,11 @@ Tenant commands require TENANT_SLUG and a scoped expiring TENANT_API_KEY. Remote
 
 Schedule `reconcile` with a billing:reconcile key for `primary` in standalone, or for each seller workspace in hosted mode. For example run tenant reconciliation every six hours through a protected host script invoking the CLI. The process polls durable jobs every five seconds. Hosted platform webhook jobs also use the durable worker queue. The operator command `platform-reconcile TENANT_ID` runs synchronously in its HTTP request, outside the shared worker budgets. Standalone has no platform subscription to reconcile.
 
-`jobs`/`platform-jobs` show safe state. Processing errors retry within a 72-hour window with backoff capped at one hour; `resource_limit` holds require explicit recovery as described above. Failed jobs remain recoverable through individual or bounded bulk retry APIs; explicit retry starts a fresh retry window. Daily mail budgets defer rather than consuming failure retries or discarding encrypted keys. Monitor failed counts and oldest pending jobs. Platform mail defaults to 1,000 attempts per UTC day and seller signup to 500 creations per hour; configure `PLATFORM_DAILY_EMAIL_LIMIT` and `MAX_SELLER_SIGNUPS_PER_HOUR` separately from each tenant's `DAILY_EMAIL_LIMIT`.
+`jobs`/`platform-jobs` show safe state. Processing errors retry within a 72-hour window with backoff capped at one hour; `resource_limit` holds require explicit recovery as described above. Failed jobs remain recoverable through individual or bounded bulk retry APIs; explicit retry starts a fresh retry window. Daily mail budgets defer rather than consuming failure retries or discarding encrypted keys. Monitor failed counts and oldest pending jobs. Platform mail defaults to 1,000 attempts per UTC day each for sign-in links and protected account/security mail (expired sign-in links are canceled without charging the budget), and seller signup defaults to 500 creations per hour; configure `PLATFORM_DAILY_EMAIL_LIMIT` and `MAX_SELLER_SIGNUPS_PER_HOUR` separately from each tenant's `DAILY_EMAIL_LIMIT`.
 
 ## Upgrade and migration
 
-Back up database, objects and APP_SECRET together before migrations. Stop competing application versions. Migrations run under Knex's migration lock and retain populated pre-tenant data in tenant `primary`; prior buyer sessions/login tokens are invalidated. There are no old unscoped API aliases. Update PHP clients to `/api/v1/tenants/SLUG`.
+Back up database, objects and APP_SECRET together before migrations. Compose installations that mounted `ENTITLE_DATA_DIR` itself at `/data` must move the application's files into `${ENTITLE_DATA_DIR}/app` before starting the current Compose files; see [operator maintenance](operator-maintenance.md#move-data-into-the-app-subdirectory). Stop competing application versions. Migrations run under Knex's migration lock and retain populated pre-tenant data in tenant `primary`; prior buyer sessions/login tokens are invalidated. There are no old unscoped API aliases. Update PHP clients to `/api/v1/tenants/SLUG`.
 
 Ship and apply the complete `src/migrations/` directory with each application release. Migrations cover framework identities, commerce, account security, operations, sandboxes, durable events and verified price history. Existing products retain their WordPress identity. Platform checkout attempts and leases prevent independent duplicate subscriptions. Tenant API keys predating migration005 with no expiry fail closed; replace them through the owner's key controls. Existing buyers' purchased time is preserved.
 
@@ -314,7 +350,7 @@ maxmemory/eviction policy. The app never exposes the URL or Redis error details.
 use a different value for separate deployments sharing Redis. Origin/database
 identity and tenant/input hashes further scope keys.
 
-Only annual Stripe price-picker data and already-authorized feed formatting are
+Only Stripe price-picker data and already-authorized feed formatting are
 cached. Feed formatting stays in trusted process memory, even when Redis is
 configured, so remote cache values cannot replace update manifest bytes. With
 Redis enabled, the feed cache has a separate bounded in-process allocation.

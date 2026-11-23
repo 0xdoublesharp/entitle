@@ -287,7 +287,12 @@ export class VerifiedArtifactCache {
         "artifact_cache_timeout",
         "Artifact verification timed out.",
       );
-      const hash = await hashArtifactFile(file, size, timer.progress);
+      const hash = await hashArtifactFile(
+        file,
+        size,
+        timer.progress,
+        controller.signal,
+      );
       check(
         !controller.signal.aborted && hash.checksum === checksum,
         503,

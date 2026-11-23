@@ -38,26 +38,23 @@ export async function commerceAdminRoutes(
       "tenant_denied",
       "Tenant context does not match the authenticated publisher.",
     );
-    return { ...services, tenant };
+    return { ...services, taxSettings: tenant };
   }
   const view = (
-    tenant: ReturnType<CommerceContext>["tenant"] & {
-      automatic_tax?: number;
-      collect_tax_id?: number;
-      collect_billing_address?: number;
-    },
+    tenant: ReturnType<CommerceContext>["tenant"],
     config: ReturnType<CommerceContext>["config"],
+    taxSettings: Pick<typeof tenant, "automatic_tax" | "collect_tax_id" | "collect_billing_address">,
   ) => ({
     settings: {
-      automaticTax: tenant.automatic_tax === 1,
-      collectTaxId: tenant.collect_tax_id === 1,
-      collectBillingAddress: tenant.collect_billing_address === 1,
+      automaticTax: taxSettings.automatic_tax === 1,
+      collectTaxId: taxSettings.collect_tax_id === 1,
+      collectBillingAddress: taxSettings.collect_billing_address === 1,
     },
     features: featureEntitlements(config, tenant),
   });
   app.get("/commerce/settings", limit, async (req) => {
-    const { tenant, config } = await authorize(req, false);
-    return view(tenant, config);
+    const { tenant, config, taxSettings } = await authorize(req, false);
+    return view(tenant, config, taxSettings);
   });
   app.put("/commerce/settings", limit, async (req) => {
     const { db, tenant, config, stripe } = await authorize(req, true);
@@ -82,7 +79,7 @@ export async function commerceAdminRoutes(
         created_at: Date.now(),
       });
     });
-    return view({ ...tenant, ...update }, config);
+    return view(tenant, config, update);
   });
   app.put("/commerce/products/:id/tax-code", limit, async (req) => {
     const { db, tenant, stripe } = await authorize(req, true);

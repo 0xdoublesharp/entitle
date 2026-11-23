@@ -10,6 +10,7 @@ import {
   readdir,
   readFile,
 } from "node:fs/promises";
+import { join } from "node:path";
 import {
   VerifiedArtifactCache,
   hashArtifactFile,
@@ -319,6 +320,41 @@ test("file hashing has a finite deadline", async (t) => {
   t.mock.method(globalThis, "setTimeout", ((callback: () => void) =>
     original(callback, 0)) as typeof setTimeout);
   await assert.rejects(hashArtifactFile(file, 1024 * 1024), /timed out/);
+});
+test("the cache spool deadline cancels stalled verification reads", async (t) => {
+  const f = await fixture(t, { timeoutMs: 10 });
+  const fs = await import("node:fs/promises");
+  const { syncBuiltinESMExports } = await import("node:module");
+  const { Readable, addAbortSignal } = await import("node:stream");
+  const open = fs.open;
+  let entered!: () => void;
+  const reading = new Promise<void>((resolve) => { entered = resolve; });
+  const opens = t.mock.method(fs.default, "open", async (...args: Parameters<typeof open>) => {
+    const handle = await open(...args);
+    t.mock.method(handle, "createReadStream", ({ signal }: { signal?: AbortSignal } = {}) => {
+      const stream = new Readable({ read: entered });
+      return signal ? addAbortSignal(signal, stream) : stream;
+    });
+    return handle;
+  });
+  syncBuiltinESMExports();
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    const failed = assert.rejects(f.cache.open(f.store, identity), { code: "ABORT_ERR" });
+    await reading;
+    t.mock.timers.tick(10);
+    // On an implementation that misses the spool deadline, the hashing timer
+    // still bounds the test and reports a different failure.
+    t.mock.timers.tick(120000);
+    await failed;
+    const [generation] = await readdir(f.directory);
+    assert.ok(generation);
+    assert.deepEqual(await readdir(join(f.directory, generation)), []);
+  } finally {
+    opens.mock.restore();
+    syncBuiltinESMExports();
+  }
+  await consume((await f.cache.open(f.store, identity)).stream);
 });
 test("cache refuses symlink directories and releases a reservation when directory preparation fails", async (t) => {
   const f = await fixture(t);

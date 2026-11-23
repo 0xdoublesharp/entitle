@@ -1,10 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, writeFile, copyFile, rm, symlink } from "node:fs/promises";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { Artifacts } from "../src/artifacts.ts";
+import { Releases } from "../src/releases.ts";
 import { VerifiedArtifactCache } from "../src/artifact-streams.ts";
-import type { ArtifactStore } from "../src/storage.ts";
+import { InMemoryArtifactStore, type ArtifactStore } from "../src/storage.ts";
 import { isolatedDatabase } from "./helpers/database.ts";
 import { migrate } from "../src/db.ts";
 import { primaryTenant } from "./helpers/tenant.ts";
@@ -256,4 +257,152 @@ test("publication reservation budgets scale beyond fifteen minutes for larger ve
   };
   const result = await f.service.publish(f.input);
   assert.equal(Number(result.asset.size), 32 * 1024 ** 2);
+});
+
+test("WordPress publication rejects missing and expired reservations after storage verification", async (t) => {
+  const f = await fixture(t);
+  await f.db("products").where({ id: "p" }).update({ framework: "wordpress" });
+  await writeFile(
+    f.file,
+    zipBytes([
+      {
+        name: "app/app.php",
+        data: "<?php\n/*\nPlugin Name: App\nVersion: 1.0.0\n*/",
+      },
+    ]),
+  );
+  const store = new InMemoryArtifactStore();
+  const releases = new Releases(f.db, store, primaryTenant, f.directory);
+  const get = store.get.bind(store);
+  const publication = {
+    product: "app",
+    version: "1.0.0",
+    file: f.file,
+    changelog: "Release notes",
+    minWp: "6.0",
+    minPhp: "8.0",
+    minFree: "1.0",
+    tested: "6.9",
+  };
+  for (const change of ["expired", "missing"] as const) {
+    const readback = t.mock.method(
+      store,
+      "get",
+      async (...args: Parameters<typeof get>) => {
+        const bytes = await get(...args);
+        const reservations = f.db("upload_reservations").where({ id: args[1] });
+        if (change === "expired") await reservations.update({ expires_at: 0 });
+        else await reservations.delete();
+        return bytes;
+      },
+    );
+    try {
+      await assert.rejects(releases.publish(publication), {
+        status: 409,
+        code: "upload_expired",
+      });
+      assert.equal(await releases.latest("p"), undefined);
+      assert.deepEqual(await f.db("upload_reservations"), []);
+    } finally {
+      readback.mock.restore();
+    }
+  }
+  const authorization: Array<boolean | undefined> = [];
+  const released = await releases.publish(publication, async (_tx, commit) => {
+    authorization.push(commit);
+  });
+  assert.deepEqual(authorization, [false, true]);
+  const queries: string[] = [];
+  const track = ({ sql }: { sql: string }) => {
+    queries.push(sql);
+  };
+  f.db.on("query", track);
+  try {
+    assert.equal((await releases.latest("p"))?.changelog, publication.changelog);
+    assert.equal(queries.length, 2);
+    assert.match(
+      queries[0]!,
+      /^select [`"]id[`"], [`"]version[`"] from [`"]releases[`"]/i,
+    );
+  } finally {
+    f.db.removeListener("query", track);
+  }
+  await releases.withdraw(released.id);
+  await releases.withdraw(released.id);
+  assert.equal(await releases.latest("p"), undefined);
+});
+
+test("expired reservation remains invalidated during remote deletion and after cleanup failure", async (t) => {
+  const f = await fixture(t);
+  const key = { tenant_id: "primary", id: randomUUID() };
+  await f.db("upload_reservations").insert({ ...key, expires_at: 1, bytes: 1 });
+  const store = new InMemoryArtifactStore();
+  const releases = new Releases(f.db, store, primaryTenant, f.directory);
+  const remove = t.mock.method(store, "delete", async () => {
+    const row = await f.db("upload_reservations").where(key).first();
+    assert.equal(Number(row.expires_at), 0);
+    throw Error("provider unavailable");
+  });
+  await assert.rejects(releases.cleanup(), /provider unavailable/);
+  assert.equal(remove.mock.callCount(), 1);
+  remove.mock.restore();
+  await releases.cleanup();
+  assert.deepEqual(await f.db("upload_reservations"), []);
+
+  await f.db("upload_reservations").insert([
+    { ...key, expires_at: 0, bytes: 1 },
+    { ...key, id: randomUUID(), expires_at: 0, bytes: 1 },
+  ]);
+  const concurrentCleanup = t.mock.method(
+    store,
+    "delete",
+    async (_tenant: string, id: string) => {
+      await f.db("upload_reservations")
+        .where({ tenant_id: "primary" })
+        .whereNot("id", id)
+        .delete();
+    },
+  );
+  await releases.cleanup();
+  assert.equal(concurrentCleanup.mock.callCount(), 1);
+  assert.deepEqual(await f.db("upload_reservations"), []);
+});
+
+test("large native TAR archives can expand past the small-package floor", async (t) => {
+  const { directory } = await fixture(t);
+  const { createWriteStream } = await import("node:fs");
+  const { randomBytes } = await import("node:crypto");
+  const { Readable } = await import("node:stream");
+  const { pipeline } = await import("node:stream/promises");
+  const { createGzip } = await import("node:zlib");
+  const mib = 1024 ** 2;
+  const block = Buffer.concat([randomBytes(mib), Buffer.alloc(3 * mib)]);
+  const blocks = 65;
+  const header = Buffer.alloc(512);
+  header.write("App.app/Contents/app");
+  header.write((block.length * blocks).toString(8).padStart(11, "0"), 124);
+  header.fill(32, 148, 156);
+  header.write("0", 156);
+  header.write("ustar\0", 257);
+  const checksum = header.reduce((sum, byte) => sum + byte, 0);
+  header.write(checksum.toString(8).padStart(6, "0"), 148);
+  header[154] = 0;
+  const file = directory + "/app.tar.gz";
+  function* archive() {
+    yield header;
+    for (let i = 0; i < blocks; i++) yield block;
+    yield Buffer.alloc(1024);
+  }
+  await pipeline(
+    Readable.from(archive()),
+    createGzip({ level: 1 }),
+    createWriteStream(file),
+  );
+  await verifyArtifact(
+    "sparkle",
+    {},
+    "1.0.0",
+    { target: "darwin-arm64", filename: "app.tar.gz", changelog: "" },
+    file,
+  );
 });

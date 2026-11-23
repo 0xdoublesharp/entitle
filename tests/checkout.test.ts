@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { CheckoutController, appearance } from "../web/checkout.ts";
+import { CheckoutController, appearance, planPrice } from "../web/checkout.ts";
 import type {
   CheckoutLoader,
   CheckoutSession,
@@ -348,4 +348,29 @@ test("standalone Checkout initializes Stripe without a connected-account option"
   assert.deepEqual(options, {});
   assert.equal(controller.state.phase, "ready");
   controller.dispose();
+});
+
+test("plan prices follow Stripe's minor-unit encoding rather than Intl display digits", () => {
+  const price = (unit_amount: number, currency: string) =>
+    planPrice({ unit_amount, currency, billing_interval: "month" });
+  for (const [amount, currency, expected] of [
+    [4999, "usd", "$49.99"],
+    [1200, "jpy", "¥1,200"],
+    [1200, "krw", "₩1,200"],
+    [12345, "kwd", "KWD\u00a012.345"],
+    [12345, "bhd", "BHD\u00a012.345"],
+    [12345, "jod", "JOD\u00a012.345"],
+    [12345, "omr", "OMR\u00a012.345"],
+    [12345, "tnd", "TND\u00a012.345"],
+    // Stripe requires two-decimal amounts for ISK and UGX: 500 is 5 ISK.
+    [500, "isk", "ISK\u00a05"],
+    [123400, "ISK", "ISK\u00a01,234"],
+    [500000, "ugx", "UGX\u00a05,000"],
+    // Intl shows no minor units for these, but Stripe still encodes hundredths.
+    [50000, "huf", "HUF\u00a0500"],
+    [1500000, "idr", "IDR\u00a015,000"],
+    [990, "clp", "CLP\u00a0990"],
+  ] as const)
+    // Intl separates currency codes from amounts with a no-break space.
+    assert.equal(price(amount, currency), `${expected} / month`, currency);
 });

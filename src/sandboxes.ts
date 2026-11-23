@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { Config } from "./config.ts";
 import { createTenant, lock, type DB, type Tenant, type Tx } from "./db.ts";
 import type { SellerSession } from "./platform-auth.ts";
+import { currentAuthSession } from "./auth-policy.ts";
 import { check } from "./errors.ts";
 import { StripeBilling } from "./stripe.ts";
 import { tenantAvailable } from "./tenants.ts";
@@ -61,20 +62,15 @@ export class PublisherSandboxes {
     );
   }
   private async owner(tx: Tx, parentId: string, seller: SellerSession) {
-    const session = await tx("seller_sessions")
-      .where({ id: seller.sessionHash, user_id: seller.user.id })
-      .andWhere("expires_at", ">", Date.now())
-      .first();
+    const { row } = await currentAuthSession(tx, seller);
     check(
-      session,
-      401,
-      "seller_login_required",
-      "An active verified seller session is required.",
+      !row.recovery_id,
+      403,
+      "recovery_restricted",
+      "Complete account recovery before creating a sandbox.",
     );
     const member = await tx("seller_memberships")
-      .join("seller_users", "seller_users.id", "seller_memberships.user_id")
       .where({ tenant_id: parentId, user_id: seller.user.id, role: "owner" })
-      .whereNotNull("verified_at")
       .first();
     check(
       member,

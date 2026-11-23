@@ -190,14 +190,16 @@ export class OutboundWebhooks {
     check(Number.isInteger(limit) && limit>=1 && limit<=20,400,"invalid_limit","Limit must be between 1 and 20.");
     check(Number.isInteger(budgetMs) && budgetMs>=1 && budgetMs<=20000,400,"invalid_budget","Budget must be between 1 and 20000 milliseconds.");
     const controller=new AbortController(),signal=controller.signal;
+    const deadline = performance.now() + budgetMs;
     const timer=setTimeout(()=>controller.abort(),budgetMs);
     try { for(let i=0;i<limit && !signal.aborted;i++) {
+      if (i > 0 && deadline - performance.now() < 1500) break;
       const claimed=await this.db.transaction(async tx=>{
         await lock(tx,"work",this.tenantId);const now=this.now();
         await tx("outbound_deliveries").where({tenant_id:this.tenantId}).whereIn("state",["pending","running"]).andWhere("lease_until","<=",now)
           .andWhere(function(){this.where("deadline_at","<=",now).orWhere("attempts",">=",12);}).update({state:"failed",lease_until:0,lease_owner:null,last_error:"retry_expired"});
         const delivery=await tx<Delivery>("outbound_deliveries").where({tenant_id:this.tenantId}).whereIn("state",["pending","running"])
-          .andWhere("available_at","<=",now).andWhere("lease_until","<=",now).orderBy("created_at").orderBy("id").first();
+          .andWhere("available_at","<=",now).andWhere("lease_until","<=",now).orderBy("available_at").orderBy("created_at").orderBy("id").first();
         if(!delivery) return;
         const endpoint=await tx<Endpoint>("outbound_endpoints").where({tenant_id:this.tenantId,id:delivery.endpoint_id,active:1,generation:delivery.generation}).first();
         if(!endpoint) {await tx("outbound_deliveries").where({tenant_id:this.tenantId,id:delivery.id}).update({state:"canceled",lease_until:0,lease_owner:null,last_error:"endpoint_changed"});return {skip:true} as const;}
@@ -220,8 +222,25 @@ export class OutboundWebhooks {
         check(status>=200 && status<300,502,"webhook_response","Webhook response was not successful.");
         await this.db("outbound_deliveries").where({tenant_id:this.tenantId,id:delivery.id,state:"running",lease_owner:owner}).update({state:"sent",lease_until:0,lease_owner:null,last_error:null});
       } catch {
+        const current = this.db("outbound_deliveries")
+          .where({
+            tenant_id: this.tenantId,
+            id: delivery.id,
+            state: "running",
+            lease_owner: owner,
+          });
+        if (signal.aborted) {
+          await current.update({
+            state: "pending",
+            attempts: Number(delivery.attempts),
+            available_at: Math.min(Number(delivery.deadline_at), this.now() + 5000),
+            lease_until: 0,
+            lease_owner: null,
+          });
+          break;
+        }
         const now=this.now(),attempts=Number(delivery.attempts)+1;
-        await this.db("outbound_deliveries").where({tenant_id:this.tenantId,id:delivery.id,state:"running",lease_owner:owner}).update({state:now>=Number(delivery.deadline_at)||attempts>=12?"failed":"pending",lease_until:0,lease_owner:null,last_error:"delivery_failed",available_at:Math.min(Number(delivery.deadline_at),now+Math.min(3600000,5000*2**Math.min(attempts-1,10)))});
+        await current.update({state:now>=Number(delivery.deadline_at)||attempts>=12?"failed":"pending",lease_until:0,lease_owner:null,last_error:"delivery_failed",available_at:Math.min(Number(delivery.deadline_at),now+Math.min(3600000,5000*2**Math.min(attempts-1,10)))});
       }
     }} finally { clearTimeout(timer); }
   }

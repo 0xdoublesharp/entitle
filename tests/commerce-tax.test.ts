@@ -45,6 +45,8 @@ for (const deploymentMode of ["standalone", "hosted"] as const)
               id: "price_annual",
               active: true,
               type: "recurring",
+              unit_amount: 1200,
+              currency: "usd",
               product: "prod_tax",
               recurring: { interval: "year", interval_count: 1 },
             }

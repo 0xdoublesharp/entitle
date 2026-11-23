@@ -2,19 +2,34 @@ import { defineComponent, h, ref, type PropType } from "vue";
 import { type Tenant, workspaceArchived } from "../packages/shared/tenant.ts";
 import type { ApiClient } from "./api.ts";
 import { verifiedRequest } from "./features.ts";
+import type { PrivilegedPolicy } from "./oidc.ts";
+
+const removalVerification: Record<PrivilegedPolicy, string> = {
+  hardware: "Confirm removal with an independently provisioned hardware key.",
+  passkey: "Confirm removal with a passkey or security key on this account.",
+};
 
 export const WorkspaceManager = defineComponent({
   props: {
     tenants: { type: Array as PropType<Tenant[]>, required: true },
     platform: { type: Object as PropType<ApiClient>, required: true },
     busy: Boolean,
+    privilegedPolicy: {
+      type: String as PropType<PrivilegedPolicy>,
+      default: "hardware",
+    },
     execute: {
       type: Function as PropType<(action: () => Promise<void>) => void>,
       required: true,
     },
     confirm: {
       type: Function as PropType<
-        (title: string, label: string, action: () => Promise<void>) => void
+        (
+          title: string,
+          label: string,
+          action: () => Promise<void>,
+          description?: string,
+        ) => void
       >,
       required: true,
     },
@@ -52,9 +67,10 @@ export const WorkspaceManager = defineComponent({
       };
       if (archive)
         props.confirm(
-          `Archive ${tenant.name}? Existing access and billing will continue.`,
+          `Archive ${tenant.name}?`,
           "Confirm archive",
           action,
+          "Existing licenses, updates, and billing continue. You can restore the workspace anytime.",
         );
       else props.execute(action);
     };
@@ -173,10 +189,7 @@ export const WorkspaceManager = defineComponent({
                         "p",
                         "This workspace is empty. Permanent removal deletes its settings and unused API keys, releases its address and frees an account slot. Security audit records are retained. This cannot be undone.",
                       ),
-                      h(
-                        "p",
-                        "Confirm removal with an independently provisioned hardware key.",
-                      ),
+                      h("p", removalVerification[props.privilegedPolicy]),
                       h(
                         "form",
                         {
@@ -201,6 +214,7 @@ export const WorkspaceManager = defineComponent({
                                 );
                                 await changed("Workspace removed.");
                               },
+                              "Its settings and unused API keys are deleted, and its address is released.",
                             );
                           },
                         },

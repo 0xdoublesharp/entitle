@@ -364,9 +364,24 @@ test("MCP stdio entrypoint initializes and advertises agent tools", async () => 
   assert.ok(responses.find((item) => item.id === 1)?.result?.protocolVersion);
   const tools = responses.find((item) => item.id === 2)?.result?.tools as {
     name: string;
+    inputSchema: { type: string; properties?: Record<string, unknown>; anyOf?: unknown; oneOf?: unknown };
     annotations: { readOnlyHint: boolean; destructiveHint: boolean };
   }[];
   assert.ok(tools?.length);
+  for (const { name, inputSchema } of tools) {
+    assert.equal(inputSchema.type, "object", name);
+    assert.equal(inputSchema.anyOf, undefined, name);
+    assert.equal(inputSchema.oneOf, undefined, name);
+  }
+  const reauth = tools.find(({ name }) => name === "entitle_op_owner_reauth_options")!;
+  assert.deepEqual(Object.keys(reauth.inputSchema.properties!).sort(), [
+    "action", "enabled", "factorId", "flowId", "path", "publisher",
+    "publisherId", "purpose", "tenant",
+  ]);
+  for (const name of ["release_publish", "workspace_create", "owner_key_create", "owner_reauth_options"])
+    assert.equal(tools.find((tool) => tool.name === `entitle_op_${name}`)?.annotations.destructiveHint, false);
+  for (const name of ["product_save", "plan_archive", "license_installation_deactivate", "owner_recovery_cancel", "owner_factor_remove", "export_delete", "owner_session_revoke", "buyer_key_replace", "webhook_rotate", "commerce_settings_update", "operations_settings"])
+    assert.equal(tools.find((tool) => tool.name === `entitle_op_${name}`)?.annotations.destructiveHint, true);
   for (const name of [
     "entitle_export_download",
     "entitle_op_buyer_data_export",

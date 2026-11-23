@@ -5,6 +5,8 @@ import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { z } from "zod";
+import { agentOperations } from "../src/agent-operations.ts";
 
 test("MCP tools preserve protocol results, validation and private-file credentials", async (t) => {
   const module =
@@ -43,7 +45,8 @@ test("MCP tools preserve protocol results, validation and private-file credentia
     tokenFile = join(dir, "token");
   await writeFile(tokenFile, token, { mode: 0o600 });
   let failure: unknown,
-    blank = false;
+    blank = false,
+    forbidden = false;
   globalThis.fetch = async (url) => {
     if (failure) throw failure;
     const path = new URL(String(url)).pathname;
@@ -59,6 +62,8 @@ test("MCP tools preserve protocol results, validation and private-file credentia
             : `de-seller-session=${token}; Path=/`,
         },
       });
+    if (path === "/api/v1/platform/me" && forbidden)
+      return new Response("<html>Forbidden</html>", { status: 403 });
     if (path.endsWith("/me"))
       return Response.json({ csrfToken: "fixture-csrf" });
     if (path.endsWith("/verification/consume"))
@@ -79,6 +84,28 @@ test("MCP tools preserve protocol results, validation and private-file credentia
   assert.ok(
     listing.tools.some((tool) => tool.name === "entitle_owner_login_start"),
   );
+  for (const name of ["buyer_key_replace", "webhook_rotate", "commerce_settings_update", "operations_settings"])
+    assert.equal(listing.tools.find(tool => tool.name === `entitle_op_${name}`)?.annotations?.destructiveHint, true, name);
+  const variantTool = agentOperations["owner-reauth-options"]!;
+  const originalSchema = variantTool.schema;
+  try {
+    const optional = z.object({ value: z.string().optional() });
+    const required = z.object({ value: z.string() });
+    for (const options of [[optional, required], [required, optional]] as const) {
+      variantTool.schema = z.union([...options, z.string()]);
+      const { tools } = await client.listTools();
+      const schema = tools.find(tool => tool.name === "entitle_op_owner_reauth_options")?.inputSchema;
+      assert.deepEqual(schema?.required, []);
+      assert.deepEqual(schema?.properties, { value: { type: "string" } });
+    }
+    variantTool.schema = z.union([]);
+    const { tools } = await client.listTools();
+    const schema = tools.find(tool => tool.name === "entitle_op_owner_reauth_options")?.inputSchema;
+    assert.deepEqual(schema?.required, []);
+    assert.deepEqual(schema?.properties, {});
+  } finally {
+    variantTool.schema = originalSchema;
+  }
   const call = (name: string, args?: Record<string, unknown>) =>
     client.callTool({ name, ...(args ? { arguments: args } : {}) });
   const success = async (name: string, args?: Record<string, unknown>) => {
@@ -105,10 +132,15 @@ test("MCP tools preserve protocol results, validation and private-file credentia
     sessionFile: ownerSession,
   });
   await success("entitle_owner_session_refresh", { sessionFile: ownerSession });
+  forbidden = true;
+  const denied = await call("entitle_owner_session_refresh", { sessionFile: ownerSession });
+  assert.equal(denied.isError, true);
+  assert.match(JSON.stringify(denied), /Seller session lookup returned 403/);
+  forbidden = false;
   const proof = join(dir, "proof-input");
   await writeFile(
     proof,
-    JSON.stringify({ purpose: "api_keys", token: "verification" }),
+    JSON.stringify({ purpose: "billing", token: "verification" }),
     { mode: 0o600 },
   );
   await success("entitle_owner_verification_consume", {
@@ -145,6 +177,11 @@ test("MCP tools preserve protocol results, validation and private-file credentia
     body: { name: "Plugin" },
   });
   await success("entitle_op_reports");
+  await success("entitle_op_plan_archive", { id: "plan", archived: false });
+  await success("entitle_op_license_installation_deactivate", {
+    id: "license",
+    installationId: "installation",
+  });
   await success("entitle_features", { args: [] });
   blank = true;
   await success("entitle_op_catalog", {});

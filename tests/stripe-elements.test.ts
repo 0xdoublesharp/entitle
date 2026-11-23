@@ -15,7 +15,7 @@ test("Elements sessions use canonical annual prices and the connected account wi
     const chunks:Buffer[]=[];for await(const chunk of req)chunks.push(chunk);
     requests.push({path:req.url!,account:req.headers["stripe-account"],body:new URLSearchParams(Buffer.concat(chunks).toString())});
     res.setHeader("content-type","application/json");
-    res.end(JSON.stringify(req.url!.startsWith("/v1/prices/")?{active:true,type:"recurring",recurring:{interval:"year",interval_count:1}}:req.url==="/v1/customers"?{id:"cus_elements"}:{id:"cs_elements",client_secret:missingSecret?null:"cs_elements_secret_fixture"}));
+    res.end(JSON.stringify(req.url!.startsWith("/v1/prices/")?{active:true,type:"recurring",unit_amount:1200,recurring:{interval:"year",interval_count:1}}:req.url==="/v1/customers"?{id:"cus_elements"}:{id:"cs_elements",client_secret:missingSecret?null:"cs_elements_secret_fixture"}));
   });
   await new Promise<void>(resolve=>server.listen(0,"127.0.0.1",resolve));
   try{

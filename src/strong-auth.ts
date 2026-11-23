@@ -31,6 +31,9 @@ import {
   bumpAuthGeneration,
   approvedHardware,
   authNotice,
+  passkeyEligible,
+  privilegedRestricted,
+  sessionFactors,
   type AuthFactor,
 } from "./auth-policy.ts";
 
@@ -76,6 +79,10 @@ export class StrongAuth {
   private async current(tx: Tx, session: SellerSession) {
     await currentAuthSession(tx, session);
   }
+  /** Read at call time so operators (and tests) can change the policy without rebuilding. */
+  get privilegedPolicy() {
+    return this.auth.config.privilegedAuthPolicy ?? "hardware";
+  }
 
   private async attempts(req: FastifyRequest) {
     const session = await this.auth.seller(req, true, true);
@@ -101,11 +108,8 @@ export class StrongAuth {
     const session = await this.auth.seller(req, false, true);
     return this.db.transaction(async (tx) => {
       const { row, user } = await currentAuthSession(tx, session);
-      const factors = tx("seller_factors").where({ user_id: user.id });
-      if (row.recovery_id) {
-        await activeRecovery(tx, session);
-        factors.andWhere({ recovery_id: row.recovery_id });
-      }
+      if (row.recovery_id) await activeRecovery(tx, session);
+      const factors = await sessionFactors(tx, user.id, row.recovery_id);
       const approved = await approvedHardware(
         tx,
         user.id,
@@ -114,25 +118,25 @@ export class StrongAuth {
       const pendingRecoveries = await tx("auth_recoveries")
         .where({ user_id: user.id, state: "restricted" })
         .select("id", "mode", "not_before");
+      const privilegedPolicy = this.privilegedPolicy;
       return {
         pendingRecoveries,
         emailLoginEnabled: !user.email_login_disabled,
         recoveryRestricted: !!row.recovery_id,
+        privilegedPolicy,
+        // Mirrors assertCapability for oidc.* and account.privileged intents.
         privilegedReady:
-          !Number(user.recovered_ordinary) &&
-          !Number(user.privileged_suspended) &&
-          approved.length >= 2,
-        factors: (
-          await factors.select(
-            "id",
-            "kind",
-            "name",
-            "created_at",
-            "provenance",
-            "recovery_id",
-          )
-        ).map((f) => ({
-          ...f,
+          !privilegedRestricted(user) &&
+          (privilegedPolicy === "passkey"
+            ? factors.some(passkeyEligible)
+            : approved.length >= 2),
+        factors: factors.map((f) => ({
+          id: f.id,
+          kind: f.kind,
+          name: f.name,
+          created_at: f.created_at,
+          provenance: f.provenance,
+          recovery_id: f.recovery_id,
           hardwareApproved: approved.some((k) => k.id === f.id),
         })),
       };
@@ -236,6 +240,8 @@ export class StrongAuth {
       proof,
       intent,
       this.auth.config.secret,
+      true,
+      this.privilegedPolicy,
     );
     await this.audit(tx, session.user.id, "seller.reauthentication.used", {
       action: intent.action,
@@ -257,9 +263,7 @@ export class StrongAuth {
       );
       return;
     }
-    const factors = await tx("seller_factors").where({
-      user_id: session.user.id,
-    });
+    const factors = await sessionFactors(tx, session.user.id, null);
     check(
       factors.length < 10,
       409,
@@ -301,9 +305,7 @@ export class StrongAuth {
       });
       check(
         enabled ||
-          (await tx("seller_factors")
-            .where({ user_id: session.user.id })
-            .first()),
+          (await sessionFactors(tx, session.user.id, null).first()),
         409,
         "login_lockout",
         "Enroll a passkey or security key before disabling email sign-in.",
@@ -326,15 +328,15 @@ export class StrongAuth {
         action: "security.remove",
         factorId,
       });
-      const factor = await tx("seller_factors")
-        .where({ id: factorId, user_id: session.user.id })
+      const factor = await sessionFactors(tx, session.user.id, null)
+        .where({ id: factorId })
         .first();
       check(factor, 404, "not_found", "Security factor not found.");
       const user = await tx<SellerUser>("seller_users")
         .where({ id: session.user.id })
         .first();
-      const remaining = await tx("seller_factors")
-        .where({ user_id: session.user.id })
+      // A pending recovery key cannot sign in a normal session, so it never counts.
+      const remaining = await sessionFactors(tx, session.user.id, null)
         .whereNot({ id: factorId })
         .first();
       check(
@@ -562,9 +564,14 @@ export class StrongAuth {
     await this.attempts(req);
     return this.session(req, async (tx, session) => {
       await this.enrollment(req, tx, session);
-      const existing = await tx<Factor>("seller_factors").where({
-        user_id: session.user.id,
-      });
+      // Hint only the credentials on this side of the recovery boundary;
+      // confirmation still rejects duplicates across every stored factor.
+      const live = await currentAuthSession(tx, session);
+      const existing = await sessionFactors(
+        tx,
+        session.user.id,
+        live.row.recovery_id ?? null,
+      );
       const options = await generateRegistrationOptions({
         rpName: "Entitle",
         rpID: new URL(this.auth.config.origin).hostname,
@@ -617,15 +624,13 @@ export class StrongAuth {
       const recovery = (await currentAuthSession(tx, session)).row.recovery_id
         ? await activeRecovery(tx, session)
         : null;
-      const count = await tx("seller_factors")
-        .where({
-          user_id: session.user.id,
-          ...(recovery ? { recovery_id: recovery.id } : {}),
-        })
-        .count("* as count")
-        .first();
+      const existing = await sessionFactors(
+        tx,
+        session.user.id,
+        recovery?.id ?? null,
+      ).select("id");
       check(
-        Number(count!.count) < 10,
+        existing.length < 10,
         409,
         "factor_limit",
         "At most ten security factors are allowed.",
@@ -709,10 +714,11 @@ export class StrongAuth {
     await this.attempts(req);
     return this.session(req, async (tx, session) => {
       const live = await currentAuthSession(tx, session);
-      const factors = await tx<Factor>("seller_factors").where({
-        user_id: session.user.id,
-        ...(live.row.recovery_id ? { recovery_id: live.row.recovery_id } : {}),
-      });
+      const factors = await sessionFactors(
+        tx,
+        session.user.id,
+        live.row.recovery_id,
+      );
       check(
         factors.length,
         403,
@@ -754,8 +760,13 @@ export class StrongAuth {
         "reauth_required",
         "Start verification again.",
       );
-      const factor = await tx<Factor>("seller_factors")
-        .where({ user_id: session.user.id, credential_hash: hash(response.id) })
+      const live = await currentAuthSession(tx, session);
+      const factor = await sessionFactors(
+        tx,
+        session.user.id,
+        live.row.recovery_id,
+      )
+        .where({ credential_hash: hash(response.id) })
         .first();
       check(
         factor,
@@ -821,6 +832,7 @@ export class StrongAuth {
         factor.id,
         challenge.intent!,
         this.auth.config.secret,
+        this.privilegedPolicy,
       );
       const verification = random();
       await tx("account_challenges").insert({

@@ -10,7 +10,7 @@ import { join } from "node:path";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { lock } from "./db.ts";
-import type { Tenant } from "./db.ts";
+import type { DB, License, Plan, Tenant } from "./db.ts";
 import type { TenantContextFor } from "./tenant-api.ts";
 import type { PlatformAuth } from "./platform-auth.ts";
 import type { Tenants } from "./tenants.ts";
@@ -27,11 +27,66 @@ import {
   productActivationKind,
 } from "./licensing.ts";
 import { stripeConfigured } from "./config.ts";
+import { requireTenantCapacity } from "./publication-policy.ts";
+import { isSupportedRecurringPrice } from "./stripe.ts";
 const slug = z
     .string()
     .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/)
     .max(100),
   empty = z.object({}).strict();
+
+type SellerLicense = License & {
+  product_name: string;
+  customer_email: string;
+};
+
+function sellerLicenses(db: DB, tenantId: string) {
+  return db<SellerLicense>("licenses")
+    .join("customers", function () {
+      this.on("customers.id", "=", "licenses.customer_id").andOn(
+        "customers.tenant_id",
+        "=",
+        "licenses.tenant_id",
+      );
+    })
+    .join("products", function () {
+      this.on("products.id", "=", "licenses.product_id").andOn(
+        "products.tenant_id",
+        "=",
+        "licenses.tenant_id",
+      );
+    })
+    .where("licenses.tenant_id", tenantId)
+    .select<SellerLicense[]>("licenses.*", {
+      product_name: "products.name",
+      customer_email: "customers.email",
+    });
+}
+
+function sellerLicense(license: SellerLicense, planName: string | undefined) {
+  return {
+    id: license.id,
+    customer_id: license.customer_id,
+    product_id: license.product_id,
+    site_allowance: license.site_allowance,
+    paid_through: Number(license.paid_through),
+    billing_status: license.billing_status,
+    provenance: license.provenance,
+    expires_at: license.expires_at === null ? null : Number(license.expires_at),
+    internal_note: license.internal_note,
+    issued_at: license.issued_at,
+    revoked: !!license.revoked || !!license.refund_revoked,
+    refund_revoked: license.refund_revoked,
+    suspended: !!license.suspended,
+    product_name: license.product_name,
+    plan_name: planName ?? "Complimentary",
+    customer_email: license.customer_email,
+  };
+}
+
+function localPrice(interval: "month" | "year") {
+  return { unit_amount: 10000, currency: "usd", billing_interval: interval };
+}
 
 export async function sellerRoutes(
   app: FastifyInstance,
@@ -59,7 +114,6 @@ export async function sellerRoutes(
     );
     const mutation = !["GET", "HEAD", "OPTIONS"].includes(req.method);
     const interactive =
-      route.includes("/oidc/publishers") ||
       route.includes("/keys") ||
       route.includes("/stripe/") ||
       route.includes("/platform/") ||
@@ -74,7 +128,7 @@ export async function sellerRoutes(
           : "read"
         : !mutation
           ? "read"
-          : route.endsWith("/products")
+          : route.endsWith("/products") || route.includes("/plans/")
             ? "catalog:write"
             : route.includes("/releases/") || route.includes("/assets/")
               ? "releases:write"
@@ -166,41 +220,18 @@ export async function sellerRoutes(
     });
   }
   app.get("/overview", async (req) => {
-    const { db, tenant, config } = context(req);
+    const { db, tenant, config, licensing } = context(req);
     const products = await db("products").where({ tenant_id: tenant.id });
-    const plans = Map.groupBy(
-      await db("plans").where({ tenant_id: tenant.id }),
-      (plan) => plan.product_id,
-    );
+    const licenses: SellerLicense[] = [];
+    for (const row of await sellerLicenses(db, tenant.id))
+      licenses.push({ ...row, ...(await licensing.effective(row)) });
+    const planRows = await db<Plan>("plans").where({ tenant_id: tenant.id });
+    const plans = Map.groupBy(planRows, (plan) => plan.product_id);
+    const planNames = new Map(planRows.map((plan) => [plan.id, plan.name]));
     for (const p of products) {
       p.frameworkConfig = JSON.parse(p.framework_config);
       p.plans = plans.get(p.id) ?? [];
     }
-    const licenses = await db("licenses")
-      .join("customers", "customers.id", "licenses.customer_id")
-      .join("products", "products.id", "licenses.product_id")
-      .leftJoin("plans", "plans.id", "licenses.plan_id")
-      .where("licenses.tenant_id", tenant.id)
-      .select(
-        "licenses.id",
-        "licenses.customer_id",
-        "licenses.product_id",
-        "licenses.site_allowance",
-        "licenses.paid_through",
-        "licenses.billing_status",
-        "licenses.provenance",
-        "licenses.expires_at",
-        "licenses.internal_note",
-        "licenses.issued_at",
-        "licenses.revoked",
-        "licenses.refund_revoked",
-        "licenses.suspended",
-        {
-          product_name: "products.name",
-          plan_name: "plans.name",
-          customer_email: "customers.email",
-        },
-      );
     const availableReleases = await db("releases")
       .where({ tenant_id: tenant.id })
       .select("id", "product_id", "version", "withdrawn");
@@ -214,14 +245,12 @@ export async function sellerRoutes(
       tenant,
       billingAvailable: config.localBilling || stripeConfigured(config),
       products,
-      licenses: licenses.map((l) => ({
-        ...l,
-        plan_name: l.plan_name ?? "Complimentary",
-        expires_at: l.expires_at === null ? null : Number(l.expires_at),
-        paid_through: Number(l.paid_through),
-        revoked: !!l.revoked || !!l.refund_revoked,
-        suspended: !!l.suspended,
-      })),
+      licenses: licenses.map((l) =>
+        sellerLicense(
+          l,
+          l.plan_id === null ? undefined : planNames.get(l.plan_id),
+        ),
+      ),
       releases: availableReleases.map((r) => ({
         ...r,
         withdrawn: !!r.withdrawn,
@@ -237,7 +266,7 @@ export async function sellerRoutes(
     };
   });
   app.get("/licenses/:id", async (req) => {
-    const { db, tenant, config } = context(req);
+    const { db, tenant, config, licensing } = context(req);
     const { id } = z
       .object({ id: z.string().min(1).max(64) })
       .parse(req.params);
@@ -248,50 +277,15 @@ export async function sellerRoutes(
       })
       .strict()
       .parse(req.query);
-    const license = await db("licenses")
-      .join("customers", function () {
-        this.on("customers.id", "=", "licenses.customer_id").andOn(
-          "customers.tenant_id",
-          "=",
-          "licenses.tenant_id",
-        );
-      })
-      .join("products", function () {
-        this.on("products.id", "=", "licenses.product_id").andOn(
-          "products.tenant_id",
-          "=",
-          "licenses.tenant_id",
-        );
-      })
-      .leftJoin("plans", function () {
-        this.on("plans.id", "=", "licenses.plan_id").andOn(
-          "plans.tenant_id",
-          "=",
-          "licenses.tenant_id",
-        );
-      })
-      .where({ "licenses.tenant_id": tenant.id, "licenses.id": id })
-      .first(
-        "licenses.id",
-        "licenses.customer_id",
-        "licenses.product_id",
-        "licenses.site_allowance",
-        "licenses.paid_through",
-        "licenses.billing_status",
-        "licenses.provenance",
-        "licenses.expires_at",
-        "licenses.internal_note",
-        "licenses.issued_at",
-        "licenses.revoked",
-        "licenses.refund_revoked",
-        "licenses.suspended",
-        {
-          product_name: "products.name",
-          plan_name: "plans.name",
-          customer_email: "customers.email",
-        },
-      );
-    check(license, 404, "not_found", "License not found.");
+    const row = await sellerLicenses(db, tenant.id)
+      .where("licenses.id", id)
+      .first();
+    check(row, 404, "not_found", "License not found.");
+    const license = { ...row, ...(await licensing.effective(row)) };
+    const plan = await db<Plan>("plans")
+      .where("tenant_id", tenant.id)
+      .where("id", license.plan_id)
+      .first("name");
     const product = await db("products")
       .where({ tenant_id: tenant.id, id: license.product_id })
       .first("framework", "framework_config");
@@ -306,15 +300,7 @@ export async function sellerRoutes(
     const rows = await query;
     const page = rows.slice(0, limit);
     return {
-      license: {
-        ...license,
-        plan_name: license.plan_name ?? "Complimentary",
-        expires_at:
-          license.expires_at === null ? null : Number(license.expires_at),
-        paid_through: Number(license.paid_through),
-        revoked: !!license.revoked || !!license.refund_revoked,
-        suspended: !!license.suspended,
-      },
+      license: sellerLicense(license, plan?.name),
       installations: page.map((item) => ({
         ...item,
         active: !!item.active,
@@ -328,14 +314,20 @@ export async function sellerRoutes(
     if (config.localBilling)
       return {
         localMode: true,
-        prices: [1, 5, 25].map((sites) => ({
-          id: `price_local_${sites}`,
-          productName: "Local test fixture",
-          nickname: `${sites} sites`,
-          unit_amount: 10000,
-          currency: "usd",
-          interval: "year",
-        })),
+        prices: (["year", "month"] as const).flatMap((interval) => {
+          const { unit_amount, currency } = localPrice(interval);
+          return [1, 5, 25].map((sites) => ({
+            id:
+              interval === "year"
+                ? `price_local_${sites}`
+                : `price_local_month_${sites}`,
+            productName: "Local test fixture",
+            nickname: `${sites} sites`,
+            unit_amount,
+            currency,
+            interval,
+          }));
+        }),
       };
     check(
       stripeConfigured(config),
@@ -365,11 +357,7 @@ export async function sellerRoutes(
           },
           stripe.options(),
         )) {
-          if (
-            p.recurring?.interval !== "year" ||
-            p.recurring.interval_count !== 1
-          )
-            continue;
+          if (!isSupportedRecurringPrice(p)) continue;
           prices.push({
             id: p.id,
             productName:
@@ -379,7 +367,7 @@ export async function sellerRoutes(
             nickname: p.nickname,
             unit_amount: p.unit_amount,
             currency: p.currency,
-            interval: "year",
+            interval: p.recurring!.interval,
           });
           if (prices.length >= 100) break;
         }
@@ -430,39 +418,45 @@ export async function sellerRoutes(
         "stripe_not_connected",
         "Connect a Stripe account first.",
       );
-      for (const plan of input.plans) {
+    }
+    type PriceSnapshot = Pick<
+      Plan,
+      "unit_amount" | "currency" | "billing_interval"
+    >;
+    const plans: ((typeof input.plans)[number] & { price: PriceSnapshot })[] =
+      [];
+    for (const plan of input.plans) {
+      let price: PriceSnapshot;
+      if (config.localBilling) {
+        price = localPrice(
+          plan.priceId.startsWith("price_local_month_") ? "month" : "year",
+        );
+      } else {
         const p = await stripe.stripe.prices.retrieve(
           plan.priceId,
           {},
           stripe.options(),
         );
         check(
-          p.active &&
-            p.type === "recurring" &&
-            p.recurring?.interval === "year" &&
-            p.recurring.interval_count === 1,
+          isSupportedRecurringPrice(p),
           409,
           "invalid_price",
-          "Choose an active annual price from the connected Stripe account.",
+          "Choose an active paid monthly or annual Stripe price.",
         );
+        price = {
+          unit_amount: p.unit_amount,
+          currency: p.currency,
+          billing_interval: p.recurring!.interval,
+        };
       }
+      plans.push({ ...plan, price });
     }
     const result = await db.transaction(async (tx) => {
       await lock(tx, "schema", tenant.id);
-      const currentTenant = await tx("tenants")
-        .where({ id: tenant.id })
-        .first();
-      check(
-        currentTenant &&
-          tenantAvailable(
-            currentTenant,
-            "capacity",
-            (config.graceDays ?? 7) * 86400000,
-          ),
-        403,
-        "tenant_capacity",
-        "Tenant cannot add capacity.",
-      );
+      const currentTenant = await requireTenantCapacity(tx, tenant.id, {
+        deploymentMode: config.deploymentMode,
+        graceDays: config.graceDays,
+      });
       const existing = await tx("products")
         .where({ tenant_id: tenant.id, slug: input.slug })
         .first();
@@ -548,7 +542,7 @@ export async function sellerRoutes(
             framework_config: product.framework_config,
           });
       else await tx("products").insert(product);
-      for (const plan of input.plans) {
+      for (const plan of plans) {
         const found = await tx("plans")
           .where({ tenant_id: tenant.id, stripe_price_id: plan.priceId })
           .first();
@@ -565,6 +559,9 @@ export async function sellerRoutes(
             "plan_immutable",
             "Create a new Stripe price to change a plan allowance.",
           );
+          await tx("plans")
+            .where({ tenant_id: tenant.id, id: found.id })
+            .update(plan.price);
           continue;
         }
         await tx("plans").insert({
@@ -574,6 +571,7 @@ export async function sellerRoutes(
           name: plan.name,
           site_allowance: plan.siteAllowance,
           stripe_price_id: plan.priceId,
+          ...plan.price,
         });
       }
       return {
@@ -586,6 +584,38 @@ export async function sellerRoutes(
     });
     await audit(req, "product.configured", { product_id: result.product.id });
     return result;
+  });
+  app.post("/plans/:id/archive", async (req) => {
+    const { db, tenant } = context(req);
+    const { id } = z.object({ id: z.string().min(1).max(64) }).parse(req.params);
+    const { archived } = z
+      .object({ archived: z.boolean() })
+      .strict()
+      .parse(req.body);
+    const changed = await db("plans")
+      .where({ tenant_id: tenant.id, id })
+      .update({ archived_at: archived ? Date.now() : null });
+    check(changed, 404, "not_found", "Plan not found.");
+    await audit(req, archived ? "plan.archived" : "plan.restored", {
+      plan_id: id,
+    });
+    return { ok: true };
+  });
+  app.post("/licenses/:id/installations/:installationId/deactivate", async (req) => {
+    const { licensing } = context(req);
+    const { id, installationId } = z
+      .object({
+        id: z.string().min(1).max(64),
+        installationId: z.string().min(1).max(64),
+      })
+      .parse(req.params);
+    empty.parse(req.body);
+    await licensing.deactivateBySeller(id, installationId);
+    await audit(req, "installation.deactivated", {
+      license_id: id,
+      installation_id: installationId,
+    });
+    return { ok: true };
   });
   app.post("/licenses/complimentary", async (req) => {
     const { db, tenant, licensing } = context(req);
@@ -1068,6 +1098,12 @@ export async function sellerRoutes(
           },
         ],
       }),
+    }, {
+      stripeLiveMode: false,
+      purchasePolicy: {
+        deploymentMode: config.deploymentMode,
+        graceDays: config.graceDays,
+      },
     }).reconcile(b.subscriptionId);
     return { ok: true, subscriptionId: b.subscriptionId };
   });

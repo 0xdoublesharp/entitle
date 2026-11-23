@@ -868,6 +868,10 @@ test("marketing explains hosting choices and points buyers to support without in
   assert.ok(
     dom.document.querySelector('#hosting a[href="/docs#self-hosting"]'),
   );
+  // Export needs a connected, verified Stripe merchant account.
+  assert.match(hosting, /Once your verified Stripe account is connected/);
+  assert.doesNotMatch(hosting, /whenever you choose/);
+  assert.ok(dom.document.querySelector('#hosting a[href="/docs#portability"]'));
   const help = el("#questions");
   assert.match(help.textContent, /Installed software keeps working/);
   assert.ok(help.querySelector('a[href="/docs#customer-accounts"]'));
@@ -1456,7 +1460,8 @@ test("ZIP publication bounds files before upload and sends metadata and raw byte
     minFree: "1.0",
     tested: "6.9",
   });
-  assert.equal(c.init.body instanceof ArrayBuffer, true);
+  // The selected File is streamed as the request body, never buffered first.
+  assert.equal(c.init.body, file.files![0]);
   assert.equal(
     new Headers(c.init.headers).get("X-Account-Verification"),
     "verified-grant",
@@ -1577,7 +1582,7 @@ test("empty seller workspaces show setup guidance and keyboard copy fallback", a
       Response.json({ prices: [], localMode: false }),
     );
   });
-  assert.match(text(), /create an active annual recurring price/);
+  assert.match(text(), /create an active monthly or annual recurring price/);
   assert.match(el<HTMLTextAreaElement>("#php-config").value, /your-product/);
   Object.defineProperty(dom.navigator, "clipboard", {
     configurable: true,
@@ -1754,7 +1759,9 @@ test("switching seller workspaces clears upload bytes and resets tenant-specific
       Response.json({
         ...overview(),
         tenant: second,
-        products: [],
+        products: [
+          { ...overview().products[0]!, id: "p-beta", slug: "beta-plugin" },
+        ],
         releases: [],
         licenses: [],
       }),
@@ -2078,8 +2085,10 @@ test("native upload accepts a 50 MiB Electron asset under its separate 100 MiB l
     new dom.Event("change", { bubbles: true }) as unknown as Event,
   );
   await submit("#release-upload");
-  assert.equal(reads, 1);
-  assert.ok(calls.find((call) => call.path.endsWith("/assets/plugin/2.0.0")));
+  // The browser streams the File body; the client never buffers it with arrayBuffer().
+  assert.equal(reads, 0);
+  const sent = calls.find((call) => call.path.endsWith("/assets/plugin/2.0.0"));
+  assert.equal(sent?.init.body, file.files![0]);
   assert.match(text(), /Release published/);
 });
 for (const [framework, sizeMiB, limitMiB] of [
@@ -2205,7 +2214,7 @@ test("native release upload sends immutable target bytes and signature metadata 
         ? { signature: "signed-detached-value" }
         : {}),
     });
-    assert.ok(call.init.body instanceof ArrayBuffer);
+    assert.ok(call.init.body instanceof dom.File);
     assert.match(text(), /darwin-arm64.*App.zip/);
   }
 });
@@ -3389,11 +3398,16 @@ test("a terminal historical platform subscription offers fresh Pro checkout whil
 });
 
 test("workspace navigation groups new tools and offers a compact mobile page selector", async () => {
-  await mount("/seller", () =>
+  await mount("/seller", () => {
     routes.set("GET /api/v1/platform/account/sessions", () =>
       Response.json({ sessions: [] }),
-    ),
-  );
+    );
+    // Headings must stay visible even when a panel cannot load its settings.
+    for (const path of ["commerce/settings", "sandbox", "operations", "features"])
+      routes.set(`GET /api/v1/tenants/alpha/seller/${path}`, () =>
+        denied(503, "Settings unavailable."),
+      );
+  });
   assert.deepEqual(
     [...dom.document.querySelectorAll(".seller-nav-group > p")].map(
       (n) => n.textContent,
@@ -3409,10 +3423,24 @@ test("workspace navigation groups new tools and offers a compact mobile page sel
   await flush();
   assert.equal(el("h1").textContent, "Account security");
   assert.equal(mobile.value, "security");
-  assert.equal(
-    Boolean(dom.document.querySelector(".feature-panel > h2")),
-    false,
-  );
+  // The page h1 is visually hidden, so every feature tab shows its own heading.
+  for (const [page, heading] of [
+    ["security", "Account security"],
+    ["commerce", "Tax settings"],
+    ["sandbox", "Sandbox"],
+    ["operations", "Operations"],
+    ["webhooks", "Outgoing webhooks"],
+    ["export", "Tenant export"],
+  ]) {
+    mobile.value = page!;
+    mobile.dispatchEvent(
+      new dom.Event("change", { bubbles: true }) as unknown as Event,
+    );
+    await flush();
+    const visible = el(".feature-panel > h2");
+    assert.equal(visible.textContent, heading);
+    assert.equal(visible.closest(".sr-only"), null);
+  }
 });
 
 test("billing groups payment setup and allowances and avoids duplicate subscriptions", async () => {
@@ -4092,4 +4120,401 @@ test("guided integration confirmation follows a changed configuration product", 
   assert.equal(el<HTMLSelectElement>("#config-product").value, "");
   assert.match(el<HTMLTextAreaElement>("#php-config").value, /your-product/);
   assert.equal(calls.length, before);
+});
+
+test("sellers edit a complimentary pilot product, add a monthly plan, and archive or restore plans", async () => {
+  const pilot = {
+    id: "p2",
+    slug: "pilot",
+    name: "Pilot app",
+    plugin_basename: "pilot/pilot.php",
+    plans: [] as ReturnType<typeof overview>["products"][number]["plans"],
+  };
+  await mount("/seller", () => {
+    getOverview = () => {
+      const data = overview();
+      return {
+        ...data,
+        products: [
+          {
+            ...data.products[0]!,
+            plans: [
+              {
+                ...data.products[0]!.plans[0]!,
+                unit_amount: 4900,
+                currency: "usd",
+                billing_interval: "year",
+              },
+              {
+                id: "old",
+                name: "Legacy",
+                site_allowance: 1,
+                stripe_price_id: "price_old",
+                archived_at: 1,
+              },
+            ],
+          },
+          pilot,
+        ],
+      };
+    };
+    routes.set("GET /api/v1/tenants/alpha/seller/prices", () =>
+      Response.json({
+        prices: [
+          {
+            id: "price_month",
+            productName: "Pilot app",
+            nickname: "Monthly",
+            unit_amount: 900,
+            currency: "usd",
+            interval: "month",
+          },
+        ],
+        localMode: false,
+      }),
+    );
+  });
+  await click("Products");
+  assert.match(text(), /Annual · 5 sites · price_annual · \$49 \/ year/);
+  assert.match(text(), /Legacy · 1 site · price_old · Archived/);
+  el<HTMLButtonElement>('[aria-label="Edit Pilot app"]').click();
+  await flush();
+  assert.equal(dom.document.activeElement?.id, "edit-product-name");
+  assert.match(text(), /No paid plans yet, so this product offers complimentary licenses only/);
+  assert.equal(dom.document.querySelector("#edit-price-id"), null);
+  el<HTMLInputElement>("#edit-add-plan").click();
+  await flush();
+  assert.match(el('label[for="edit-price-id"]').textContent!, /monthly or annual/);
+  await input("#edit-product-name", "Pilot app Pro");
+  await input("#edit-plan-name", "Monthly");
+  await input("#edit-site-allowance", "3");
+  assert.equal(el<HTMLSelectElement>("#edit-price-id").value, "price_month");
+  await submit("#product-edit");
+  const saved = calls.find((c) => c.path.endsWith("/seller/products"));
+  assert.deepEqual(saved?.body, {
+    slug: "pilot",
+    name: "Pilot app Pro",
+    plans: [{ name: "Monthly", siteAllowance: 3, priceId: "price_month" }],
+  });
+  assert.match(text(), /Product updated/);
+  assert.equal(el<HTMLInputElement>("#edit-add-plan").checked, false);
+  await input("#edit-product-name", "Pilot app");
+  await submit("#product-edit");
+  assert.deepEqual(calls.filter((c) => c.path.endsWith("/seller/products")).at(-1)?.body, {
+    slug: "pilot",
+    name: "Pilot app",
+    plans: [],
+  });
+  await click("Close editor");
+  assert.equal(dom.document.querySelector("#product-editor"), null);
+  el<HTMLButtonElement>('[aria-label="Edit My plugin"]').click();
+  await flush();
+  await click("Archive Annual");
+  assert.match(text(), /New buyers can no longer choose this plan/);
+  await click("Confirm archive plan");
+  assert.deepEqual(
+    calls.find((c) => c.path.endsWith("/seller/plans/plan/archive"))?.body,
+    { archived: true },
+  );
+  await click("Restore Legacy");
+  assert.match(text(), /Buyers can choose this plan again at checkout/);
+  await click("Confirm restore plan");
+  assert.deepEqual(
+    calls.find((c) => c.path.endsWith("/seller/plans/old/archive"))?.body,
+    { archived: false },
+  );
+  assert.ok(dom.document.querySelector("#product-editor"));
+});
+
+test("product editing offers only Stripe prices no plan uses and blocks adding a plan when none remain", async () => {
+  let pilotPlans: ReturnType<typeof overview>["products"][number]["plans"] = [];
+  await mount("/seller", () => {
+    getOverview = () => {
+      const data = overview();
+      return {
+        ...data,
+        products: [
+          {
+            ...data.products[0]!,
+            plans: [
+              ...data.products[0]!.plans,
+              { id: "old", name: "Legacy", site_allowance: 1, stripe_price_id: "price_old", archived_at: 1 },
+            ],
+          },
+          { id: "p2", slug: "pilot", name: "Pilot app", plugin_basename: "pilot/pilot.php", plans: pilotPlans },
+        ],
+      };
+    };
+    const price = (id: string, unit_amount: number, currency = "usd") => ({
+      id,
+      productName: "Pilot app",
+      nickname: id,
+      unit_amount,
+      currency,
+      interval: "month",
+    });
+    routes.set("GET /api/v1/tenants/alpha/seller/prices", () =>
+      Response.json({
+        prices: [
+          price("price_annual", 4900),
+          price("price_old", 100),
+          price("price_month", 900),
+          // Stripe encodes ISK in hundredths: 500 is 5 ISK.
+          price("price_isk", 500, "isk"),
+        ],
+        localMode: false,
+      }),
+    );
+  });
+  await click("Products");
+  el<HTMLButtonElement>('[aria-label="Edit Pilot app"]').click();
+  await flush();
+  assert.equal(dom.document.querySelector("#edit-price-note"), null);
+  el<HTMLInputElement>("#edit-add-plan").click();
+  await flush();
+  const options = [...el<HTMLSelectElement>("#edit-price-id").options];
+  assert.deepEqual(
+    options.map((option) => option.value),
+    ["price_month", "price_isk"],
+  );
+  assert.match(options[1]!.textContent!, /ISK\u00a05\/month/);
+  assert.equal(el<HTMLSelectElement>("#edit-price-id").value, "price_month");
+  // Another session maps the selected price; saving must not post it again.
+  pilotPlans = [
+    { id: "m", name: "Monthly", site_allowance: 1, stripe_price_id: "price_month" },
+  ];
+  await click("Refresh dashboard");
+  const posted = calls.filter((c) => c.path.endsWith("/seller/products")).length;
+  await input("#edit-plan-name", "Monthly");
+  await submit("#product-edit");
+  assert.match(text(), /That Stripe price is already used by a plan/);
+  assert.equal(calls.filter((c) => c.path.endsWith("/seller/products")).length, posted);
+  // Then the remaining price is mapped too.
+  pilotPlans = [
+    { id: "m", name: "Monthly", site_allowance: 1, stripe_price_id: "price_month" },
+    { id: "i", name: "Krona", site_allowance: 1, stripe_price_id: "price_isk" },
+  ];
+  await click("Refresh dashboard");
+  assert.equal(el<HTMLInputElement>("#edit-add-plan").checked, true);
+  assert.equal(el<HTMLInputElement>("#edit-add-plan").disabled, false);
+  assert.match(el("#edit-price-note").textContent!, /Every Stripe price is already used by a plan/);
+  assert.equal(el<HTMLSelectElement>("#edit-price-id").options.length, 0);
+  const save = () => el<HTMLButtonElement>('#product-edit button[type="submit"]');
+  assert.equal(save().disabled, true);
+  el<HTMLInputElement>("#edit-add-plan").click();
+  await flush();
+  // Renaming still works without a plan.
+  assert.equal(save().disabled, false);
+  assert.equal(el<HTMLInputElement>("#edit-add-plan").disabled, true);
+});
+
+test("product editing cannot add paid plans without Stripe prices and resets on workspace changes", async () => {
+  await mount("/seller", () => {
+    tenants = [tenant, { ...tenant, id: "tenant-b", slug: "beta", name: "Beta plugins" }];
+    routes.set("GET /api/v1/tenants/alpha/seller/prices", () =>
+      Response.json({ prices: [], localMode: false }),
+    );
+    getOverview = () => ({
+      ...overview(),
+      products: [
+        {
+          ...overview().products[0]!,
+          framework: "generic" as const,
+          frameworkConfig: { activationKind: "device" as const },
+        },
+      ],
+    });
+  });
+  await click("Products");
+  el<HTMLButtonElement>('[aria-label="Edit My plugin"]').click();
+  await flush();
+  assert.equal(el<HTMLInputElement>("#edit-add-plan").disabled, true);
+  el<HTMLInputElement>("#edit-add-plan").disabled = false;
+  el<HTMLInputElement>("#edit-add-plan").click();
+  await flush();
+  assert.match(el('label[for="edit-site-allowance"]').textContent!, /Device allowance/);
+  assert.equal(el<HTMLSelectElement>("#edit-price-id").value, "");
+  assert.equal(el<HTMLButtonElement>('#product-edit button[type="submit"]').disabled, true);
+  await input("#tenant-select", "beta", "change");
+  assert.equal(dom.document.querySelector("#product-editor"), null);
+});
+
+test("sellers inspect paged license installations and deactivate one with confirmation", async () => {
+  const license = "/api/v1/tenants/alpha/seller/licenses/l1";
+  let deactivated = false;
+  await mount("/seller", () => {
+    routes.set(`GET ${license}`, () =>
+      Response.json({
+        license: overview().licenses[0],
+        installations: [
+          { id: "i1", site_url: "https://shop.example.test", label: null, active: !deactivated, exempt: false },
+          { id: "i2", site_url: "device:mac-123", label: "Studio Mac", active: false, exempt: false },
+        ],
+        nextCursor: "i2",
+      }),
+    );
+    routes.set(`GET ${license}?after=i2`, () =>
+      Response.json({
+        license: overview().licenses[0],
+        installations: [
+          { id: "i3", site_url: "https://staging.example.test", label: null, active: true, exempt: true },
+        ],
+        nextCursor: null,
+      }),
+    );
+    routes.set(`POST ${license}/installations/i1/deactivate`, () => {
+      deactivated = true;
+      return Response.json({ ok: true });
+    });
+  });
+  await click("Licenses");
+  el<HTMLButtonElement>('[aria-label="View installations for buyer@example.test"]').click();
+  await flush();
+  assert.equal(dom.document.activeElement?.id, "license-installations-title");
+  const panel = () => el("#license-installations").textContent!;
+  assert.match(panel(), /https:\/\/shop.example.test · Active/);
+  assert.match(panel(), /Studio Mac · Inactive/);
+  assert.equal(
+    [...dom.document.querySelectorAll("button")].some((b) => b.textContent === "Deactivate Studio Mac"),
+    false,
+  );
+  await click("Load more installations");
+  assert.match(panel(), /https:\/\/staging.example.test · Active · Does not use a seat/);
+  assert.match(panel(), /Studio Mac/);
+  assert.equal(
+    [...dom.document.querySelectorAll("button")].some((b) => b.textContent === "Load more installations"),
+    false,
+  );
+  await click("Deactivate https://shop.example.test");
+  assert.match(text(), /frees its seat/);
+  await click("Cancel");
+  assert.equal(deactivated, false);
+  await click("Deactivate https://shop.example.test");
+  await click("Confirm deactivation");
+  assert.equal(deactivated, true);
+  assert.equal(
+    new Headers(calls.find((c) => c.path.endsWith("/i1/deactivate"))?.init.headers).get("X-CSRF-Token"),
+    "seller-csrf",
+  );
+  assert.match(text(), /Installation deactivated/);
+  assert.match(panel(), /https:\/\/shop.example.test · Inactive/);
+  await click("Close installations");
+  assert.equal(dom.document.querySelector("#license-installations"), null);
+  routes.set(`GET ${license}`, () =>
+    Response.json({ license: overview().licenses[0], installations: [], nextCursor: null }),
+  );
+  el<HTMLButtonElement>('[aria-label="View installations for buyer@example.test"]').click();
+  await flush();
+  assert.match(panel(), /No installations have been activated with this license/);
+});
+
+test("privileged-action guidance follows the passkey policy and defaults to hardware", async () => {
+  await mount("/seller", () => {
+    routes.set("GET /api/v1/platform/account/security", () =>
+      Response.json({ factors: [], privilegedPolicy: "passkey", privilegedReady: false }),
+    );
+    routes.set("GET /api/v1/platform/tenants/tenant-a/removal", () =>
+      Response.json({ removable: true, blockers: [] }),
+    );
+  });
+  await click("API keys");
+  assert.match(text(), /API key changes require fresh verification with a passkey or security key on this account/);
+  assert.doesNotMatch(text(), /hardware/);
+  await click("Workspaces");
+  await click("Check removal");
+  assert.match(text(), /Confirm removal with a passkey or security key/);
+  await mount("/seller", () => {
+    routes.set("GET /api/v1/platform/account/security", () =>
+      denied(503, "Security status unavailable."),
+    );
+  });
+  await click("Releases");
+  assert.match(text(), /Browser publication requires fresh hardware verification/);
+  assert.doesNotMatch(text(), /Security status unavailable/);
+});
+
+test("releases cannot be submitted before the workspace has a product", async () => {
+  await mount("/seller", () => {
+    getOverview = () => ({ ...overview(), products: [], releases: [], licenses: [] });
+  });
+  await click("Releases");
+  const publish = [...el("#release-upload").querySelectorAll("button")].at(-1)!;
+  assert.equal((publish as HTMLButtonElement).disabled, true);
+  await submit("#release-upload");
+  assert.match(text(), /Create a product before publishing a release/);
+  assert.equal(calls.some((c) => /reauth|\/releases\//.test(c.path)), false);
+});
+
+test("seller confirmations describe the specific action being confirmed", async () => {
+  await mount();
+  await click("Revoke license");
+  assert.match(el("dialog").textContent!, /loses downloads and updates immediately/);
+  assert.doesNotMatch(text(), /This changes access immediately/);
+  await click("Cancel");
+  await click("Withdraw release");
+  assert.match(el("dialog").textContent!, /can no longer download this version/);
+  await click("Cancel");
+  await click("Workspaces");
+  await click("Archive workspace");
+  assert.match(el("dialog").textContent!, /You can restore the workspace anytime/);
+  await click("Cancel");
+});
+
+test("a verification link opens Account security, keeps its notice, and focuses passkey enrollment", async () => {
+  await mount("/seller#account-verification=fresh-proof", () => {
+    routes.set("GET /api/v1/platform/account/security", () =>
+      Response.json({ factors: [], privilegedPolicy: "hardware" }),
+    );
+    routes.set("GET /api/v1/tenants/alpha/seller/oidc/publishers", () =>
+      Response.json({ audience: "aud", providers: [], publishers: [] }),
+    );
+  });
+  assert.match(text(), /Verification link received. Choose the action you requested below/);
+  assert.equal(el("h1").textContent, "Account security");
+  await click("Continue with verification link");
+  assert.equal(dom.document.activeElement?.id, "security-passkeys");
+  await click("Enroll passkey");
+  assert.deepEqual(
+    calls.find((c) => c.path.endsWith("/account/verification/consume"))?.body,
+    { purpose: "security_enroll", token: "fresh-proof" },
+  );
+  // The consumed proof is not offered again when the panel remounts.
+  await click("Overview");
+  await click("Account security");
+  assert.equal(el<HTMLInputElement>("#verification-token").value, "");
+});
+
+test("a tenant export proof without a workspace asks for one instead of requesting exports", async () => {
+  await mount("/seller#account-verification=export-proof", () => {
+    tenants = [];
+  });
+  await input('[aria-label="Verification purpose"]', "tenant_transfer", "change");
+  await click("Continue with verification link");
+  assert.match(text(), /Create or select a workspace before exporting it/);
+  assert.equal(calls.some((c) => c.path.includes("/exports")), false);
+  assert.equal(dom.document.querySelector("#seller-panel-export"), null);
+});
+
+test("recovery restrictions open recovery and its outcome stays visible after the session check", async () => {
+  let recovering = true;
+  await mount("/seller", () => {
+    routes.set("GET /api/v1/platform/me", () =>
+      recovering
+        ? denied(403, "Complete recovery first.", "recovery_restricted")
+        : denied(),
+    );
+    routes.set("GET /api/v1/platform/account/recovery/status", () =>
+      Response.json({ id: "flow", mode: "ordinary", csrfToken: "recovery-csrf", channelVerified: false }),
+    );
+    routes.set("POST /api/v1/platform/account/recovery/cancel", () => {
+      recovering = false;
+      return Response.json({ ok: true });
+    });
+  });
+  assert.equal(el<HTMLDetailsElement>(".account-recovery").open, true);
+  assert.match(text(), /Recovery access is restricted/);
+  await click("Cancel this recovery");
+  assert.match(text(), /Recovery canceled. Your original credentials remain available/);
+  assert.equal(el<HTMLDetailsElement>(".account-recovery").open, true);
+  assert.match(text(), /Sign in to sell/);
 });

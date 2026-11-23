@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, writeFile, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { createDb, migrate, reset } from "../src/db.ts";
-import { Licenses } from "../src/licensing.ts";
+import { installationExempt, Licenses } from "../src/licensing.ts";
 import { hash, unseal } from "../src/crypto.ts";
 import { Billing, type BillingSnapshot } from "../src/billing.ts";
 import { InMemoryArtifactStore } from "../src/storage.ts";
@@ -19,6 +19,10 @@ const db = createDb(
   process.env.TEST_DATABASE_URL ?? `sqlite:${root}/db.sqlite`,
 );
 const secret = "11".repeat(32);
+test("malformed or credentialed stored site identities are never exempt", () => {
+  assert.equal(installationExempt("[", "site", ["example.com"]), false);
+  assert.equal(installationExempt("user:pass@example.com", "site", ["example.com"]), false);
+});
 const licensing = new Licenses(db, secret, [], primaryTenant);
 let snapshot: BillingSnapshot;
 const billing = new Billing(db, licensing, {
@@ -177,6 +181,29 @@ test("renewals, stale snapshots, failed payment and cancellation preserve alread
   assert.equal(Number(final.paid_through), end);
   assert.equal(final.billing_status, "canceled");
   assert.equal(licensing.entitled(final), true);
+});
+test("seller deactivation scopes an installation to its license and releases the seat once", async () => {
+  const { license, key } = await purchase();
+  const { token } = await licensing.activate(key, "site", "https://example.test", "example-pro");
+  const installation = await db("installations").first();
+  await assert.rejects(
+    licensing.deactivateBySeller("unknown-license", installation.id),
+    { code: "not_found" },
+  );
+  await assert.rejects(
+    licensing.deactivateBySeller(license.id, "unknown-installation"),
+    { code: "not_found" },
+  );
+  assert.equal((await db("installations").first()).active, 1);
+  await licensing.deactivateBySeller(license.id, installation.id);
+  await licensing.deactivateBySeller(license.id, installation.id);
+  const inactive = await db("installations").first();
+  assert.equal(inactive.active, 0);
+  assert.equal(inactive.token_cipher, "");
+  await assert.rejects(licensing.status(token), { code: "invalid_activation" });
+  assert.equal((await db("business_events").where({
+    type: "activation.changed", resource_id: installation.id,
+  })).length, 2);
 });
 test("unpaid upgrades do not add seats and older paid plans cannot overwrite a paid upgrade", async () => {
   await purchase();
@@ -544,6 +571,25 @@ test("future paid downgrade preserves seats through the larger paid period then 
   now = end + 1;
   assert.equal((await clocked.effective(license)).site_allowance, 1);
   assert.equal(clocked.entitled(license), true);
+});
+test("fully credited grants never select the effective plan or extend paid service", async () => {
+  await billing.reconcile("sub_1");
+  const license = await db("licenses").first();
+  const grant = await db("grants").first();
+  const gap = Number(grant.period_end) + 1000;
+  await db("grants").insert({
+    ...grant, id: "il_fully_credited", invoice_id: "in_fully_credited", plan_id: "five",
+    period_start: gap, period_end: gap,
+  });
+  const clocked = new Licenses(db, secret, [], primaryTenant, () => gap);
+  assert.equal((await clocked.effective(license)).site_allowance, 1);
+
+  snapshot.grants[0]!.periodEnd = snapshot.grants[0]!.periodStart;
+  await billing.reconcile("sub_1");
+  const credited = await db("licenses").first();
+  assert.equal(Number(credited.paid_through), 0);
+  assert.equal(credited.plan_id, "one");
+  assert.equal(clocked.entitled(credited), false);
 });
 test("publication verifies ZIP then stores immutable bytes; withdrawal keeps recovery artifact", async () => {
   const zip = join(root, "test.zip");

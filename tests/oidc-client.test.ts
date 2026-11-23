@@ -506,3 +506,21 @@ test("OIDC client reads private ID token files and bounds remote responses and c
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("OIDC client tolerates the server's five second clock skew on CI credential expiry", async (t) => {
+  const now = 1_800_000_000_000;
+  t.mock.method(Date, "now", () => now);
+  const env = { ...baseEnv, ENTITLE_OIDC_TOKEN: "a.b.c" };
+  const reply = (expiresAt: number) =>
+    t.mock.method(globalThis, "fetch", async () =>
+      Response.json({
+        accessToken: `DE-CI-${"c".repeat(43)}`,
+        tokenType: "Bearer",
+        expiresAt,
+      }),
+    );
+  reply(now + 605000);
+  assert.equal(await oidcPublishingToken(env), `DE-CI-${"c".repeat(43)}`);
+  reply(now + 605001);
+  await assert.rejects(oidcPublishingToken(env), /invalid CI publishing/);
+});

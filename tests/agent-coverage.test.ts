@@ -99,6 +99,13 @@ test("structured operations preserve documented methods, routes, bodies and priv
     ["update-check", { product: "plugin" }, "GET", `${buyer}/updates/plugin`],
     ["owner-me", {}, "GET", `${owner}/me`],
     [
+      "owner-factor-remove",
+      { id: uuid },
+      "POST",
+      `${owner}/account/security/factors/${uuid}/remove`,
+      {},
+    ],
+    [
       "owner-verification-request",
       { purpose: "billing" },
       "POST",
@@ -166,6 +173,8 @@ test("structured operations preserve documented methods, routes, bodies and priv
       `${seller}/commerce/products/product/tax-code`,
       { taxCode: null },
     ],
+    ["plan-archive", { id: "plan", archived: true }, "POST", `${seller}/plans/plan/archive`, { archived: true }],
+    ["license-installation-deactivate", { id: "license", installationId: "installation" }, "POST", `${seller}/licenses/license/installations/installation/deactivate`, {}],
     ["license-detail", { id: "license" }, "GET", `${seller}/licenses/license?`],
     [
       "license-detail",
@@ -248,6 +257,8 @@ test("structured operations preserve documented methods, routes, bodies and priv
         "reports",
         "operations-settings",
         "license-detail",
+        "plan-archive",
+        "license-installation-deactivate",
         "webhook-rotate",
         "webhook-delete",
         "webhook-retry",

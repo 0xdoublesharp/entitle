@@ -653,7 +653,7 @@ export async function buildApp(
       delivery,
       tenant,
       config.dailyEmailLimit,
-    ).run();
+    ).run(20, billingShutdown.signal);
     await s.releases.cleanup();
     if (outboundEnabled)
       deliveryPool.start(tenant.id, async () => {
@@ -793,12 +793,11 @@ export async function buildApp(
     const policy = route.config?.rateLimit;
     if (route.url === "/api/v1/tenants/:tenant/activation" && policy && typeof policy === "object") {
       const template = route.url;
-      for (const method of Array.isArray(route.method) ? route.method : [route.method]) {
+      for (const method of [route.method].flat()) {
         const key = credentialRouteKey(method, template);
         if (activationAdmissions.has(key)) continue;
         activationAdmissions.set(key, app.createRateLimit({
-          ...(policy.max === undefined ? {} : { max: policy.max }),
-          ...(policy.timeWindow === undefined ? {} : { timeWindow: policy.timeWindow }),
+          ...policy,
           keyGenerator: (req) => JSON.stringify([rateLimit.normalizeIP(req.ip), key]),
         }));
       }
@@ -1025,7 +1024,7 @@ export async function buildApp(
       });
       api.post("/auth/logout", async (req, reply) => {
         empty.parse(req.body);
-        const seller = await platformAuth.seller(req, true);
+        const seller = await platformAuth.seller(req, true, true);
         await db("seller_sessions").where({ id: seller.sessionHash }).delete();
         reply.clearCookie(platformAuth.cookieName, {
           path: "/",
@@ -1158,10 +1157,13 @@ export async function buildApp(
       });
       api.post("/connect-webhook", { config: apiLimit(1000) }, async (req) => {
         check(hosted, 404, "not_found", "Route not found.");
-        const event = eventFor(
-          req,
-          config.stripeConnectWebhookSecret ?? "whsec_connect_local",
+        check(
+          config.stripeConnectWebhookSecret,
+          503,
+          "billing_unavailable",
+          "Stripe Connect webhooks are not configured.",
         );
+        const event = eventFor(req, config.stripeConnectWebhookSecret);
         check(
           event.account,
           400,
@@ -1227,7 +1229,7 @@ export async function buildApp(
           "stripe_scope",
           "Merchant endpoint does not accept connected account events.",
         );
-        if (event.livemode !== config.stripeLiveMode)
+        if (event.livemode !== (config.stripeLiveMode ?? false))
           return { ok: true, ignored: true };
         const tenant = (await db<Tenant>("tenants")
           .where({ id: "primary" })

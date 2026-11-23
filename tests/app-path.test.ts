@@ -415,6 +415,8 @@ async function stripeFixture(t: test.TestContext) {
         id: path.split("/").at(-1),
         active: true,
         type: "recurring",
+        unit_amount: 1000,
+        currency: "usd",
         livemode: false,
         recurring: { interval: "year", interval_count: 1 },
       };
