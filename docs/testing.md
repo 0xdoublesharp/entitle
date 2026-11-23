@@ -78,7 +78,7 @@ the behavior of an external provider account. Qualify actual Stripe test-mode
 Checkout, Elements, Portal, refunds, disputes and connected accounts separately.
 
 For the local StripeDouble integration, install Python 3.15.2 and make the
-[`doublesharp/stripe-double`](https://github.com/doublesharp/stripe-double)
+[`0xdoublesharp/stripe-double`](https://github.com/0xdoublesharp/stripe-double)
 checkout available next to this repository, or set
 `STRIPE_DOUBLE_APP` to its absolute path. The harness launches and owns a fresh
 simulator with Entitle's `2026-09-30.endive` profile, keeps synthetic credentials
@@ -100,7 +100,7 @@ this check does not exercise it. Elements secrets are placeholders and do not
 work with Stripe.js. Real Stripe behavior still requires separate provider
 qualification. The test uses the checkout supplied locally; update it separately
 to test a newer StripeDouble revision. The current check was verified against
-StripeDouble commit `d060b03dabef112c01d3e0b102a2ae117b912a8c`.
+StripeDouble commit `e04891e47f531993999a57fd0d6ca92701f9b3b0`.
 
 ## Invariant and fuzz tests
 
