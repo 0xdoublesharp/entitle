@@ -22,7 +22,16 @@ owner-session actions. Discover their schemas using `tools/list`. For example,
 `entitle_op_job_retry` takes `{"table":"work","id":"JOB_ID"}`.
 `entitle_op_product_save`, `entitle_op_release_publish`, and
 `entitle_op_asset_publish` accept structured metadata; artifact file paths refer
-to the MCP server's local filesystem. Native feed and protected-download tools
+to the MCP server's local filesystem.
+
+Typical catalog and support tasks map to these tools:
+
+| Task | Tool and input |
+| --- | --- |
+| Add a monthly or annual plan to a product, including a complimentary pilot product | `entitle_op_product_save` with the existing `slug`, `name`, and new `plans`; existing plans stay. Use `entitle_prices` to find price IDs and their `interval`. |
+| Archive or restore a plan | `entitle_op_plan_archive` with `{"id":"PLAN_ID","archived":true}` or `false`. Existing licenses are unchanged. |
+| Free a customer's seat | `entitle_op_license_detail` with `{"id":"LICENSE_ID"}`, then `entitle_op_license_installation_deactivate` with `{"id":"LICENSE_ID","installationId":"INSTALLATION_ID"}` |
+ Native feed and protected-download tools
 use the configured installation bearer token and preserve server entitlement
 checks. File downloads require a new private output path.
 For example, call `entitle_seller_request` with:
@@ -66,4 +75,4 @@ verification and Stripe authorization remain interactive.
 Use the [CLI reference](cli.md#other-api-operations) and [API reference](api.md)
 for credentials, endpoint details and restrictions.
 
-See [capability-specific authentication and recovery](authentication-policy.md) for hardware approvals, restricted recovery operations and local operator recovery.
+See [capability-specific authentication and recovery](authentication-policy.md) for the `PRIVILEGED_AUTH_POLICY` options, hardware approvals, restricted recovery operations, and local operator recovery.

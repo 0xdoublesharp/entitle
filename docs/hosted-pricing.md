@@ -2,7 +2,7 @@
 
 The hosted default is 1% per subscription invoice, with no fixed application
 fee, in addition to the existing platform subscription and the seller's own
-Stripe fees. Standalone collects no application fee and needs no subscription
+Stripe fees. It applies to every invoice of a buyer's monthly or annual plan. Standalone collects no application fee and needs no subscription
 to Doublesharp. The platform subscription price still comes from
 PLATFORM_STRIPE_PRICE_ID; review the configured amount at checkout.
 
@@ -17,11 +17,12 @@ PLATFORM_STRIPE_PRICE_ID; review the configured amount at checkout.
 | Capacity | Trial/paid platform allowances shown in the dashboard | Operator-configured product, storage, upload and security limits |
 
 Both versions use the publisher's Stripe account for buyer payments and provide
-the same core licensing/update workflows. Self-hosting avoids platform charges;
-it does not remove provider costs or operating work. The planned hosted address
-and self-hosting entry points are in [README](../README.md#choose-how-to-run-it).
-See [deployment](deployment.md) for the two setup paths and licensing boundary.
-This page does not establish a public launch, fixed subscription price or SLA.
+the same core licensing and update workflows, including monthly and annual
+plans. Self-hosting avoids platform charges, but you still pay providers and do
+the operating work. The planned hosted address and self-hosting entry points are
+in the [README](../README.md#choose-how-to-run-it). See
+[deployment](deployment.md) for the two setup paths and licensing boundary.
+Publishers can export their workspace and move to self-hosting on any tier.
 
 ## Configuration and behavior
 

@@ -6,6 +6,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import Stripe from "stripe";
 import { createDb, migrate, reset, type Plan } from "../src/db.ts";
 import { StripeBilling } from "../src/stripe.ts";
+import { Billing } from "../src/billing.ts";
+import { Licenses } from "../src/licensing.ts";
 import { loadConfig } from "../src/config.ts";
 const root = await mkdtemp("/Volumes/Scratch/entitle/tmp/stripe-");
 const db = createDb(`sqlite:${root}/db`);
@@ -19,6 +21,8 @@ let refund = 0,
   disputeStatus = "won",
   invoicePaid = true,
   customerCreates = 0;
+let downgradeAt: number | undefined;
+let includeDowngrade = false;
 const list = (data: unknown[]) => ({
   object: "list",
   data,
@@ -52,6 +56,7 @@ const server = createServer(async (req, res) => {
       id: "price_one",
       active: true,
       type: "recurring",
+      unit_amount: 1000,
       recurring: { interval: "year", interval_count: 1 },
     };
   else if (url.pathname === "/v1/customers" && req.method === "POST") {
@@ -63,16 +68,66 @@ const server = createServer(async (req, res) => {
     data = { id: "sub_1", customer: "cus_1", status: "active" };
   else if (url.pathname === "/v1/customers/cus_1")
     data = { id: "cus_1", email: "owner@example.test" };
-  else if (url.pathname === "/v1/invoices") data = list([invoice()]);
+  else if (url.pathname === "/v1/invoices") data = list([
+    ...(includeDowngrade ? [
+      { ...invoice(), id: "in_downgrade", amount_paid: 0, amount_due: 0, amount_remaining: 0, total: -5000 },
+      { ...invoice(), id: "in_coupon", amount_paid: 0, amount_due: 0, amount_remaining: 0, total: 0 },
+      { ...invoice(), id: "in_unmatched", amount_paid: 0, amount_due: 0, amount_remaining: 0, total: 0 },
+    ] : []),
+    invoice(),
+  ]);
   else if (url.pathname === "/v1/invoices/in_1") data = invoice();
+  else if (url.pathname === "/v1/invoices/in_downgrade/lines") data = list([
+    {
+      id: "il_downgraded",
+      amount: 5000,
+      parent: { subscription_item_details: {} },
+      pricing: { price_details: { price: "price_one" } },
+      period: { start: downgradeAt, end: downgradeAt! + 200 },
+    },
+    {
+      id: "il_proration",
+      amount: -10000,
+      parent: { subscription_item_details: {
+        proration: true,
+        proration_details: { credited_items: { invoice: "in_1", invoice_line_items: ["il_1"] } },
+      } },
+      pricing: { price_details: { price: "price_old" } },
+      period: { start: downgradeAt, end: downgradeAt! + 200 },
+    },
+  ]);
+  else if (url.pathname === "/v1/invoices/in_coupon/lines") data = list([{
+    id: "il_free",
+    amount: 10000,
+    parent: { subscription_item_details: {} },
+    pricing: { price_details: { price: "price_old" } },
+    period: { start: downgradeAt, end: downgradeAt! + 400 },
+  }]);
+  else if (url.pathname === "/v1/invoices/in_unmatched/lines") data = list([
+    {
+      id: "il_unfunded", amount: 10000,
+      parent: { subscription_item_details: {} },
+      pricing: { price_details: { price: "price_old" } },
+      period: { start: downgradeAt, end: downgradeAt! + 400 },
+    },
+    {
+      id: "il_unmatched", amount: -10000,
+      parent: { subscription_item_details: {
+        proration: true,
+        proration_details: { credited_items: { invoice: "in_other", invoice_line_items: ["il_1"] } },
+      } },
+      pricing: { price_details: { price: "price_old" } },
+      period: { start: downgradeAt, end: downgradeAt! + 200 },
+    },
+  ]);
   else if (url.pathname === "/v1/invoices/in_1/lines")
     data = list([
       {
         id: "il_1",
         amount: 10000,
         parent: { subscription_item_details: { subscription: "sub_1" } },
-        pricing: { price_details: { price: "price_one" } },
-        period: { start: 100, end: 200 },
+        pricing: { price_details: { price: downgradeAt === undefined ? "price_one" : "price_old" } },
+        period: downgradeAt === undefined ? { start: 100, end: 200 } : { start: downgradeAt, end: downgradeAt + 200 },
       },
       {
         id: "il_credit",
@@ -155,6 +210,8 @@ beforeEach(async () => {
   invoicePaid = true;
   disputeStatus = "won";
   customerCreates = 0;
+  downgradeAt = undefined;
+  includeDowngrade = false;
 });
 afterEach(() => {
   for (const request of requests)
@@ -181,6 +238,33 @@ test("Stripe SDK canonical adapter uses paid positive lines and resolves partial
   invoicePaid = false;
   assert.equal((await adapter.snapshot("sub_1")).grants.length, 0);
   assert.ok(requests.every((r) => r.version === "2026-09-30.endive"));
+});
+for (const worker of [false, true]) test(`a paid downgrade preserves coverage in ${worker ? "worker" : "direct"} reconciliation`, async () => {
+  const start = Math.floor(Date.now() / 1000) - 20;
+  await db("products").insert({ tenant_id: "primary", id: "prod", slug: "fixture", name: "Fixture" });
+  await db("plans").insert([plan, { ...plan, id: "old", site_allowance: 5, stripe_price_id: "price_old" }]);
+  const licensing = new Licenses(db, config.secret, [], primaryTenant, () => start * 1000);
+  const billing = new Billing(db, licensing, adapter);
+  downgradeAt = start;
+  await billing.reconcile("sub_1");
+  assert.equal((await db("licenses").first()).plan_id, "old");
+  includeDowngrade = true;
+  if (worker) {
+    await billing.enqueueReconcile(["sub_1"]);
+    await billing.run(async () => null, { maxRequests: 20 });
+    assert.equal((await db("work").first()).state, "sent");
+  } else await billing.reconcile("sub_1");
+
+  const license = await db("licenses").first();
+  assert.ok(license);
+  assert.equal(license.plan_id, "one");
+  assert.equal(license.site_allowance, 1);
+  assert.equal(Number(license.paid_through), (start + 200) * 1000);
+  const grants = await db("grants").orderBy("id");
+  assert.deepEqual(grants.map(grant => [grant.id, Number(grant.period_end)]), [
+    ["il_1", start * 1000],
+    ["il_downgraded", (start + 200) * 1000],
+  ]);
 });
 test("refund and dispute events resolve legacy direct charges without payment intents", async () => {
   for (const [type, id] of [

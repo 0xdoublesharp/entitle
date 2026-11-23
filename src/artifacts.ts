@@ -381,19 +381,26 @@ export class Artifacts {
     productId: string,
     target?: string,
   ): Promise<{ release: Release; assets: ReleaseAsset[] } | undefined> {
-    const releases = await this.db<Release>("releases")
+    const eligible = this.db<Release>("releases")
       .where({ tenant_id: this.tenant.id, product_id: productId, withdrawn: 0 })
       .andWhere("published_at", "<=", Date.now());
-    for (const release of releases.sort((a, b) =>
+    const releases = await eligible.clone().select("id", "version");
+    for (const candidate of releases.sort((a, b) =>
       semver.rcompare(a.version, b.version),
     )) {
       const query = this.db<ReleaseAsset>("release_assets").where({
         tenant_id: this.tenant.id,
-        release_id: release.id,
+        release_id: candidate.id,
       });
       if (target !== undefined) query.andWhere({ target });
       const assets = await query.orderBy("target");
-      if (assets.length) return { release, assets };
+      if (assets.length) {
+        const release = await eligible
+          .clone()
+          .where({ id: candidate.id })
+          .first();
+        if (release) return { release, assets };
+      }
     }
     return undefined;
   }

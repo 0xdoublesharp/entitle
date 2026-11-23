@@ -861,7 +861,6 @@ test(
     }
     for (const prefix of [
       "app",
-      "/",
       "/app/",
       "//app",
       "/app//seller",
@@ -1545,8 +1544,9 @@ for (const file of JSON.parse(process.argv[2])) {
       hiddenFixtures("remove");
     }
     // Return to the default mount before exercising legacy publication fallback.
+    // An explicit root "/" selects that default; root-only releases use fallbacks.
     docker("rm", "-f", runtime);
-    startRuntime(`${ingressIp}/32,::1/128`);
+    startRuntime(`${ingressIp}/32,::1/128`, "/");
     for (let i = 0; i < 30 && request("/").status !== 200; i++)
       await new Promise((resolve) => setTimeout(resolve, 100));
     await fs.rm(path.join(f.input, "app"), { recursive: true });

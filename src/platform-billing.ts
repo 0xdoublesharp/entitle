@@ -5,6 +5,7 @@ import type { DB, Tenant, Tx } from "./db.ts";
 import { lock } from "./db.ts";
 import type { Config } from "./config.ts";
 import type { SellerSession } from "./platform-auth.ts";
+import { currentAuthSession } from "./auth-policy.ts";
 import type { BillingEvent } from "./billing.ts";
 import { hash, random, seal, unseal } from "./crypto.ts";
 import { check } from "./errors.ts";
@@ -72,6 +73,17 @@ interface CheckoutGuard {
 }
 const terminal = (status: string) =>
   ["canceled", "incomplete_expired"].includes(status);
+function preferSubscription(candidate: Stripe.Subscription, selected: Stripe.Subscription | undefined) {
+  if (!selected) return true;
+  const created = candidate.created ?? 0;
+  const selectedCreated = selected.created ?? 0;
+  return created > selectedCreated || (
+    created === selectedCreated && candidate.id !== selected.id &&
+    terminal(selected.status) && !terminal(candidate.status)
+  );
+}
+const cashFullyRefunded = (paid: number, refunded: number) =>
+  paid > 0 && refunded >= paid;
 
 interface PlatformEvidence {
   invoice: Stripe.Invoice;
@@ -236,26 +248,28 @@ export class PlatformBilling {
   private callbackUri() {
     return `${this.config.origin}/api/v1/platform/stripe/callback`;
   }
-  private async owner(tx: Tx, tenantId: string, seller: SellerSession) {
-    const session = await tx("seller_sessions")
-      .where({ id: seller.sessionHash, user_id: seller.user.id })
-      .andWhere("expires_at", ">", Date.now())
-      .first();
-    const user = await tx("seller_users")
-      .where({ id: seller.user.id })
-      .whereNotNull("verified_at")
-      .first();
+  private async requireLiveTenant(tx: Tx, tenantId: string) {
     check(
-      session && user,
-      401,
-      "seller_login_required",
-      "An active verified seller session is required.",
+      !(await tx("publisher_sandboxes").where({ sandbox_tenant_id: tenantId }).first()),
+      409,
+      "sandbox_unsupported",
+      "Platform billing is unavailable in publisher sandboxes.",
+    );
+  }
+  private async owner(tx: Tx, tenantId: string, seller: SellerSession) {
+    const { row, user } = await currentAuthSession(tx, seller);
+    check(
+      !row.recovery_id,
+      403,
+      "recovery_restricted",
+      "Complete account recovery before managing platform billing.",
     );
     const member = await tx("seller_memberships")
       .where({ tenant_id: tenantId, user_id: seller.user.id, role: "owner" })
       .first();
     check(member, 403, "tenant_denied", "You do not own this tenant.");
-    return user as SellerSession["user"];
+    await this.requireLiveTenant(tx, tenantId);
+    return user;
   }
   async connect(
     tenant: Tenant,
@@ -413,16 +427,16 @@ export class PlatformBilling {
       "platform_price",
       "Starter and Pro must use distinct Stripe prices.",
     );
-    const user = await this.owner(this.db, tenant.id, seller);
+    const user = await this.db.transaction((tx) => this.owner(tx, tenant.id, seller));
     const price = await this.stripe.prices.retrieve(priceId);
     this.mode(price.livemode);
     check(
-      price.active && price.type === "recurring",
+      price.active && price.type === "recurring" && (price.unit_amount ?? 0) > 0,
       409,
       "platform_price",
-      "An active recurring platform price is required.",
+      "An active, paid recurring platform price is required.",
     );
-    if (tier === "pro") this.proPrice(price);
+    if (tier === "pro") this.requireMonthlyProPrice(price);
     await this.db.transaction(async (tx) => {
       await lock(tx, "billing");
       await this.owner(tx, tenant.id, seller);
@@ -735,9 +749,10 @@ export class PlatformBilling {
 
   async portal(tenant: Tenant): Promise<{ url: string }> {
     this.external();
-    const current = await this.db<Tenant>("tenants")
-      .where({ id: tenant.id })
-      .first();
+    const current = await this.db.transaction(async (tx) => {
+      await this.requireLiveTenant(tx, tenant.id);
+      return tx<Tenant>("tenants").where({ id: tenant.id }).first();
+    });
     check(
       current?.platform_customer_id,
       409,
@@ -866,12 +881,7 @@ export class PlatformBilling {
       if (
         providerId(candidate.customer) === tenant.platform_customer_id &&
         candidate.items.data.some((item) => prices.has(item.price.id)) &&
-        (!selected ||
-          (candidate.created ?? 0) > (selected.created ?? 0) ||
-          ((candidate.created ?? 0) === (selected.created ?? 0) &&
-            candidate.id !== selected.id &&
-            terminal(selected.status) &&
-            !terminal(candidate.status)))
+        preferSubscription(candidate, selected)
       )
         selected = candidate;
     }
@@ -951,14 +961,9 @@ export class PlatformBilling {
     }
     return prices;
   }
-  private proPrice(price: Stripe.Price) {
-    this.mode(price.livemode);
+  private requireMonthlyProPrice(price: Stripe.Price) {
     check(
-      price.active &&
-        price.type === "recurring" &&
-        price.recurring?.interval === "month" &&
-        price.recurring.interval_count === 1 &&
-        (price.unit_amount ?? 0) > 0,
+      price.recurring?.interval === "month" && price.recurring.interval_count === 1,
       409,
       "platform_price",
       "Pro requires an active paid monthly recurring Stripe price.",
@@ -1175,12 +1180,7 @@ export class PlatformBilling {
               providerId(candidate.customer) ===
                 state.tenant.platform_customer_id &&
               candidate.items.data.some((item) => prices.has(item.price.id)) &&
-              (!selected ||
-                (candidate.created ?? 0) > (selected.created ?? 0) ||
-                ((candidate.created ?? 0) === (selected.created ?? 0) &&
-                  candidate.id !== selected.id &&
-                  terminal(selected.status) &&
-                  !terminal(candidate.status)))
+              preferSubscription(candidate, selected)
             )
               state.selected = subscriptionFact(candidate);
           }
@@ -1440,11 +1440,7 @@ export class PlatformBilling {
         lines: (invoiceLines.get(entry.invoice.id) ?? []).map(
           (line) => line.line,
         ),
-        cashRevoked:
-          disputed ||
-          (refunded > 0 &&
-            refunded >=
-              Math.max(entry.invoice.amount_paid, entry.invoice.total ?? 0)),
+        cashRevoked: disputed || cashFullyRefunded(entry.invoice.amount_paid, refunded),
         creditApplied: (invoiceBalances.get(entry.invoice.id) ?? []).reduce(
           (sum, balance) => sum + balance.amount,
           0,
@@ -1500,11 +1496,7 @@ export class PlatformBilling {
         }
       }
     }
-    return (
-      disputed ||
-      (refunded > 0 &&
-        refunded >= Math.max(invoice.amount_paid, invoice.total ?? 0))
-    );
+    return disputed || cashFullyRefunded(invoice.amount_paid, refunded);
   }
   private creditedGrants(
     line: Stripe.InvoiceLineItem,
@@ -1808,37 +1800,46 @@ export class PlatformBilling {
       });
       const all = turn ? await turn.rows<PlatformGrant>(allQuery) : await allQuery;
       turn?.work(all.length * (5 + Math.max(1, Math.ceil(Math.log2(all.length + 1)))));
-      const valid = all.filter((g) => !g.revoked);
+      const valid = all.filter((g) => !g.revoked && g.period_end > g.period_start);
+      const now = Date.now();
       // Keep the latest past/current nonrevoked interval after expiry so an
       // unpaid renewal can retain pending events. A refund removes its evidence.
-      // Join only contiguous/overlapping intervals, never a lapse or future grant.
+      // Include prepaid renewals in the same interval. Keep the earliest future
+      // interval if coverage has not yet started.
       const pro = valid
         .map((g) => ({
           ...g,
           period_start: qualificationStarts.get(g.id) ?? g.period_start,
         }))
-        .filter((g) => g.tier === "pro" && g.period_start <= Date.now())
-        .sort((a, b) => b.period_end - a.period_end);
-      let proEnd = pro[0]?.period_end ?? 0;
-      let proStart = pro[0]?.period_start ?? 0;
-      for (const grant of pro)
-        if (grant.period_end >= proStart)
-          proStart = Math.min(proStart, grant.period_start);
+        .filter((g) => g.tier === "pro" && g.period_start < g.period_end)
+        .sort((a, b) => a.period_start - b.period_start);
+      let proEnd = 0;
+      let proStart = 0;
+      for (const grant of pro) {
+        if (grant.period_start > proEnd) {
+          if (proEnd && grant.period_start > now) break;
+          proStart = grant.period_start;
+        }
+        proEnd = Math.max(proEnd, grant.period_end);
+      }
       // A revoked renewal cannot fall back to an older expired interval's grace.
       // Independently paid, still-current coverage remains usable.
       if (
-        proEnd <= Date.now() &&
+        proEnd <= now &&
         all.some(
           (g) =>
             g.tier === "pro" &&
             g.revoked &&
-            g.period_start <= Date.now() &&
+            g.period_start <= now &&
             g.period_end > proEnd,
         )
       ) {
         proEnd = 0;
         proStart = 0;
       }
+      const paidProducts = this.config.paidMaxProducts ?? 20;
+      const paidStorage = this.config.paidStorageBytes ?? 1024 ** 3;
+      const restoreTrial = all.length > 0 && !current.exempt && current.trial_ends_at > now;
       await tx("tenants")
         .where({ id: tenantId })
         .update({
@@ -1851,16 +1852,19 @@ export class PlatformBilling {
           pro_period_start: proStart,
           ...(valid.length
             ? {
-                max_products: Math.max(
-                  current.max_products,
-                  this.config.paidMaxProducts ?? 20,
-                ),
-                max_storage_bytes: Math.max(
-                  current.max_storage_bytes,
-                  this.config.paidStorageBytes ?? 1024 ** 3,
-                ),
+                max_products: Math.max(current.max_products, paidProducts),
+                max_storage_bytes: Math.max(current.max_storage_bytes, paidStorage),
               }
-            : {}),
+            : restoreTrial
+              ? {
+                  max_products: Number(current.max_products) === paidProducts
+                    ? Math.min(paidProducts, 3)
+                    : current.max_products,
+                  max_storage_bytes: Number(current.max_storage_bytes) === paidStorage
+                    ? Math.min(paidStorage, this.config.trialStorageBytes ?? 100 * 1024 ** 2)
+                    : current.max_storage_bytes,
+                }
+              : {}),
         });
       turn?.work();
     });
@@ -1912,94 +1916,81 @@ export class PlatformBilling {
     event: PlatformEvent,
   ): Promise<string | undefined> {
     const turn = workerTurn();
-    if (turn) {
-      const slot = "platform-customer";
-      const identity = hash(
-        JSON.stringify([
-          this.config.stripeSecret,
-          this.config.stripeLiveMode ?? false,
-          event.id,
-          event.type,
-          event.data.object.id,
-        ]),
-      );
-      const state = await turn.state(slot, {
-        identity,
-        phase: "start",
-        chargeId: null as string | null,
-        customerId: null as string | null,
-      });
-      if (state.identity !== identity) {
-        await turn.reset(slot);
-        throw new DeferredJob(Date.now() + 1000);
-      }
-      if (state.phase === "start") {
-        if (event.type.startsWith("charge.dispute.")) {
-          this.external();
-          const dispute = await turn.read(async (options) =>
-            this.stripe.disputes.retrieve(
-              String(event.data.object.id),
-              {},
-              options,
-            ),
-          );
-          state.chargeId = providerId(dispute.charge) ?? null;
-        } else if (event.type.startsWith("refund.")) {
-          this.external();
-          const refund = await turn.read(async (options) =>
-            this.stripe.refunds.retrieve(
-              String(event.data.object.id),
-              {},
-              options,
-            ),
-          );
-          state.chargeId = providerId(refund.charge) ?? null;
-        } else if (event.type.startsWith("charge."))
-          state.chargeId = String(event.data.object.id);
-        else
-          state.customerId =
-            providerId(
-              event.data.object.customer as string | { id: string } | undefined,
-            ) ?? null;
-        state.phase = state.chargeId ? "charge" : "done";
-        await turn.save(slot, state);
-      }
-      if (state.phase === "charge") {
-        this.external();
-        const charge = await turn.read(async (options) =>
-          this.stripe.charges.retrieve(state.chargeId!, {}, options),
-        );
-        this.mode(charge.livemode);
-        state.customerId = providerId(charge.customer) ?? null;
-        state.phase = "done";
-        await turn.save(slot, state);
-      }
-      return state.customerId ?? undefined;
+    const slot = "platform-customer";
+    const objectId = String(event.data.object.id);
+    const identity = hash(
+      JSON.stringify([
+        2,
+        this.config.stripeSecret,
+        this.config.stripeLiveMode ?? false,
+        event.id,
+        event.type,
+        objectId,
+      ]),
+    );
+    const initial = {
+      identity,
+      phase: "start",
+      chargeId: null as string | null,
+      intentId: null as string | null,
+      customerId: null as string | null,
+    };
+    const state = turn ? await turn.state(slot, initial) : initial;
+    if (turn && state.identity !== identity) {
+      await turn.reset(slot);
+      throw new DeferredJob(Date.now() + 1000);
     }
-    let chargeId: string | undefined;
-    if (event.type.startsWith("charge.dispute.")) {
+    const read = <T>(call: (options?: Stripe.RequestOptions) => Promise<T>) => {
       this.external();
-      chargeId = providerId(
-        (await this.stripe.disputes.retrieve(String(event.data.object.id)))
-          .charge,
+      return turn ? turn.read(call) : call();
+    };
+    if (state.phase === "start") {
+      if (event.type.startsWith("charge.dispute.")) {
+        const dispute = await read((options) =>
+          this.stripe.disputes.retrieve(objectId, {}, options),
+        );
+        state.chargeId = providerId(dispute.charge) ?? null;
+      } else if (
+        event.type.startsWith("refund.") ||
+        event.type.startsWith("charge.refund.")
+      ) {
+        const refund = await read((options) =>
+          this.stripe.refunds.retrieve(objectId, {}, options),
+        );
+        state.customerId = providerId(refund.customer) ?? null;
+        state.chargeId = providerId(refund.charge) ?? null;
+        state.intentId = providerId(refund.payment_intent) ?? null;
+      } else if (event.type.startsWith("charge."))
+        state.chargeId = objectId;
+      else
+        state.customerId =
+          providerId(
+            event.data.object.customer as string | { id: string } | undefined,
+          ) ?? null;
+      state.phase = state.customerId
+        ? "done"
+        : state.chargeId ? "charge" : state.intentId ? "intent" : "done";
+      await turn?.save(slot, state);
+    }
+    if (state.phase === "charge") {
+      const charge = await read((options) =>
+        this.stripe.charges.retrieve(state.chargeId!, {}, options),
       );
-    } else if (event.type.startsWith("refund.")) {
-      this.external();
-      chargeId = providerId(
-        (await this.stripe.refunds.retrieve(String(event.data.object.id)))
-          .charge,
+      this.mode(charge.livemode);
+      state.customerId = providerId(charge.customer) ?? null;
+      state.phase = !state.customerId && state.intentId ? "intent" : "done";
+      await turn?.save(slot, state);
+    }
+    if (state.phase === "intent") {
+      const intent = await read((options) =>
+        this.stripe.paymentIntents.retrieve(state.intentId!, {}, options),
       );
-    } else if (event.type.startsWith("charge."))
-      chargeId = String(event.data.object.id);
-    else
-      return providerId(
-        event.data.object.customer as string | { id: string } | undefined,
-      );
-    if (!chargeId) return undefined;
-    this.external();
-    const charge = await this.stripe.charges.retrieve(chargeId);
-    this.mode(charge.livemode);
-    return providerId(charge.customer);
+      this.mode(intent.livemode);
+      state.customerId = providerId(intent.customer) ?? null;
+      state.phase = "done";
+      await turn?.save(slot, state);
+    }
+    return state.customerId ?? undefined;
   }
   async run(worker?: WorkerQueueOptions): Promise<void> {
     await runQueue(

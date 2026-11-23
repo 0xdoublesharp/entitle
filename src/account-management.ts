@@ -139,7 +139,10 @@ export class AccountManagement {
     return this.sellerAction(req, false, async (tx, session) => ({
       sessions: (
         await tx("seller_sessions")
-          .where({ user_id: session.user.id })
+          .where({
+            user_id: session.user.id,
+            auth_generation: Number(session.user.security_generation),
+          })
           .andWhere("expires_at", ">", Date.now())
           .orderBy("expires_at", "desc")
       ).map((row) => ({
@@ -318,6 +321,8 @@ export class AccountManagement {
             path: req.url.split("?")[0]!,
           },
           this.auth.config.secret,
+          true,
+          this.auth.config.privilegedAuthPolicy,
         );
       else await this.consumeChallenge(tx, s, `grant:${purpose}`, verification);
       const result = await action(tx);
@@ -619,11 +624,8 @@ export function retainedFinancial(event: unknown) {
     .parse(event);
   const financial: Record<string, string | number> = {};
   for (const [key, value] of Object.entries(parsed.data.object)) {
-    if (
-      value === null &&
-      ["ending_balance", "application_fee_amount", "tax"].includes(key)
-    )
-      continue;
+    // Stripe nulls any optional amount or currency (deleted customers, $0 sessions).
+    if (value === null) continue;
     if (key === "currency")
       financial[key] = z
         .string()

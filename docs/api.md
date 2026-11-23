@@ -157,7 +157,7 @@ Prefix `/api/v1/tenants/:tenant`:
 
 | Method   | Route                                            | Input / behavior                                                                                                                      |
 | -------- | ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------- |
-| GET      | /catalog                                         | Tenant name, products and plan IDs/allowances                                                                                         |
+| GET      | /catalog                                         | Tenant name, products, and unarchived plans with `id`, `name`, `site_allowance`, `unit_amount` (minor units), `currency`, and `billing_interval` (`month`, `year`, or null for plans created before intervals were recorded) |
 | POST     | /checkout                                        | `{planId,email,uiMode?:"hosted"\|"elements"}`; server resolves price/account; existing email requires buyer sign-in                   |
 | POST     | /activate                                        | `{key,installationId,siteUrl?,installationLabel?,product}`; stable installation ID, transactional allowance, retry returns same token |
 | GET      | /activation                                      | Installation bearer token; current entitlement and billing status                                                                     |
@@ -211,12 +211,14 @@ Prefix `/api/v1/tenants/:tenant/seller`. Interactive owners use seller sessions 
 | ------ | --------------------------- | ------------------------------------------------------------------------------------------------------------- |
 | GET    | /overview                   | read; tenant, products/plans, safe licenses/releases and measured metrics                                     |
 | GET    | /licenses/:id               | read; one tenant license and safe installation records, `limit` 1–500 (default 100), optional `after` cursor; returns `nextCursor` |
-| GET    | /prices                     | read; active annual connected-account prices; local fixtures clearly labeled                                  |
-| POST   | /products                   | catalog:write; `{slug,name,framework?,frameworkConfig?,pluginBasename?,plans:[{name,siteAllowance,priceId}]}` |
+| GET    | /prices                     | read; active monthly and annual merchant prices, each with `interval` of `month` or `year`; local fixtures clearly labeled |
+| POST   | /products                   | catalog:write; `{slug,name,framework?,frameworkConfig?,pluginBasename?,plans:[{name,siteAllowance,priceId}]}`; an existing slug updates the name and adds the listed plans, keeping existing ones |
+| POST   | /plans/:id/archive          | catalog:write; `{archived:boolean}`; archived plans leave the catalog and refuse new checkout (`409 plan_archived`); existing licenses are unchanged |
 | POST   | /releases/:product/:version | releases:write; WordPress raw ZIP and base64url JSON `X-Release-Metadata`                                     |
 | POST   | /assets/:product/:version   | releases:write; native raw bytes and base64url JSON `X-Release-Metadata`                                      |
 | POST   | /releases/:id/withdraw      | releases:write; `{}`; retains private artifact                                                                |
 | POST   | /licenses/:id/revoke        | licenses:write; `{revoked:boolean}`; does not clear refund/dispute restrictions                               |
+| POST   | /licenses/:id/installations/:installationId/deactivate | licenses:write; `{}`; frees the seat and invalidates that installation's token for support cases |
 | GET    | /keys                       | Interactive owner; prefix, scopes, expiry/last-used; no raw key/hash                                          |
 | POST   | /keys                       | Interactive owner; `{name,scopes?,expiresInDays?}`; defaults read+releases:write,90 days,max365               |
 | POST   | /keys/:id/revoke            | Interactive owner; `{}`                                                                                       |
@@ -236,7 +238,7 @@ Native asset upload uses `Content-Type: application/octet-stream`, required `Con
 
 WordPress release metadata: `{changelog,minWp?,minPhp?,minFree?,tested?}`. Defaults 6.0/8.0/0.0.0/0.0.0 respectively. Authentication precedes parsing. Default WordPress cap 25 MiB, hard ceiling 100 MiB. Changelog schema permits 30,000 characters, but the entire encoded metadata header must fit 12,288 bytes. Publication verifies paths, CRC, expansion/entries, plugin identity/version, SHA-256 and private storage before committing metadata. Withdrawn objects remain stored and count against quota.
 
-Catalog setup preserves immutable price-to-product and allowance mappings. Add a new Stripe price to change seats. A future paid plan takes effect at its paid period start; overlapping paid grants retain the larger allowance through its paid period. No unpaid upgrade grants seats.
+Plan prices must be active recurring Stripe prices billed every month or every year. Catalog setup preserves immutable price-to-product and allowance mappings. Add a new Stripe price to change seats. A future paid plan takes effect at its paid period start; overlapping paid grants retain the larger allowance through its paid period. No unpaid upgrade grants seats.
 
 ### Complimentary issuance
 
@@ -318,22 +320,33 @@ headers. `GET /sessions` lists only the current seller's sessions. POST
 `/sessions/revoke-all` accept `{}`. Revoking the current session requires signing
 in again.
 
+Privileged actions need a WebAuthn approval. POST `/reauth/options` with
+`{action:"account.privileged",purpose,path}` returns `{challengeId,options}`;
+complete the assertion and POST `/reauth/verify` with `{challengeId,response}` to
+receive `{verification}`. Send it in `X-Account-Verification` when
+creating/revoking API keys (`api_keys`), publishing releases from the browser
+(`release_publish`), or permanently removing an empty workspace
+(`workspace_remove`). `path` is the exact API path of that request. The server's
+`PRIVILEGED_AUTH_POLICY` decides which credentials qualify. An ineligible
+credential returns `403 hardware_required` under `hardware` or
+`403 passkey_required` under `passkey`. GET `/security` reports
+`privilegedPolicy` and `privilegedReady`.
+
 POST `/verification/request` accepts `{purpose}` and emails a browser-bound,
 expiring token. POST `/verification/consume` accepts `{purpose,token}` and returns
-`{verification,expiresIn}`. The returned proof lasts five minutes and can be used
-once for that purpose and session. Send it in `X-Account-Verification` when
-creating/revoking API keys (`api_keys`), publishing releases from the browser
-(`release_publish`), creating a workspace export (`tenant_transfer`), or permanently
-removing an empty workspace (`workspace_remove`). CI
-publication remains authenticated by a scoped API key. A failed action requires
-a new proof. Never save proofs in browser storage or URLs.
+`{verification,expiresIn}`. Use it for ordinary actions: creating a workspace
+export (`tenant_transfer`), replacing recovery codes (`recovery_codes`), and
+enrolling a first credential (`security_enroll`). Either kind of proof lasts five
+minutes and can be used once for its purpose and session. CI publication remains
+authenticated by a scoped API key or a trusted OIDC publisher. A failed action
+requires a new proof. Never save proofs in browser storage or URLs.
 
 Hosted workspace lifecycle routes use `/api/v1/platform/tenants/:id`, where `id`
 is the workspace UUID from `/platform/me`. All require an interactive owner
 session; API keys cannot manage workspace lifecycle. POST `/archive` and
 `/restore` accept `{}` and return `{tenant}`. GET `/removal` returns
-`{removable,blockers}`. POST `/remove` accepts `{slug}` and consumes fresh
-`workspace_remove` proof from `X-Account-Verification`; it rechecks retained
+`{removable,blockers}`. POST `/remove` accepts `{slug}` and consumes a fresh
+`workspace_remove` WebAuthn approval from `X-Account-Verification`; it rechecks retained
 history under a database lock and returns `{ok:true}` only after removal.
 Archiving changes visibility, preserving membership and business access.
 `/platform/me` includes `archived_at`, `parent_archived_at` and

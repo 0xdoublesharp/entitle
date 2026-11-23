@@ -54,6 +54,7 @@ const migrationNames = [
   "019_oidc_publishing",
   "020_strong_reauthentication",
   "021_auth_capabilities",
+  "022_plan_catalog_fields",
 ] as const;
 
 // Knex's migration listing can create its metadata tables. Serving roles only
@@ -122,7 +123,9 @@ export async function migrate(db: DB) {
                                               ? import("./migrations/019_oidc_publishing.ts")
                                               : m === "020_strong_reauthentication"
                                                 ? import("./migrations/020_strong_reauthentication.ts")
-                                                : import("./migrations/021_auth_capabilities.ts"),
+                                                : m === "021_auth_capabilities"
+                                                  ? import("./migrations/021_auth_capabilities.ts")
+                                                  : import("./migrations/022_plan_catalog_fields.ts"),
     },
   });
 }
@@ -298,6 +301,10 @@ export interface Plan {
   name: string;
   site_allowance: number;
   stripe_price_id: string;
+  unit_amount?: number | null;
+  currency?: string | null;
+  billing_interval?: string | null;
+  archived_at?: number | null;
 }
 export interface Release {
   tenant_id: string;

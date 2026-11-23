@@ -61,3 +61,63 @@ test("blocked tenant leaves real work/email queues and another tenant's webhook 
     assert.deepEqual(errors,[]);assert.equal((await a.deliveries())[0]!.state,"pending");assert.equal((await b.deliveries())[0]!.state,"sent");
   });
 });
+
+test("email outbox honors shutdown before claiming the next message", async () => {
+  const { operationsFixture, seedOperationLicense } = await import("./operations-fixtures.test.ts");
+  const { Outbox, enqueueEmail } = await import("../src/email.ts");
+  await operationsFixture(async (db, tenant) => {
+    const secret = "42".repeat(32);
+    const { customer } = await seedOperationLicense(db, tenant);
+    for (const id of ["first", "second"])
+      await enqueueEmail(db, secret, id, customer, null, "login", {
+        to: "buyer@example.test", subject: "Sign in", text: "Login link",
+      }, tenant.id);
+    const controller = new AbortController();
+    let sends = 0;
+    const outbox = new Outbox(db, secret, {
+      send: async () => { sends++; controller.abort(); },
+    }, tenant);
+    await outbox.run(20, controller.signal);
+    assert.equal(sends, 1);
+    await outbox.run(20, controller.signal);
+    assert.equal(sends, 1);
+    assert.equal((await db("emails").where({ tenant_id: tenant.id, attempts: 0 })).length, 2);
+  });
+});
+
+test("a shutdown-aware outbox never sends a credential canceled after its claim", async (t) => {
+  const { operationsFixture, seedOperationLicense } = await import("./operations-fixtures.test.ts");
+  const { Outbox, enqueueEmail } = await import("../src/email.ts");
+  await operationsFixture(async (db, tenant) => {
+    const secret = "42".repeat(32);
+    const { customer } = await seedOperationLicense(db, tenant);
+    await enqueueEmail(db, secret, "canceled", customer, null, "login", {
+      to: "buyer@example.test", subject: "Sign in", text: "Login link",
+    }, tenant.id);
+    const query = db.client.query.bind(db.client);
+    const cancel = db("emails")
+      .where({ tenant_id: tenant.id, id: "canceled" })
+      .update({ state: "canceled", payload: "" })
+      .toSQL();
+    const replace = t.mock.method(db.client, "query", async (
+      connection: unknown,
+      statement: { sql: string; bindings?: unknown[] },
+    ) => {
+      if (/^select \* from [`"]emails[`"]/i.test(statement.sql) &&
+          statement.bindings?.includes("canceled"))
+        await query(connection, cancel);
+      return query(connection, statement);
+    });
+    const send = t.mock.fn(async () => {});
+    try {
+      await new Outbox(db, secret, { send }, tenant)
+        .run(1, new AbortController().signal);
+    } finally {
+      replace.mock.restore();
+    }
+    assert.equal(send.mock.callCount(), 0);
+    const row = await db("emails").where({ tenant_id: tenant.id, id: "canceled" }).first();
+    assert.equal(row.state, "canceled");
+    assert.equal(row.payload, "");
+  });
+});

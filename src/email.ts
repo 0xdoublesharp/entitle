@@ -47,7 +47,7 @@ export class Outbox {
   message(job: Job) {
     return unseal<Message>(job.payload, this.secret);
   }
-  async run() {
+  async run(limit = 20, signal?: AbortSignal) {
     await runQueue(this.db, "emails", async (job) => {
       // Check replacement/supersession after claiming. SMTP remains at-least-once.
       const current = await this.db<Job>("emails")
@@ -63,6 +63,6 @@ export class Outbox {
       });
       if(!allowed)throw new DeferredJob((day+1)*86400000);
       await this.mailer.send(this.message(job));
-    }, 20, this.tenant.id);
+    }, limit, this.tenant.id, signal ? { signal } : undefined);
   }
 }

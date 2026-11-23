@@ -77,10 +77,24 @@ export async function runQueue(
     if (worker?.signal?.aborted) break;
     const job = await db.transaction(async (tx) => {
       await lock(tx, table.endsWith("work") ? "work" : "email", tenantId);
+      const now = Date.now();
+      await query(tx)
+        .where({ state: "running" })
+        .andWhere("lease_until", "<", now)
+        .andWhere(function () {
+          this.where("created_at", "<", now - 72 * 3600000)
+            .orWhere("attempts", ">=", 12);
+        })
+        .update({
+          state: "failed",
+          lease_until: 0,
+          lease_owner: null,
+          last_error: "processing_failed",
+        });
       const row = await query(tx)
         .whereIn("state", ["pending", "running"])
-        .andWhere("available_at", "<=", Date.now())
-        .andWhere("lease_until", "<", Date.now())
+        .andWhere("available_at", "<=", now)
+        .andWhere("lease_until", "<", now)
         .orderBy("created_at")
         .first();
       if (!row) return;
@@ -135,6 +149,7 @@ export async function runQueue(
       },
     };
     try {
+      controller.signal.throwIfAborted();
       if (worker) await queueScope.run(scope, () => handler(job));
       else await handler(job);
       await stopRenewal();

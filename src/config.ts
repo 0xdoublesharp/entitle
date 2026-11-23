@@ -1,3 +1,4 @@
+import { isIP } from "node:net";
 import { resolve } from "node:path";
 import { z } from "zod";
 import { normalizeAppBasePath } from "../packages/shared/app-path.ts";
@@ -19,6 +20,29 @@ export function serverIdentity(config: {
     throw Error("DEPLOYMENT_SLOT must be blue or green");
   return { role, slot };
 }
+
+// proxy-addr names, or an exact address or non-/0 CIDR. Never "true" or a blanket range.
+function trustedProxy(entry: string) {
+  if (["loopback", "linklocal", "uniquelocal"].includes(entry)) return true;
+  const [address, prefix, ...rest] = entry.split("/");
+  const family = isIP(address!);
+  if (!family || rest.length) return false;
+  if (prefix === undefined) return true;
+  const bits = Number(prefix);
+  return /^\d{1,3}$/.test(prefix) && bits > 0 && bits <= (family === 4 ? 32 : 128);
+}
+export function trustedProxies(value: string | undefined): string | false {
+  if (!value) return false;
+  const entries = value.split(",").map((entry) => entry.trim());
+  if (!entries.every(trustedProxy))
+    throw Error("TRUST_PROXY must identify a specific trusted proxy or subnet");
+  return entries.join(",");
+}
+export const privilegedAuthPolicySchema = z
+  .enum(["hardware", "passkey"], {
+    error: "PRIVILEGED_AUTH_POLICY must be hardware or passkey",
+  })
+  .default("hardware");
 
 export const freeLicenseOffersSchema = z.array(z.object({
   tenant: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).max(100),
@@ -90,6 +114,8 @@ export interface Config {
   platformDailyEmailLimit?: number;
   maxSellerSignupsPerHour?: number;
   trustProxy?: string | false;
+  /** "hardware": operator-approved device-bound keys; "passkey": any user-verified passkey. */
+  privilegedAuthPolicy?: z.infer<typeof privilegedAuthPolicySchema>;
   trialDays?: number;
   graceDays?: number;
   stripeConnectClientId?: string;
@@ -247,8 +273,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     (secretMode[1] === "live") !== (env.STRIPE_LIVE_MODE === "true")
   )
     throw Error("Stripe secret key must match STRIPE_LIVE_MODE");
-  if (["true", "0.0.0.0/0", "::/0"].includes(env.TRUST_PROXY ?? ""))
-    throw Error("TRUST_PROXY must identify a specific trusted proxy or subnet");
+  const trustProxy = trustedProxies(env.TRUST_PROXY);
+  const privilegedAuthPolicy = privilegedAuthPolicySchema.parse(
+    env.PRIVILEGED_AUTH_POLICY || undefined,
+  );
   if (production && !origin.startsWith("https://"))
     throw Error("PUBLIC_ORIGIN must be HTTPS in production");
   const localBilling = env.LOCAL_BILLING === "true";
@@ -525,7 +553,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     dailyEmailLimit: limits.DAILY_EMAIL_LIMIT,
     platformDailyEmailLimit: limits.PLATFORM_DAILY_EMAIL_LIMIT,
     maxSellerSignupsPerHour: limits.MAX_SELLER_SIGNUPS_PER_HOUR,
-    trustProxy: env.TRUST_PROXY || false,
+    trustProxy,
+    privilegedAuthPolicy,
     trialDays: limits.TRIAL_DAYS,
     graceDays: limits.GRACE_DAYS,
     stripeConnectClientId: env.STRIPE_CONNECT_CLIENT_ID ?? "",

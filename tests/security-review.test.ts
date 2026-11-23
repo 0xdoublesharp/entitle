@@ -11,6 +11,7 @@ import { buildApp } from "../src/app.ts";
 import { PlatformBilling } from "../src/platform-billing.ts";
 import { StripeBilling } from "../src/stripe.ts";
 import { PlatformAuth, PlatformOutbox } from "../src/platform-auth.ts";
+import { Tenants } from "../src/tenants.ts";
 import { InMemoryArtifactStore } from "../src/storage.ts";
 import { Licenses } from "../src/licensing.ts";
 import { Releases } from "../src/releases.ts";
@@ -388,9 +389,10 @@ test("an attacker browser cannot exhaust a victim browser's bound seller login a
     now += 61000;
   }
   assert.equal((await f.db("platform_emails")).length, 10);
-  const before = attacker.writes();
+  const before = attacker.cookies[auth.preauthCookieName];
   await attacker.send("victim@example.test");
-  assert.equal(attacker.writes(), before);
+  assert.equal(attacker.cookies[auth.preauthCookieName], before);
+  assert.equal((await f.db("platform_emails")).length, 10);
   await victim.send("victim@example.test");
   assert.equal((await f.db("platform_emails")).length, 11);
   const row = await f
@@ -412,8 +414,10 @@ test("seller login retries reuse a valid browser nonce and suppressed requests p
   const nonce = jar.cookies[auth.preauthCookieName];
   const writes = jar.writes();
   await jar.send("owner@example.test");
-  assert.equal(jar.writes(), writes);
+  // Suppressed requests still refresh the same cookie, so Set-Cookie is not an oracle.
+  assert.equal(jar.writes(), writes + 1);
   assert.equal(jar.cookies[auth.preauthCookieName], nonce);
+  assert.equal((await f.db("platform_emails")).length, 1);
   await f.db("seller_login_tokens").decrement("created_at", 61000);
   await jar.send("owner@example.test");
   assert.equal(jar.cookies[auth.preauthCookieName], nonce);
@@ -528,7 +532,7 @@ test("seller address-wide safety ceiling spans browser jars and expires without 
   await browser(auth, f.config).send("bounded@example.test");
   const user = await f.db("seller_users").first();
   const now = Date.now();
-  const rows = Array.from({ length: 999 }, (_, index) => ({
+  const rows = Array.from({ length: 29 }, (_, index) => ({
     id: hash(`address-safety-${index}`),
     user_id: user.id,
     expires_at: now + 900000,
@@ -540,11 +544,12 @@ test("seller address-wide safety ceiling spans browser jars and expires without 
     await f.db("seller_login_tokens").insert(rows.slice(i, i + 200));
   const fresh = browser(auth, f.config);
   await fresh.send("bounded@example.test");
-  assert.equal(fresh.writes(), 0);
+  assert.equal(fresh.writes(), 1, "suppression is indistinguishable by cookie");
   assert.equal((await f.db("platform_emails")).length, 1);
+  assert.equal((await f.db("seller_login_tokens")).length, 30);
   await f.db("seller_login_tokens").update({ created_at: now - 86400001 });
   await fresh.send("bounded@example.test");
-  assert.equal(fresh.writes(), 1);
+  assert.equal(fresh.writes(), 2);
   assert.equal((await f.db("platform_emails")).length, 2);
 });
 
@@ -555,15 +560,16 @@ test("platform SMTP failures consume the shared daily attempt budget and retry w
   const payload = seal(
     {
       to: "retry@example.test",
-      subject: "Login",
+      subject: "Security notice",
       text: "Credential",
       messageId: "<retry@fixture>",
     },
     f.config.secret,
   );
+  // Sign-in links expire before the next day; durable security mail must not.
   await f
     .db("platform_emails")
-    .insert({ id: "retry", kind: "seller_login", payload, created_at: clock });
+    .insert({ id: "retry", kind: "account_security", payload, created_at: clock });
   let sends = 0;
   const outbox = new PlatformOutbox(
     f.db,
@@ -594,6 +600,74 @@ test("platform SMTP failures consume the shared daily attempt budget and retry w
   assert.equal(sends, 2);
   assert.equal(job.state, "sent");
   assert.equal(job.payload, "");
+});
+
+test("sign-in mail floods cannot starve account security mail, and expired sign-in links skip SMTP", async (t) => {
+  const f = await fixture(t);
+  let clock = Date.now();
+  t.mock.method(Date, "now", () => clock);
+  const queue = async (id: string, kind: string, created_at = clock) =>
+    f.db("platform_emails").insert({
+      id,
+      kind,
+      payload: seal(
+        { to: `${id}@example.test`, subject: kind, text: "Private", messageId: `<${id}@fixture>` },
+        f.config.secret,
+      ),
+      created_at,
+    });
+  for (const id of ["login-1", "login-2", "login-3"]) await queue(id, "seller_login", clock - 10);
+  await queue("expired", "seller_login", clock - 900000 - 20);
+  for (const kind of ["account_security", "account_recovery", "account_verification"])
+    await queue(kind, kind);
+  const delivered: string[] = [];
+  const worker = new PlatformOutbox(
+    f.db,
+    f.config.secret,
+    {
+      send: async (message) => {
+        delivered.push(message.messageId);
+      },
+    },
+    3,
+  );
+  await worker.run();
+  const state = async (id: string) =>
+    f.db("platform_emails").where({ id }).first();
+  const expired = await state("expired");
+  assert.equal(expired.state, "canceled");
+  assert.equal(expired.payload, "");
+  assert.ok(!delivered.includes("<expired@fixture>"));
+  // Three sign-in links fill the sign-in budget; security, recovery, and
+  // verification mail still send from the separate account budget.
+  assert.deepEqual(delivered.sort(), [
+    "<account_recovery@fixture>",
+    "<account_security@fixture>",
+    "<account_verification@fixture>",
+    "<login-1@fixture>",
+    "<login-2@fixture>",
+    "<login-3@fixture>",
+  ]);
+  await queue("login-4", "seller_login");
+  await queue("late-security", "account_security");
+  await worker.run();
+  assert.equal((await state("login-4")).last_error, "resource_budget");
+  assert.equal((await state("late-security")).last_error, "resource_budget");
+  const day = Math.floor(clock / 86400000);
+  assert.equal(
+    Number((await f.db("locks").where({ id: `platform:login-email-budget:${day}` }).first()).version),
+    3,
+  );
+  assert.equal(
+    Number((await f.db("locks").where({ id: `platform:email-budget:${day}` }).first()).version),
+    3,
+  );
+  // A deferred link that expires before the next budget day is dropped unsent.
+  clock = Number((await state("login-4")).available_at) + 1;
+  await worker.run();
+  assert.equal((await state("login-4")).state, "canceled");
+  assert.equal((await state("late-security")).state, "sent");
+  assert.equal(delivered.length, 7);
 });
 
 test("untrusted forwarded addresses cannot split public request budgets, while configured proxy addresses are honored", async (t) => {
@@ -790,5 +864,118 @@ test("tenant bulk failed-job recovery is bounded, scoped, payload-preserving and
         .where({ tenant_id: "primary", action: "jobs.retry_requested" })
     ).length,
     4,
+  );
+});
+
+test("sealed values with a truncated or missing GCM tag are rejected before decryption", () => {
+  const secret = "cd".repeat(32);
+  const sealed = Buffer.from(seal({ ok: true }, secret), "base64url");
+  assert.deepEqual(unseal(sealed.toString("base64url"), secret), { ok: true });
+  for (const length of [0, 12, 16, 28])
+    assert.throws(
+      () => unseal(sealed.subarray(0, length).toString("base64url"), secret),
+      /truncated/,
+    );
+  // A body whose tag bytes were cut short shifts ciphertext into the tag and must fail authentication.
+  const shortTag = Buffer.concat([sealed.subarray(0, 16), sealed.subarray(28)]);
+  assert.throws(() => unseal(shortTag.toString("base64url"), secret));
+});
+
+test("workspace and API key management re-check session generation, recovery and standalone ownership", async (t) => {
+  const f = await fixture(t);
+  const seller = async (email: string, extra: Record<string, unknown> = {}) => {
+    const id = `user-${email}`;
+    await f.db("seller_users").insert({
+      id,
+      email,
+      verified_at: 1,
+      created_at: 1,
+      security_generation: 1,
+    });
+    await f.db("seller_memberships").insert({
+      tenant_id: "primary",
+      user_id: id,
+      role: "owner",
+      created_at: 1,
+    });
+    await f.db("seller_sessions").insert({
+      id: hash(`session-${email}`),
+      user_id: id,
+      auth_generation: 1,
+      expires_at: Date.now() + 3600000,
+      ...extra,
+    });
+    return {
+      user: { id, email, verified_at: 1, created_at: 1 },
+      csrfToken: "unused",
+      sessionHash: hash(`session-${email}`),
+    };
+  };
+  const tenants = new Tenants(f.db, f.config);
+  const current = await seller("current@example.test");
+  assert.equal((await tenants.keys(current, "primary")).length, 0);
+  const stale = await seller("stale@example.test", { auth_generation: 0 });
+  await assert.rejects(tenants.keys(stale, "primary"), {
+    code: "seller_login_required",
+  });
+  await assert.rejects(tenants.createKey(stale, "primary", "CI"), {
+    code: "seller_login_required",
+  });
+  await assert.rejects(
+    tenants.create(stale, { slug: "stale-space", name: "Stale" }),
+    { code: "seller_login_required" },
+  );
+  const restricted = await seller("restricted@example.test", {
+    recovery_id: "00000000-0000-4000-8000-000000000001",
+  });
+  await assert.rejects(tenants.createKey(restricted, "primary", "CI"), {
+    code: "recovery_restricted",
+  });
+  await assert.rejects(tenants.archive(restricted, "primary", true), {
+    code: "recovery_restricted",
+  });
+  const standalone = new Tenants(f.db, {
+    ...f.config,
+    deploymentMode: "standalone",
+    standaloneOwnerEmail: "current@example.test",
+  });
+  assert.equal((await standalone.keys(current, "primary")).length, 0);
+  const intruder = await seller("intruder@example.test");
+  await assert.rejects(standalone.keys(intruder, "primary"), {
+    code: "seller_login_required",
+  });
+});
+
+test("seller login requests set the browser cookie identically whether or not mail is issued", async (t) => {
+  const f = await fixture(t);
+  const auth = new PlatformAuth(f.db, f.config);
+  await f.db("seller_users").insert({
+    id: "disabled",
+    email: "disabled@example.test",
+    verified_at: 1,
+    created_at: 1,
+    email_login_disabled: 1,
+  });
+  const issued = browser(auth, f.config),
+    disabled = browser(auth, f.config);
+  await issued.send("new@example.test");
+  await disabled.send("disabled@example.test");
+  assert.equal(issued.writes(), 1);
+  assert.equal(disabled.writes(), 1);
+  assert.match(disabled.cookies[auth.preauthCookieName]!, /^[A-Za-z0-9_-]{43}$/);
+  assert.equal((await f.db("platform_emails")).length, 1);
+  const standalone = new PlatformAuth(f.db, {
+    ...f.config,
+    deploymentMode: "standalone",
+    standaloneOwnerEmail: "owner@example.test",
+  });
+  const stranger = browser(standalone, f.config);
+  await stranger.send("stranger@example.test");
+  assert.equal(stranger.writes(), 1);
+  assert.match(stranger.cookies[standalone.preauthCookieName]!, /^[A-Za-z0-9_-]{43}$/);
+  assert.equal((await f.db("platform_emails")).length, 1);
+  assert.equal(
+    (await f.db("seller_users").where({ email: "stranger@example.test" })).length,
+    0,
   );
 });

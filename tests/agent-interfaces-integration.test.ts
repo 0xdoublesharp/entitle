@@ -516,7 +516,7 @@ test("CLI and MCP reach API with scoped credentials, enforce paths and transfer 
       proof = join(dir, "proof.json");
     await writeFile(
       verify,
-      JSON.stringify({ purpose: "api_keys", token: "verification-token" }),
+      JSON.stringify({ purpose: "billing", token: "verification-token" }),
       { mode: 0o600 },
     );
     assert.equal(

@@ -18,11 +18,13 @@ apps/web/package.json
 apps/web/tsconfig.json
 deploy/Caddyfile
 deploy/api-router-entrypoint.sh
+deploy/compose.standalone.yaml
 deploy/compose.test.yaml
 deploy/compose.yaml
 deploy/nginx.conf.template
 deploy/runtime-entrypoint.sh
 deploy/runtime.Dockerfile
+deploy/standalone.Dockerfile
 docs/README.md
 docs/api.md
 docs/architecture.md
@@ -176,6 +178,7 @@ src/migrations/018_worker_privacy_receipt_index.ts
 src/migrations/019_oidc_publishing.ts
 src/migrations/020_strong_reauthentication.ts
 src/migrations/021_auth_capabilities.ts
+src/migrations/022_plan_catalog_fields.ts
 src/oidc-api.ts
 src/oidc-client.ts
 src/oidc-publishing.ts
@@ -225,6 +228,7 @@ tests/api-router.test.mjs
 tests/api.test.ts
 tests/app-path.test.ts
 tests/auth-maintenance.test.ts
+tests/auth-policy-passkey.test.ts
 tests/auth-policy.test.ts
 tests/auth-recovery-clients.test.ts
 tests/auth-recovery-ui.test.ts

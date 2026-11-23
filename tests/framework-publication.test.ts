@@ -147,6 +147,43 @@ test("artifact reads and latest selection fail closed across tenants and retain 
   assert.equal(await service.latest("p"), undefined);
 });
 
+test("native latest rechecks withdrawal before returning the winning release", async (t) => {
+  const service = await artifacts();
+  const previous = await service.publish(
+    await publication({ version: "1.9.0", changelog: "Previous notes" }),
+  );
+  const newest = await service.publish(await publication({ version: "1.10.0" }));
+  const query = db.client.query.bind(db.client);
+  const withdraw = db("releases")
+    .where({ tenant_id: "primary", id: newest.release.id })
+    .update({ withdrawn: 1 })
+    .toSQL();
+  let shortlist = false;
+  t.mock.method(
+    db.client,
+    "query",
+    async (
+      connection: unknown,
+      statement: { sql: string; bindings?: unknown[] },
+    ) => {
+      if (
+        /^select [`"]id[`"], [`"]version[`"] from [`"]releases[`"]/i.test(statement.sql)
+      ) shortlist = true;
+      if (
+        /^select \* from [`"]releases[`"]/i.test(statement.sql) &&
+        statement.bindings?.includes(newest.release.id)
+      )
+        await query(connection, withdraw);
+      return query(connection, statement);
+    },
+  );
+  const latest = await service.latest("p", "linux-x64");
+  assert.ok(shortlist);
+  assert.equal(latest?.release.id, previous.release.id);
+  assert.equal(latest?.release.changelog, previous.release.changelog);
+  assert.deepEqual(latest?.assets.map((asset) => asset.id), [previous.asset.id]);
+});
+
 test("package validation rejects mismatched identity/version and unsafe Joomla or JetBrains archives", async () => {
   const service = await artifacts();
   const input = await publication({ target: "any", filename: "app.zip" });
@@ -993,8 +1030,26 @@ test("Joomla extension identity variants and nested JetBrains JAR manifests are 
   );
 });
 
-test("Joomla missing client defaults to site and WordPress reads reject missing product identities", async () => {
+test("Joomla missing client defaults by extension type and WordPress reads reject missing product identities", async () => {
   const { verifyArtifact } = await import("../src/package-validation.ts");
+  const component = zipBytes([
+    {
+      name: "hello.xml",
+      data: '<extension type="component"><name>com_hello</name><version>1.0.0</version><files><filename>hello.php</filename></files></extension>',
+    },
+  ]);
+  const metadata = { target: "any", filename: "component.zip", changelog: "" };
+  const componentConfig = {
+    extensionType: "component",
+    element: "com_hello",
+    client: "administrator",
+    joomlaMajor: 5,
+  } as const;
+  await verifyArtifact("joomla", componentConfig, "1.0.0", metadata, component);
+  await assert.rejects(
+    verifyArtifact("joomla", { ...componentConfig, client: "site" }, "1.0.0", metadata, component),
+    { code: "invalid_package" },
+  );
   await verifyArtifact(
     "joomla",
     {

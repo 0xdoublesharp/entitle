@@ -51,6 +51,7 @@ export async function effectiveLicense(
     .where("grants.tenant_id", tenantId)
     .andWhere("grants.license_id", l.id)
     .andWhere("grants.period_start", "<=", now)
+    .whereRaw("?? > ??", ["grants.period_end", "grants.period_start"])
     .orderByRaw(
       "CASE WHEN grants.period_end > ? THEN 1 ELSE 0 END DESC",
       [now],
@@ -353,6 +354,28 @@ export class Licenses {
         .update({ active: 0, token_cipher: "" });
       if (changed)
         await recordBusinessEvent(tx, this.tenant.id, "activation.changed", i.id);
+    });
+  }
+  async deactivateBySeller(licenseId: string, installationId: string) {
+    await this.db.transaction(async (tx) => {
+      const license = { tenant_id: this.tenant.id, id: licenseId };
+      const locked = await tx("licenses").where(license).increment("lock_version", 1);
+      const target = {
+        tenant_id: this.tenant.id,
+        license_id: licenseId,
+        id: installationId,
+      };
+      check(
+        locked && (await tx("installations").where(target).first("id")),
+        404,
+        "not_found",
+        "Installation not found.",
+      );
+      const changed = await tx("installations")
+        .where({ ...target, active: 1 })
+        .update({ active: 0, token_cipher: "" });
+      if (changed)
+        await recordBusinessEvent(tx, this.tenant.id, "activation.changed", installationId);
     });
   }
   async replaceKey(id: string, customerId: string) {

@@ -1,5 +1,6 @@
 import type Stripe from "stripe";
 import type { StripeBilling } from "./stripe.ts";
+import { appliedInvoiceCredit, creditInvoiceTotal, merchantInvoiceLine, settleMerchantGrants, type MerchantGrantCredit } from "./stripe.ts";
 import { reconciliationLockId, type BillingEvent, type BillingSnapshot, type PaidGrant } from "./billing.ts";
 import { hash } from "./crypto.ts";
 import { check } from "./errors.ts";
@@ -13,14 +14,17 @@ const providerIdentity = (source: Source) => hash(JSON.stringify([
   source.config.stripeLiveMode === true,
   hash(source.config.stripeSecret),
 ]));
-interface Invoice { id: string; currency: string; amount: number; paidAt: number }
+interface Invoice {
+  id: string; currency: string; amount: number; paidAt: number;
+  creditTotal: number; readLines: boolean; prorationInvoice: boolean;
+}
 interface Payment { id: string; intent: string | null; charge: string | null }
 interface Charge { id: string; paid: boolean; refunded: number; disputed: boolean }
 type SnapshotPhase = "subscription" | "customer" | "invoices" | "invoice" |
   "payments" | "payment" | "charges" | "direct-charge" | "charge" | "disputes" |
-  "lines" | "refresh-subscription" | "refresh-customer" | "done";
+  "balances" | "lines" | "refresh-subscription" | "refresh-customer" | "done";
 interface SnapshotState {
-  version: 1; subscriptionId: string; revision: number; identity: string; phase: SnapshotPhase;
+  version: 3; subscriptionId: string; revision: number; identity: string; phase: SnapshotPhase;
   customerId: string; email: string; billingStatus: string;
   invoicePage: Invoice[]; invoiceIndex: number; invoiceCursor: string | null;
   invoiceNext: string | null; invoiceMore: boolean;
@@ -29,6 +33,7 @@ interface SnapshotState {
   chargePage: Charge[]; chargeIndex: number; chargeCursor: string | null;
   chargeNext: string | null; chargeMore: boolean;
   disputeCursor: string | null; lineCursor: string | null; refunded: number;
+  balanceCursor: string | null; appliedCredit: number; settled: boolean;
   suspended: boolean; fullyRefunded: boolean;
 }
 const charge = (value: Stripe.Charge): Charge => ({
@@ -46,14 +51,15 @@ export async function workerSnapshot(source: Source, subscriptionId: string): Pr
   const revision = Number((await source.db("locks")
     .where({ id: reconciliationLockId(source.tenant.id, subscriptionId) }).first())?.version ?? 0);
   const initial: SnapshotState = {
-    version: 1, subscriptionId, revision, identity: providerIdentity(source), phase: "subscription", customerId: "", email: "", billingStatus: "",
+    version: 3, subscriptionId, revision, identity: providerIdentity(source), phase: "subscription", customerId: "", email: "", billingStatus: "",
     invoicePage: [], invoiceIndex: 0, invoiceCursor: null, invoiceNext: null, invoiceMore: false,
     paymentPage: [], paymentIndex: 0, paymentCursor: null, paymentNext: null, paymentMore: false,
     chargePage: [], chargeIndex: 0, chargeCursor: null, chargeNext: null, chargeMore: false,
     disputeCursor: null, lineCursor: null, refunded: 0, suspended: false, fullyRefunded: false,
+    balanceCursor: null, appliedCredit: 0, settled: false,
   };
   let state = await turn.state(slot, initial);
-  if (state.version !== 1 || state.subscriptionId !== subscriptionId || state.revision !== revision || state.identity !== initial.identity) {
+  if (state.version !== initial.version || state.subscriptionId !== subscriptionId || state.revision !== revision || state.identity !== initial.identity) {
     await turn.reset(slot);
     state = initial;
   }
@@ -86,9 +92,12 @@ export async function workerSnapshot(source: Source, subscriptionId: string): Pr
         }, options));
         state.invoiceNext = nextPage(page);
         state.invoiceMore = page.has_more;
-        state.invoicePage = page.data.filter((item) => item.status === "paid" && item.amount_paid > 0).map((item) => ({
+        state.invoicePage = page.data.filter((item) => item.status === "paid").map((item) => ({
           id: item.id, currency: item.currency, amount: item.amount_paid,
           paidAt: (item.status_transitions.paid_at ?? item.created) * 1000,
+          creditTotal: creditInvoiceTotal(item, state.customerId),
+          readLines: item.amount_paid > 0 || (item.amount_due === 0 && item.amount_remaining === 0),
+          prorationInvoice: item.total <= 0,
         }));
         state.invoiceIndex = 0;
         state.phase = "invoice";
@@ -98,10 +107,22 @@ export async function workerSnapshot(source: Source, subscriptionId: string): Pr
         if (!invoice) {
           state.invoiceCursor = state.invoiceNext;
           state.phase = state.invoiceMore ? "invoices" : "refresh-subscription";
-        } else {
+        } else if (invoice.amount > 0) {
+          state.settled = true;
           state.paymentCursor = null;
           state.refunded = 0;
           state.phase = "payments";
+        } else if (invoice.creditTotal > 0) {
+          state.balanceCursor = null;
+          state.appliedCredit = 0;
+          state.phase = "balances";
+        } else {
+          state.settled = false;
+          facts.push({ kind: "unsettled-invoice", id: invoice.id, value: invoice.id });
+          if (invoice.readLines) {
+            state.lineCursor = null;
+            state.phase = "lines";
+          } else state.invoiceIndex++;
         }
         break;
       case "payments": {
@@ -183,9 +204,29 @@ export async function workerSnapshot(source: Source, subscriptionId: string): Pr
           charge: selected!.id, limit: 100, ...cursor(state.disputeCursor),
         }, options));
         const next = nextPage(page);
-        state.suspended ||= page.data.some((item) => !["won", "warning_closed"].includes(item.status));
+        state.suspended ||= (!state.disputeCursor && page.data.length === 0) ||
+          page.data.some((item) => !["won", "warning_closed"].includes(item.status));
         if (page.has_more) state.disputeCursor = next;
         else { state.chargeIndex++; state.phase = "charge"; }
+        break;
+      }
+      case "balances": {
+        const page = await read((options) => source.stripe.customers.listBalanceTransactions(
+          state.customerId, { limit: 100, ...cursor(state.balanceCursor) }, options,
+        ));
+        const next = nextPage(page);
+        for (const transaction of page.data)
+          state.appliedCredit += appliedInvoiceCredit(
+            transaction, invoice!, state.customerId, source.config.stripeLiveMode ?? false,
+          );
+        if (page.has_more) state.balanceCursor = next;
+        else {
+          state.settled = state.appliedCredit >= invoice!.creditTotal;
+          if (!state.settled)
+            facts.push({ kind: "unsettled-invoice", id: invoice!.id, value: invoice!.id });
+          state.lineCursor = null;
+          state.phase = "lines";
+        }
         break;
       }
       case "lines": {
@@ -194,12 +235,9 @@ export async function workerSnapshot(source: Source, subscriptionId: string): Pr
         }, options));
         const next = nextPage(page);
         for (const line of page.data) {
-          const priceId = providerId(line.pricing?.price_details?.price);
-          if (line.amount <= 0 || !line.parent?.subscription_item_details || !priceId) continue;
-          const value: PaidGrant = { id: line.id, invoiceId: invoice!.id, priceId,
-            periodStart: line.period.start * 1000, periodEnd: line.period.end * 1000,
-            paidAt: invoice!.paidAt, settled: true };
-          facts.push({ kind: "grants", id: line.id, value });
+          const { grant, credit } = merchantInvoiceLine(line, invoice!, state.settled, invoice!.prorationInvoice);
+          if (grant) facts.push({ kind: "grants", id: line.id, value: grant });
+          if (credit) facts.push({ kind: "grant-credit", id: line.id, value: credit });
         }
         if (page.has_more) state.lineCursor = next;
         else { state.invoiceIndex++; state.phase = "invoice"; }
@@ -209,7 +247,11 @@ export async function workerSnapshot(source: Source, subscriptionId: string): Pr
         turn.beginApply();
         return { subscriptionId, customerId: state.customerId, email: state.email,
           billingStatus: state.billingStatus, suspended: state.suspended, fullyRefunded: state.fullyRefunded,
-          grants: await turn.facts<PaidGrant>(slot, "grants"),
+          ...settleMerchantGrants(
+            await turn.facts<PaidGrant>(slot, "grants"),
+            await turn.facts<MerchantGrantCredit>(slot, "grant-credit"),
+            await turn.facts<string>(slot, "unsettled-invoice"),
+          ),
           invoices: await turn.facts<NonNullable<BillingSnapshot["invoices"]>[number]>(slot, "invoices") };
     }
     await turn.save(slot, state, facts, state.phase === "done");
@@ -219,7 +261,7 @@ export async function workerSnapshot(source: Source, subscriptionId: string): Pr
 type ResolvePhase = "event" | "charge" | "intent-payments" | "intent-invoice" |
   "customer-invoices" | "customer-invoice" | "legacy-payments" | "done";
 interface ResolveState {
-  version: 1; eventId: string; identity: string; phase: ResolvePhase; chargeId: string | null;
+  version: 2; eventId: string; identity: string; phase: ResolvePhase; chargeId: string | null;
   customerId: string | null; intentId: string | null; result: string | null;
   cursor: string | null; next: string | null; more: boolean;
   invoices: { id: string; subscription: string | null }[]; index: number;
@@ -230,12 +272,12 @@ export async function workerResolveSubscription(source: Source, event: BillingEv
   const turn = workerTurn()!;
   const slot = "merchant.resolve";
   const initial: ResolveState = {
-    version: 1, eventId: event.id, identity: providerIdentity(source), phase: "event", chargeId: null,
+    version: 2, eventId: event.id, identity: providerIdentity(source), phase: "event", chargeId: null,
     customerId: null, intentId: null, result: null, cursor: null, next: null, more: false,
     invoices: [], index: 0, payments: [], paymentIndex: 0, paymentCursor: null,
   };
   let state = await turn.state<ResolveState>(slot, initial);
-  if (state.eventId !== event.id || state.version !== 1 || state.identity !== initial.identity) {
+  if (state.eventId !== event.id || state.version !== initial.version || state.identity !== initial.identity) {
     await turn.reset(slot);
     state = initial;
   }
@@ -257,11 +299,13 @@ export async function workerResolveSubscription(source: Source, event: BillingEv
         } else if (event.type.startsWith("charge.dispute.")) {
           const dispute = await read((options) => source.stripe.disputes.retrieve(objectId, {}, options));
           state.chargeId = providerId(dispute.charge) ?? null; state.phase = state.chargeId ? "charge" : "done";
+        } else if (event.type.startsWith("refund.") || event.type.startsWith("charge.refund.")) {
+          const refund = await read((options) => source.stripe.refunds.retrieve(objectId, {}, options));
+          state.chargeId = providerId(refund.charge) ?? null;
+          state.intentId = providerId(refund.payment_intent) ?? null;
+          state.phase = state.chargeId ? "charge" : state.intentId ? "intent-payments" : "done";
         } else if (event.type.startsWith("charge.")) {
           state.chargeId = objectId; state.phase = "charge";
-        } else if (event.type.startsWith("refund.")) {
-          const refund = await read((options) => source.stripe.refunds.retrieve(objectId, {}, options));
-          state.chargeId = providerId(refund.charge) ?? null; state.phase = state.chargeId ? "charge" : "done";
         } else state.phase = "done";
         break;
       case "charge": {

@@ -206,6 +206,8 @@ beforeEach(async () => {
     id: "price_platform",
     active: true,
     type: "recurring",
+    unit_amount: 1200,
+    recurring: { interval: "year", interval_count: 1 },
     livemode: false,
   }));
   routes.set("GET /v1/subscriptions", () =>

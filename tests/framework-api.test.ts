@@ -425,6 +425,25 @@ test("immutable asset upload, generic feed and authenticated single ranges prese
   assert.equal((await f.app.inject({ url, headers })).statusCode, 403);
 });
 
+test("XML upgrade feeds strip isolated surrogates and preserve supplementary characters", async () => {
+  const { renderUpdate } = await import("../src/update-adapters.ts");
+  const rendered = renderUpdate({
+    framework: "jetbrains",
+    product: {
+      slug: "example",
+      name: "\ud800App 🚀 \udfff& Tools",
+      frameworkConfig: { pluginId: "com.example.plugin", sinceBuild: "253" },
+    },
+    release: { version: "1.0.0", published_at: 0, changelog: "" },
+    assets: [{
+      id: "asset", target: "any", filename: "plugin.zip", size: 10, checksum: "",
+      sha512: "", signature: null, min_system_version: null,
+      url: "https://example.test/package",
+    }],
+  });
+  assert.match(String(rendered.body), /<name>App 🚀 &amp; Tools<\/name>/u);
+});
+
 test("each native feed selects the matching entitled product and target", async (t) => {
   const f = await fixture(t);
   const cases = [
@@ -447,7 +466,7 @@ test("each native feed selects the matching entitled product and target", async 
     [
       "jetbrains",
       "any",
-      "/updates/jetbrains/jetbrains-product/updatePlugins.xml?build=IU-253.1&os=linux&arch=x86_64",
+      "/updates/jetbrains/jetbrains-product/updatePlugins.xml?build=IU-253.1&os=linux&arch=x86_64&uuid=ide-id&mid=machine-id&eap=true&pluginId=com.example.fixture",
     ],
   ] as const;
   for (const [framework, target, path] of cases) {

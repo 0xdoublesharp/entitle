@@ -25,7 +25,7 @@ but license/customer output still needs private handling.
 
 | Command                                            | Required scope      | What it does                                                                              |
 | -------------------------------------------------- | ------------------- | ----------------------------------------------------------------------------------------- |
-| `product [FILE]`                                   | `catalog:write`     | Saves product/plans from JSON; defaults to `product.json`.                                |
+| `product [FILE]`                                   | `catalog:write`     | Saves a product and its monthly or annual plans from JSON; defaults to `product.json`. Saving an existing slug adds plans. |
 | `publish PRODUCT VERSION ZIP METADATA_FILE`        | `releases:write`    | Publishes a WordPress ZIP.                                                                |
 | `publish-asset PRODUCT VERSION FILE METADATA_FILE` | `releases:write`    | Streams one native asset with declared length.                                            |
 | `licenses`                                         | `read`              | Returns seller overview, including safe license/release data and metrics.                 |
@@ -36,7 +36,7 @@ but license/customer output still needs private handling.
 | `jobs`                                             | `read`              | Lists safe tenant work/email states, attempts and errors.                                 |
 | `work`                                             | `billing:reconcile` | Runs a bounded batch of tenant work.                                                      |
 | `demo-purchase PLAN_ID EMAIL`                      | `licenses:write`    | Creates entitlement in local billing mode only, without a real charge.                    |
-| `features`, `prices`, `operations`, `webhooks`      | `read`              | Reads workspace capabilities, prices, operational status or webhook inventory.            |
+| `features`, `prices`, `operations`, `webhooks`      | `read`              | Reads workspace capabilities, monthly and annual prices, operational status, or webhook inventory. |
 
 The `licenses` command is an overview, not a paginated all-history export. Use
 the dedicated [encrypted export API](portability.md#export) for a workspace
@@ -52,6 +52,8 @@ requirements still apply.
 | Command | Input and purpose |
 | --- | --- |
 | `license-detail` | `{id, after?, limit?}`; a license and a page of installations. Follow `nextCursor` until null. |
+| `license-installation-deactivate` | `{id, installationId}`; deactivate one installation on a license to free its seat for a customer. Requires `licenses:write`. |
+| `plan-archive` | `{id, archived}`; `true` removes the plan from the catalog and refuses new checkout, and `false` restores it. Existing licenses are unchanged. Requires `catalog:write`. |
 | `license-complimentary` | `{email, productId, siteAllowance, expiresAt, requestId, confirm:true, note?}`; issue an emailed key. Reuse the same request ID and details on an uncertain result. |
 | `job-retry` / `jobs-retry-failed` | `{table, id}` / `{table, limit?}` with `table` of `work` or `emails`. `job-retry TABLE ID` also works. |
 | `platform-job-retry` / `platform-jobs-retry-failed` | The same inputs with `platform_work` or `platform_emails` and the operator token. |
@@ -89,13 +91,21 @@ Use a stable installation ID when retrying an uncertain activation.
    `commerce-settings-update`, `commerce-tax-code`, `platform-checkout`, and
    `platform-portal` with the documented structured inputs. These use the owner
    session, not the workspace API key.
-4. For a sensitive action, call `owner-verification-request` with a JSON file
-   such as `{"purpose":"api_keys"}`. Save the emailed token and purpose as an
-   owner-only JSON file, then run `owner-verification-consume PRIVATE_JSON_FILE
-   NEW_PROOF_FILE`. Set `ENTITLE_VERIFICATION_FILE` to the proof file before
-   calling `owner-key-create` or `owner-key-revoke`. The proof is session-bound,
-   expires, and is consumed once. The API key is returned once and needs private
-   handling.
+4. API-key changes need a passkey or security-key approval; email proofs are
+   refused for them. Call `owner-reauth-options` with a JSON file such as
+   `{"action":"account.privileged","purpose":"api_keys","path":"/api/v1/tenants/SLUG/seller/keys"}`,
+   using the exact path of the request you will make. Complete the returned
+   options at the configured HTTPS origin, then run `owner-reauth-verify
+   PRIVATE_ASSERTION_JSON_FILE NEW_PROOF_FILE`. Set `ENTITLE_VERIFICATION_FILE`
+   to the proof file before calling `owner-key-create` or `owner-key-revoke`.
+   The server's `PRIVILEGED_AUTH_POLICY` decides which keys qualify. The API key
+   is returned once and needs private handling.
+5. For an emailed proof, such as `tenant_transfer` or `recovery_codes`, call
+   `owner-verification-request` with `{"purpose":"tenant_transfer"}`. Save the
+   emailed token and purpose as an owner-only JSON file, then run
+   `owner-verification-consume PRIVATE_JSON_FILE NEW_PROOF_FILE` and set
+   `ENTITLE_VERIFICATION_FILE`. Every proof is session-bound, expires, and is
+   consumed once.
 
 `stripe-connect` requests the authorization URL with the owner session. The
 OAuth callback requires the *same* seller session in the browser. Use the

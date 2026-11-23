@@ -77,6 +77,8 @@ const server = createServer(async (req, res) => {
       id: "price_one",
       active: true,
       type: "recurring",
+      unit_amount: 1000,
+      currency: "usd",
       recurring: { interval: "year", interval_count: 1 },
     };
   else if (url.pathname === "/v1/customers" && req.method === "POST")

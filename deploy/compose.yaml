@@ -13,7 +13,14 @@ services:
       WEB_DIR: /app/web
       PORT: 3211
     volumes:
-      - ${ENTITLE_DATA_DIR:?Set ENTITLE_DATA_DIR to an absolute persistent directory}:/data
+      # Only the application's own subdirectory: Caddy's ACME private keys live in
+      # sibling directories the API must not read. Create app/ owned by UID 1000;
+      # a missing directory fails instead of starting with an empty database.
+      - type: bind
+        source: ${ENTITLE_DATA_DIR:?Set ENTITLE_DATA_DIR to an absolute persistent directory}/app
+        target: /data
+        bind:
+          create_host_path: false
     expose: ["3211"]
     networks:
       default:
@@ -27,6 +34,9 @@ services:
       context: ..
       dockerfile: deploy/runtime.Dockerfile
     restart: unless-stopped
+    depends_on:
+      app:
+        condition: service_healthy
     environment:
       ENTITLE_API_UPSTREAM: app:3211
       ENTITLE_PUBLIC_HOST: ${ENTITLE_PUBLIC_HOST:?Set the hostname matching PUBLIC_ORIGIN}
@@ -49,6 +59,7 @@ services:
   proxy:
     image: caddy:2.11.2@sha256:25cdc846626b62d05f6b633b9b40c2c9f6ef89b515dc76133cefd920f7dbe562
     restart: unless-stopped
+    depends_on: [web]
     ports: ["80:80", "443:443"]
     environment:
       PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:?Set PUBLIC_ORIGIN to your HTTPS service origin}
@@ -59,6 +70,8 @@ services:
     networks:
       default:
         ipv4_address: 172.30.81.2
+    security_opt: [no-new-privileges:true]
+    mem_limit: 128m
 networks:
   default:
     ipam:

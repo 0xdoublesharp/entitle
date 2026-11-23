@@ -29,10 +29,13 @@ export function seal(value: unknown, secret: string): string {
 }
 export function unseal<T>(value: string, secret: string): T {
   const data = Buffer.from(value, "base64url");
+  // A 12-byte IV, full 16-byte tag and non-empty body; GCM must never accept a truncated tag.
+  if (data.length <= 28) throw Error("Sealed value is truncated.");
   const cipher = createDecipheriv(
     "aes-256-gcm",
     Buffer.from(secret, "hex"),
     data.subarray(0, 12),
+    { authTagLength: 16 },
   );
   cipher.setAuthTag(data.subarray(12, 28));
   return JSON.parse(

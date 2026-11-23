@@ -21,7 +21,8 @@ continue. Archived workspaces retain their data and count toward your account
 limit. Cancel subscriptions separately in Billing when appropriate.
 
 Use **Check removal** for an empty workspace. Removal is permanent and requires
-its exact address plus fresh email verification in the requesting browser. It
+its exact address plus a fresh passkey or security-key approval in the
+requesting browser. It
 deletes the empty workspace, settings, membership and unused API keys, frees an
 account slot and makes the address available again. Security audit records are
 retained. Customers, products, licenses, releases, payments, used keys, exports,
@@ -48,18 +49,35 @@ Its identity and configuration lock after first use.
 | Electron, Tauri, Sparkle | Empty framework configuration; targets and signing metadata belong to release assets.                                     |
 
 Products can be created without a paid plan for complimentary licensing, even
-when the server has Stripe configured. Leave **Include annual paid plan**
-unchecked; no connected Stripe account or price is required. When no prices are
-available, this option is unchecked automatically and product creation remains
-available.
+when the server has Stripe configured. Leave **Include a paid plan** unchecked;
+no connected Stripe account or price is required. When no prices are available,
+this option is unchecked automatically and product creation remains available.
 
-To offer a paid plan, create an annual recurring Stripe price on your merchant
-account and enable **Include annual paid plan**, then select the price. The
-option is enabled by default when prices are available. A plan pairs the price
-with an installation allowance. Hosted
-publishers use their connected account; standalone uses its configured direct
-account. Test/live mode must match. A local fixture price is not a real Stripe
-price.
+To offer a paid plan, create a monthly or annual recurring Stripe price on your
+merchant account, enable **Include a paid plan**, and select the price. The
+price picker lists both intervals. A plan pairs the price with an installation
+allowance. Hosted publishers use their connected account; standalone uses its
+configured direct account. Test/live mode must match. A local fixture price is
+not a real Stripe price.
+
+### Edit a product and its plans
+
+Choose **Edit product** beside a product to rename it or add plans. Turn on
+**Add a paid plan (monthly or annual)**, enter the plan name and allowance, and
+select a price. This is how a complimentary pilot product starts selling: its
+pilot licenses stay complimentary, and new buyers choose the paid plans. Saving
+keeps existing plans; the product's framework identity does not change.
+
+The editor lists each plan with its allowance, price ID, and formatted price,
+such as `$9 / month`. **Archive** a plan to remove it from the customer catalog
+and refuse new checkouts for it. Existing licenses and subscriptions on that plan
+are not changed. **Restore** offers it again. Archived plans stay in the editor
+and in paid history.
+
+The customer catalog shows each available plan's price and interval, for example
+`$49 / year`, and Elements checkout states whether the plan renews monthly or
+annually. Plans created before intervals were recorded show as annual, because
+earlier versions accepted only annual prices.
 
 The service preserves price-to-product and allowance mappings for past invoices.
 Use a new price to change seats. Changing a display name does not rewrite paid
@@ -71,7 +89,7 @@ the larger paid allowance. An unpaid upgrade grants no extra seats.
 1. Build the package and verify its identity/version before upload.
 2. Select the product and strict semantic version, such as `1.2.0`, in Releases.
 3. Add release notes and required compatibility/signature metadata.
-4. Obtain the browser's fresh `release_publish` confirmation when prompted.
+4. Approve the upload with your passkey or security key when prompted.
 5. Upload, then confirm the release and target inventory in the dashboard.
 6. Exercise a paid installation's update check and authenticated download.
 
@@ -143,10 +161,17 @@ refund/dispute restrictions and installation usage. Ask the buyer for a request
 ID and the product/version/target involved, without collecting their license key
 or activation token.
 
+Choose **Installations** on a license row to see each site or device, whether it
+is active, and whether it uses a seat. Long lists load in pages with **Load more
+installations**. To free a seat for a customer who cannot sign in, choose
+**Deactivate** on the installation and confirm. The installation stops receiving
+licensed updates and its token stops working; installed software keeps running,
+and the customer can activate it again with their key.
+
 | Buyer problem                | Supported action                                                                                                       |
 | ---------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
 | Lost license email           | Sign in at the workspace buyer page and replace the key. Replacement invalidates all prior installation tokens.        |
-| No free seat                 | Deactivate an old installation from the buyer account; keep its ID stable across app updates.                          |
+| No free seat                 | Deactivate an old installation from the buyer account, or from **Licenses → Installations** for that license; keep its ID stable across app updates. |
 | Paid invoice missing locally | Inspect billing jobs and reconcile the subscription. Reconciliation reads provider state and does not create a charge. |
 | Manually revoked license     | Restore only the seller revocation. Refund/dispute restrictions still apply.                                           |
 | Canceled renewal             | Purchased time remains until its paid-through date. Cancellation is not immediate license revocation.                  |
@@ -166,10 +191,16 @@ an emailed confirmation and store them separately from your email account.
 Replacing codes invalidates the previous set; each code works once. Signed-out
 recovery must start and finish in the same browser.
 
-Sensitive browser actions require an emailed proof tied to the action and
-session. A consumed proof lasts five minutes and works once. API-key changes,
-browser publication and workspace transfer have distinct purposes. Retry a
-failed action with a fresh proof.
+API-key changes, browser publication, trusted-publisher changes, and workspace
+removal require a fresh passkey or security-key approval for that exact action.
+Your operator's `PRIVILEGED_AUTH_POLICY` decides which keys qualify. Under
+`passkey`, any user-verified passkey you enrolled works. Under `hardware`, you
+need two security keys that the operator inventoried and approved.
+Account security shows the wording for your server's policy.
+
+Workspace export and recovery-code replacement use an emailed proof tied to the
+action and session. A consumed proof lasts five minutes and works once. Retry a
+failed action with a fresh approval or proof.
 
 Hosted email changes require confirmation from both current and new mailboxes
 in the requesting session. Standalone owner email changes require the operator

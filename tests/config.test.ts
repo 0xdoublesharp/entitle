@@ -331,3 +331,60 @@ test("export admission settings bound global disk and preserve cross-tenant slot
   for (const value of ["0", "11", "1.5"])
     assert.throws(() => loadConfig({ ...credentials, EXPORT_MAX_GIB: value }));
 });
+
+test("TRUST_PROXY accepts only specific addresses, non-blanket subnets and proxy-addr names", () => {
+  assert.equal(loadConfig(credentials).trustProxy, false);
+  assert.equal(loadConfig({ ...credentials, TRUST_PROXY: "" }).trustProxy, false);
+  assert.equal(
+    loadConfig({
+      ...credentials,
+      TRUST_PROXY:
+        " 172.30.81.2 , 10.0.0.0/8,192.168.1.1/32, ::1, fd00::/8, 2001:db8::/128, loopback,linklocal,uniquelocal",
+    }).trustProxy,
+    "172.30.81.2,10.0.0.0/8,192.168.1.1/32,::1,fd00::/8,2001:db8::/128,loopback,linklocal,uniquelocal",
+  );
+  for (const value of [
+    "true",
+    "false",
+    " ",
+    "10.0.0.1,",
+    ",10.0.0.1",
+    "10.0.0.1,,10.0.0.2",
+    "0.0.0.0/0",
+    "::/0",
+    "10.0.0.1, 0.0.0.0/0",
+    "10.0.0.0/33",
+    "fd00::/129",
+    "10.0.0.0/",
+    "10.0.0.0/8/8",
+    "10.0.0.0/x",
+    "10.0.0.0/0008",
+    "10.0.0.0/255.0.0.0",
+    "proxy.example.test",
+    "*",
+  ])
+    assert.throws(
+      () => loadConfig({ ...credentials, TRUST_PROXY: value }),
+      /TRUST_PROXY/,
+      value,
+    );
+});
+
+test("PRIVILEGED_AUTH_POLICY defaults to hardware and accepts only hardware or passkey", () => {
+  assert.equal(loadConfig(credentials).privilegedAuthPolicy, "hardware");
+  assert.equal(
+    loadConfig({ ...credentials, PRIVILEGED_AUTH_POLICY: "" }).privilegedAuthPolicy,
+    "hardware",
+  );
+  for (const policy of ["hardware", "passkey"] as const)
+    assert.equal(
+      loadConfig({ ...credentials, PRIVILEGED_AUTH_POLICY: policy })
+        .privilegedAuthPolicy,
+      policy,
+    );
+  for (const value of ["Passkey", "email", "none"])
+    assert.throws(
+      () => loadConfig({ ...credentials, PRIVILEGED_AUTH_POLICY: value }),
+      /PRIVILEGED_AUTH_POLICY must be hardware or passkey/,
+    );
+});

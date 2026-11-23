@@ -1,0 +1,76 @@
+# All-in-one standalone self-host: the API image also serves the standalone app,
+# so no frontend release pack/activate step or separate web runtime is needed.
+#   docker compose --env-file .env -f deploy/compose.standalone.yaml up -d --build
+# Before first start, create ${ENTITLE_DATA_DIR}/app owned by UID/GID 1000.
+# Caddy keeps its ACME account and certificate keys in sibling directories that
+# are never mounted into the application container.
+name: entitle-standalone
+services:
+  app:
+    build:
+      context: ..
+      dockerfile: deploy/standalone.Dockerfile
+      args:
+        WEB_PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:?Set PUBLIC_ORIGIN to your HTTPS service origin}
+    restart: unless-stopped
+    env_file: ../.env
+    environment:
+      NODE_ENV: production
+      LOCAL_BILLING: "false"
+      DATA_DIR: /data
+      WORK_DIR: /data/work
+      WEB_DIR: /app/web
+      # The image's app is built for the root of PUBLIC_ORIGIN.
+      APP_BASE_PATH: ""
+      PORT: 3211
+      # Caddy is the only other container on this stack's private network, and the
+      # app publishes no ports. Docker assigns the subnet, so trust private ranges.
+      TRUST_PROXY: uniquelocal
+    volumes:
+      - type: bind
+        source: ${ENTITLE_DATA_DIR:?Set ENTITLE_DATA_DIR to an absolute persistent directory}/app
+        target: /data
+        bind:
+          # Fail instead of creating a root-owned directory or an empty database.
+          create_host_path: false
+    expose: ["3211"]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: ${ENTITLE_MEMORY_LIMIT:-768m}
+  proxy:
+    image: caddy:2.11.2@sha256:25cdc846626b62d05f6b633b9b40c2c9f6ef89b515dc76133cefd920f7dbe562
+    restart: unless-stopped
+    depends_on:
+      app:
+        condition: service_healthy
+    ports: ["80:80", "443:443"]
+    # Compose cannot inject inline configs into a read-only container, so use the
+    # equivalent CLI site. Access logging stays off: authentication headers and URL
+    # credentials must not be recorded. The client Host header is preserved.
+    command:
+      - caddy
+      - reverse-proxy
+      - --from
+      - ${PUBLIC_ORIGIN:?Set PUBLIC_ORIGIN to your HTTPS service origin}
+      - --to
+      - app:3211
+    volumes:
+      - ${ENTITLE_DATA_DIR}/caddy-data:/data
+      - ${ENTITLE_DATA_DIR}/caddy-config:/config
+    tmpfs:
+      - /tmp
+    read_only: true
+    cap_drop: [ALL]
+    # The Caddy binary carries a file capability for ports 80/443; exec fails
+    # without this one capability in the bounding set.
+    cap_add: [NET_BIND_SERVICE]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 128m
+    healthcheck:
+      # The CLI site disables the admin API; check the HTTPS listener instead.
+      test: ["CMD", "nc", "-z", "127.0.0.1", "443"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3

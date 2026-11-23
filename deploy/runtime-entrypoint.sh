@@ -38,7 +38,10 @@ case "$ENTITLE_PUBLIC_SCHEME" in
     *) echo 'Invalid ENTITLE_PUBLIC_SCHEME: expected https or http' >&2; exit 1 ;;
 esac
 # Only a validated local mount may enter Nginx location expressions.
+# Empty or "/" selects the default /app mount. Standalone releases have no app/
+# directory, so their application is served at the root through the fallbacks.
 ENTITLE_APP_BASE_PATH=${ENTITLE_APP_BASE_PATH:-/app}
+if [ "$ENTITLE_APP_BASE_PATH" = / ]; then ENTITLE_APP_BASE_PATH=/app; fi
 case "$ENTITLE_APP_BASE_PATH" in
     *[!A-Za-z0-9_/-]*) echo 'Invalid ENTITLE_APP_BASE_PATH characters' >&2; exit 1 ;;
 esac

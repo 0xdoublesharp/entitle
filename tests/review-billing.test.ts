@@ -80,6 +80,20 @@ beforeEach(async () => {
   });
   await db("plans").insert(plan);
 });
+
+test("interactive issuance returns capacity errors while a worker defers the same job", async () => {
+  const billing = new Billing(db, licenses, { snapshot: async () => snapshot() });
+  await db("tenants").where({ id: "primary" }).update({ exempt: 0, trial_ends_at: 0, paid_through: 0 });
+  await assert.rejects(billing.reconcile("sub"), { status: 403, code: "tenant_capacity" });
+  await db("tenants").where({ id: "primary" }).update({ suspended: 1 });
+  await assert.rejects(billing.reconcile("sub"), { status: 403, code: "tenant_suspended" });
+  await billing.enqueueReconcile(["sub"]);
+  await billing.run(async () => null, { maxRequests: 2, budgetMs: 2000 });
+  const job = await db("work").first();
+  assert.equal(job.state, "pending");
+  assert.equal(job.attempts, 0);
+  assert.ok(Number(job.available_at) > Date.now() + 50000);
+});
 after(async () => {
   await db.destroy();
   await rm(root, { recursive: true, force: true });
@@ -339,6 +353,7 @@ test("Stripe customer creation never blocks unrelated reads and persists a stabl
   t.mock.method(source.stripe.prices, "retrieve", async () => ({
     active: true,
     type: "recurring",
+    unit_amount: 1000,
     recurring: { interval: "year", interval_count: 1 },
   }));
   let idempotency = "";
@@ -393,6 +408,7 @@ test("Stripe checkout session creation never blocks unrelated database reads", a
   t.mock.method(source.stripe.prices, "retrieve", async () => ({
     active: true,
     type: "recurring",
+    unit_amount: 1000,
     recurring: { interval: "year", interval_count: 1 },
   }));
   t.mock.method(source.stripe.checkout.sessions, "create", async () => {
@@ -424,6 +440,7 @@ test("failed Stripe customer creation preserves the local identity and idempoten
   t.mock.method(source.stripe.prices, "retrieve", async () => ({
     active: true,
     type: "recurring",
+    unit_amount: 1000,
     recurring: { interval: "year", interval_count: 1 },
   }));
   t.mock.method(
@@ -464,6 +481,7 @@ test("valid authenticated email conflicts are 409 while anonymous existing-custo
   t.mock.method(source.stripe.prices, "retrieve", async () => ({
     active: true,
     type: "recurring",
+    unit_amount: 1000,
     recurring: { interval: "year", interval_count: 1 },
   }));
   await assert.rejects(source.checkout(plan, "owner@example.test", "another"), {
@@ -487,6 +505,7 @@ test("concurrent provider mapping changes fail closed without overwriting anothe
   t.mock.method(source.stripe.prices, "retrieve", async () => ({
     active: true,
     type: "recurring",
+    unit_amount: 1000,
     recurring: { interval: "year", interval_count: 1 },
   }));
   t.mock.method(source.stripe.customers, "create", async () => {
@@ -523,6 +542,7 @@ test("same-customer authenticated retries share the persisted provider identity 
   t.mock.method(source.stripe.prices, "retrieve", async () => ({
     active: true,
     type: "recurring",
+    unit_amount: 1000,
     recurring: { interval: "year", interval_count: 1 },
   }));
   const first = deferred<void>(),
@@ -561,6 +581,7 @@ test("a failed checkout session preserves the committed Stripe customer mapping 
   t.mock.method(source.stripe.prices, "retrieve", async () => ({
     active: true,
     type: "recurring",
+    unit_amount: 1000,
     recurring: { interval: "year", interval_count: 1 },
   }));
   const customers = t.mock.method(

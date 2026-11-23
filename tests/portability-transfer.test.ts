@@ -31,14 +31,18 @@ import {
 const sourceSecret = "1".repeat(64),
   destinationSecret = "2".repeat(64),
   passphrase = "user held transfer phrase";
-async function fixture(t: TestContext) {
+async function fixture(t: TestContext, databaseUrl?: string) {
   await access("/Volumes/Scratch");
   const temporary = process.env.TMPDIR ?? "/Volumes/Scratch/entitle/tmp";
   await mkdir(temporary, { recursive: true });
   const root = await mkdtemp(join(temporary, "portability-"));
-  const source = await isolatedDatabase(`sqlite:${root}/source.sqlite`);
+  const source = await isolatedDatabase(
+    `sqlite:${root}/source.sqlite`,
+    databaseUrl,
+  );
   const destination = await isolatedDatabase(
     `sqlite:${root}/destination.sqlite`,
+    databaseUrl,
   );
   t.after(async () => {
     await source.close();
@@ -258,6 +262,20 @@ async function fixture(t: TestContext) {
     options,
   };
 }
+
+test("PostgreSQL export uses a repeatable-read snapshot and imports paid grants", {
+  skip: !process.env.TEST_POSTGRES_DATABASE_URL,
+}, async (t) => {
+  const f = await fixture(t, process.env.TEST_POSTGRES_DATABASE_URL);
+  const transactions: string[] = [];
+  f.db.on("query", ({ sql }: { sql: string }) => {
+    if (/isolation level/i.test(sql)) transactions.push(sql);
+  });
+  const exported = await f.bundle();
+  assert.ok(transactions.some(sql => /repeatable read/i.test(sql)), transactions.join("\n"));
+  await importPortability(f.options(exported.directory));
+  assert.equal((await f.destination("grants").first()).id, "il_paid");
+});
 
 test("tenant export imports paid rights and encrypted token/key email into fresh standalone", async (t) => {
   const f = await fixture(t);
@@ -745,7 +763,6 @@ test("export routes require scoped tenant authorization, fresh transfer verifica
         method: "DELETE",
         url: `${prefix}/exports/${apiExport.json().id}`,
         headers: { authorization: "Bearer DE-TK-export-portability" },
-        payload: {},
       })
     ).statusCode,
     200,
@@ -925,6 +942,16 @@ test("schema allowlist and relation preflight reject unlocked foreign records wi
       const tables = m.tables as Record<string, Array<Record<string, unknown>>>;
       tables.work![0]!.payload = JSON.stringify({ eventId: "evt_foreign" });
     },
+    ...(["work", "emails"] as const).flatMap((table) => [
+      (m: Record<string, unknown>) => {
+        const tables = m.tables as Record<string, Array<Record<string, unknown>>>;
+        tables[table]![0]!.payload = "";
+      },
+      (m: Record<string, unknown>) => {
+        const tables = m.tables as Record<string, Array<Record<string, unknown>>>;
+        tables[table]![0]!.state = "sent";
+      },
+    ]),
     (m) => {
       const tables = m.tables as Record<string, Array<Record<string, unknown>>>;
       tables.emails![0]!.customer_id = randomUUID();
@@ -993,7 +1020,7 @@ test("fresh destination and storage preflight preserve preexisting state", async
   assert.equal((await f.destination("products")).length, 0);
 });
 
-test("failed storage readback rolls back database and only deletes successfully-created objects", async (t) => {
+test("uncertain storage writes and failed readback roll back and delete attempted objects", async (t) => {
   const f = await fixture(t);
   const bundle = await f.bundle();
   let deletes = 0;
@@ -1002,6 +1029,18 @@ test("failed storage readback rolls back database and only deletes successfully-
     deletes++;
     return originalDelete(...args);
   };
+  const originalPut = f.targetStore.put.bind(f.targetStore);
+  const put = t.mock.method(f.targetStore, "put", async (...args: Parameters<typeof originalPut>) => {
+    await originalPut(...args);
+    throw Error("write response lost");
+  });
+  try {
+    await assert.rejects(importPortability(f.options(bundle.directory)), /write response lost/);
+    assert.equal(deletes, 1);
+    await assert.rejects(f.targetStore.get("primary", f.release, f.checksum, f.bytes.length));
+  } finally {
+    put.mock.restore();
+  }
   f.targetStore.get = async () => {
     throw Error("failed readback");
   };
@@ -1009,7 +1048,7 @@ test("failed storage readback rolls back database and only deletes successfully-
     importPortability(f.options(bundle.directory)),
     /failed readback/,
   );
-  assert.equal(deletes, 1);
+  assert.equal(deletes, 2);
   assert.equal((await f.destination("licenses")).length, 0);
   f.targetStore.delete = async () => {
     throw Error("cleanup unavailable");
@@ -1185,6 +1224,69 @@ test("inactive tokens, canceled/sent email records and reconcile jobs retain saf
   );
 });
 
+test("portable rows span bounded pages for both simple and composite keys", async (t) => {
+  const f = await fixture(t);
+  for (const db of [f.db, f.destination]) {
+    if (!(await db.schema.hasColumn("plans", "unit_amount")))
+      await db.schema.alterTable("plans", (table) => {
+        table.integer("unit_amount").nullable();
+        table.string("currency", 3).nullable();
+        table.string("billing_interval", 20).nullable();
+        table.double("archived_at").nullable();
+      });
+  }
+  const catalog = { unit_amount: 4500, currency: "usd", billing_interval: "year", archived_at: 100 };
+  await f.db("plans").where({ id: f.plan }).update(catalog);
+  await f.db.batchInsert("plans", Array.from({ length: 501 }, (_, i) => ({
+    tenant_id: f.tenant.id,
+    id: randomUUID(),
+    product_id: f.product,
+    name: `Plan ${i}`,
+    stripe_price_id: `price_catalog_${i}`,
+    site_allowance: 1,
+  })), 100);
+  await f.db.batchInsert("download_metrics", Array.from({ length: 501 }, (_, i) => ({
+    tenant_id: f.tenant.id,
+    release_id: f.release,
+    day: new Date(Date.UTC(2024, 0, i + 1)).toISOString().slice(0, 10),
+    successful_responses: 1,
+    served_bytes: 1,
+    storage_read_bytes: 1,
+    storage_reads: 1,
+  })), 100);
+  const pageLimits: unknown[] = [];
+  const locks: unknown[] = [];
+  const queryPlans = (query: { sql: string; bindings: unknown[] }) => {
+    if (/^select.*from [`"]plans[`"].*order by.*limit/i.test(query.sql))
+      pageLimits.push(query.bindings.at(-1));
+    if (/^update [`"]locks[`"]/i.test(query.sql))
+      locks.push(query.bindings.at(-1));
+  };
+  f.db.on("query", queryPlans);
+  let bundle;
+  try {
+    bundle = await f.bundle();
+  } finally {
+    f.db.removeListener("query", queryPlans);
+  }
+  assert.deepEqual(pageLimits, [500, 500]);
+  assert.deepEqual(
+    locks,
+    ["schema", "auth", "billing", "work", "email"].map((lock) => `${f.tenant.id}:${lock}`),
+  );
+  await importPortability(f.options(bundle.directory));
+  assert.equal((await f.destination("plans")).length, 502);
+  assert.equal((await f.destination("download_metrics")).length, 502);
+  assert.deepEqual(
+    await f.destination("plans").where({ id: f.plan }).first(Object.keys(catalog)),
+    catalog,
+  );
+  assert.deepEqual(
+    await f.destination("plans").where({ stripe_price_id: "price_catalog_500" }).first(Object.keys(catalog)),
+    { unit_amount: null, currency: null, billing_interval: null, archived_at: null },
+  );
+});
+
 test("KDF resource failures and missing manifests remove private partial exports/imports", async (t) => {
   const f = await fixture(t);
   const { default: crypto } = await import("node:crypto"),
@@ -1237,8 +1339,14 @@ test("private S3 destination preflight rejects public grants, policies and occup
     send: async (command: { constructor: { name: string } }) => {
       if (command.constructor.name === "ListObjectsV2Command")
         return {
-          KeyCount: mode === "occupied" ? 1 : 0,
-          Contents: mode === "inconsistent" ? [{ Key: "unexpected" }] : [],
+          KeyCount: mode === "omitted" ? undefined : mode === "occupied" ? 1 : 0,
+          Contents: mode === "omitted"
+            ? undefined
+            : mode === "inconsistent" ? [{ Key: "unexpected" }] : [],
+          CommonPrefixes: mode === "omitted"
+            ? undefined
+            : mode === "prefixes" ? [{ Prefix: "unexpected/" }] : [],
+          IsTruncated: mode === "truncated",
         };
       if (command.constructor.name === "GetBucketAclCommand")
         return {
@@ -1264,7 +1372,9 @@ test("private S3 destination preflight rejects public grants, policies and occup
     },
   } as unknown as InstanceType<typeof S3Client>;
   await verifyEmptyPrivatePortabilityBucket(client, "portable-fresh");
-  for (mode of ["occupied", "public", "policy", "outage", "inconsistent", "missing-owner"])
+  mode = "omitted";
+  await verifyEmptyPrivatePortabilityBucket(client, "portable-fresh");
+  for (mode of ["occupied", "public", "policy", "outage", "inconsistent", "missing-owner", "prefixes", "truncated"])
     await assert.rejects(
       verifyEmptyPrivatePortabilityBucket(client, "portable-fresh"),
     );
@@ -1426,6 +1536,14 @@ test("finalization requires reconciliation of queued subscriptions without licen
     "sub_not_yet_materialized",
     "sub_paid",
   ]);
+  await f.destination("work").insert({
+    tenant_id: "primary",
+    id: "legacy-empty",
+    kind: "reconcile",
+    state: "held",
+    payload: "",
+    created_at: 1,
+  });
   await completePortabilityImport({
     db: f.destination,
     secret: destinationSecret,
@@ -1445,6 +1563,10 @@ test("finalization requires reconciliation of queued subscriptions without licen
     (await f.destination("billing_events").where({ id: "evt_pending" }).first())
       .payload,
     "",
+  );
+  assert.equal(
+    (await f.destination("work").where({ id: "legacy-empty" }).first()).state,
+    "canceled",
   );
 });
 
@@ -1695,6 +1817,13 @@ test("export creation survives a real socket idle timeout and restores ordinary 
     });
   const exported = JSON.parse(await call(path, JSON.stringify({ passphrase })));
   assert.ok(exported.id);
+  const open = f.portability.openExport.bind(f.portability);
+  t.mock.method(f.portability, "openExport", async (...args: Parameters<typeof open>) => {
+    if (args[2] !== "manifest")
+      await new Promise((resolve) => setTimeout(resolve, 90));
+    return open(...args);
+  });
+  assert.ok((await call(`${path}/${exported.id}/blobs/${exported.blobs[0]}`)).length);
   assert.ok(
     await f.portability
       .openExport(f.tenant.id, exported.id, "manifest")

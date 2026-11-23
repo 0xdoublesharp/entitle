@@ -107,7 +107,8 @@ export async function oidcPublishingToken(env: NodeJS.ProcessEnv) {
     !/^DE-CI-[A-Za-z0-9_-]{43}$/.test(result.accessToken) ||
     typeof result.expiresAt !== "number" ||
     result.expiresAt <= Date.now() ||
-    result.expiresAt > Date.now() + 600000 ||
+    // Allow the same 5 second clock skew the server accepts on ID tokens.
+    result.expiresAt > Date.now() + 605000 ||
     result.tokenType !== "Bearer"
   )
     throw Error("Entitle returned invalid CI publishing credentials.");

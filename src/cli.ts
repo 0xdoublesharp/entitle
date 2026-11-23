@@ -37,7 +37,7 @@ const operatorCommands = new Set([
   "local-tenant",
 ]);
 const usage =
-  `Commands: migrate | product | publish | publish-asset | licenses | revoke | restore | withdraw | reconcile | jobs | work | demo-purchase | features | prices | operations | webhooks | tenants | tenant-status | tenant-owner | platform-reconcile | platform-jobs | platform-work | local-tenant | ${Object.keys(agentOperations).join(" | ")} | export-create | export-download | owner-login-start | owner-login-finish | owner-session-refresh | owner-verification-consume | buyer-login-start | buyer-login-finish | buyer-session-refresh | activation-create | api | operator-api | request. See docs/cli.md for arguments.`;
+  `Commands: migrate | product | publish | publish-asset | licenses | revoke | restore | withdraw | reconcile | jobs | work | demo-purchase | features | prices | operations | webhooks | tenants | tenant-status | tenant-owner | platform-reconcile | platform-jobs | platform-work | local-tenant | ${Object.keys(agentOperations).join(" | ")} | export-create | export-download | owner-login-start | owner-login-finish | owner-passkey-login-start | owner-passkey-login-finish | owner-session-refresh | owner-verification-consume | owner-reauth-verify | buyer-login-start | buyer-login-finish | buyer-session-refresh | activation-create | api | operator-api | request. See docs/cli.md for arguments.`;
 
 export async function runCli(
   argv: string[] = process.argv.slice(2),
@@ -217,13 +217,28 @@ export async function runCli(
         method: zip || body !== undefined ? "POST" : "GET",
         headers,
         ...(zip
-          ? Buffer.isBuffer(zip) ? { body: new Uint8Array(zip) } : {body:Readable.toWeb(zip.stream) as ReadableStream<Uint8Array>,duplex:"half" as const,signal:AbortSignal.timeout(3600000)}
+          ? Buffer.isBuffer(zip)
+            ? { body: new Uint8Array(zip) }
+            : {
+                body: Readable.toWeb(zip.stream) as ReadableStream<Uint8Array>,
+                duplex: "half" as const,
+              }
           : body !== undefined
             ? { body: JSON.stringify(body) }
             : {}),
         redirect: "error",
+        signal: AbortSignal.timeout(zip ? 3600000 : 60000),
       });
-      const value: unknown = await response.json();
+      if (response.status === 204) return;
+      const text = await response.text();
+      let value: unknown;
+      try {
+        value = JSON.parse(text);
+      } catch {
+        throw Error(
+          `API returned ${response.status}: ${text.trim().slice(0, 300)}`,
+        );
+      }
       if (!response.ok)
         throw Error(
           `API returned ${response.status}: ${JSON.stringify(value)}`,

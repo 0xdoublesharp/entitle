@@ -254,6 +254,18 @@ test("sessions expose opaque handles and revoke only the authenticated seller's 
   assert.equal((await f.get("/sessions")).statusCode, 401);
 });
 
+test("session listing omits sessions invalidated by a security generation change", async (t) => {
+  const f = await fixture(t);
+  await f.db("seller_users").where({ id: "owner" }).update({ security_generation: 1 });
+  await f
+    .db("seller_sessions")
+    .where({ id: hash("current") })
+    .update({ auth_generation: 1 });
+  const list = (await f.get("/sessions")).json();
+  assert.equal(list.sessions.length, 1, "stale-generation sessions are dead");
+  assert.equal(list.sessions[0].current, true);
+});
+
 test("revoke others keeps this browser, revoke all invalidates it, and mutations enforce CSRF", async (t) => {
   const f = await fixture(t);
   assert.equal(
@@ -524,6 +536,9 @@ test("email conflict, expiry and standalone owner policy fail closed", async (t)
     (await standalone.db("seller_users").where({ id: "owner" }).first()).email,
     "owner@example.test",
   );
+  // The standalone owner keeps ordinary account actions; other sellers do not.
+  assert.equal((await standalone.get("/sessions")).json().sessions.length, 2);
+  assert.equal((await standalone.get("/sessions", "foreign")).statusCode, 401);
 });
 
 test("email ownership is rechecked at confirmation so concurrent claims cannot take over accounts", async (t) => {
@@ -2298,6 +2313,56 @@ test("Stripe nullable financial fields do not prevent retaining a minimal closur
     currency: "usd",
     amount_paid: 5000,
   });
+});
+
+test("closure receipts tolerate a null currency or amount on deleted customers and $0 checkout sessions", async (t) => {
+  const f = await fixture(t);
+  await license(f, { revoked: 1, billing_status: "canceled" });
+  const events = {
+    evt_deleted: {
+      type: "customer.deleted",
+      object: { id: "buyer", currency: null, balance: 0 },
+    },
+    evt_free_checkout: {
+      type: "checkout.session.completed",
+      object: {
+        customer: "buyer",
+        currency: null,
+        amount_total: null,
+        amount: null,
+        total: null,
+        subtotal: null,
+        amount_due: null,
+      },
+    },
+  };
+  for (const [id, { type, object }] of Object.entries(events))
+    await f.db("billing_events").insert({
+      tenant_id: "primary",
+      id,
+      type,
+      payload: seal({ data: { object } }, f.config.secret),
+      received_at: 1,
+      processed_at: 2,
+    });
+  const request = (await f.post("/closure", {}, "buyer-session", false)).json()
+    .request;
+  await f.customers.reconcileClosure("buyer", request.id, "operator", {
+    ...closureApproval,
+    reference: "nullable-currency",
+    stripeCustomerId: null,
+    eventIds: Object.keys(events),
+    workIds: [],
+    auditIds: [],
+    outgoingEventIds: [],
+  });
+  const receipt = JSON.parse(
+    (await f.db("account_privacy_receipts").first()).details,
+  );
+  assert.deepEqual(
+    receipt.events.map((event: { financial: object }) => event.financial),
+    [{}, {}],
+  );
 });
 
 test("a closure receipt retains private attribution after the raw Stripe customer binding is removed", async (t) => {

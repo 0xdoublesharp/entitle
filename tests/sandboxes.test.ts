@@ -7,6 +7,7 @@ import { hash } from "../src/crypto.ts";
 import { up, down } from "../src/migrations/011_sandboxes.ts";
 import { isolatedDatabase } from "./helpers/database.ts";
 import { PublisherSandboxes } from "../src/sandboxes.ts";
+import { PlatformBilling } from "../src/platform-billing.ts";
 
 async function fixture() {
   const database = await isolatedDatabase("sqlite::memory:");
@@ -105,7 +106,7 @@ test("sandbox creation is transactional at one per publisher and rejects unautho
       { ...f.seller, sessionHash: hash("wrong") },
       "fixture",
     ),
-    /active.*seller/i,
+    { code: "seller_login_required" },
   );
   const other = await createTenant(f.db, {
     id: randomUUID(),
@@ -128,6 +129,47 @@ test("sandbox creation is transactional at one per publisher and rejects unautho
   );
   await f.db("tenants").where({ id: f.parent.id }).update({ suspended: 1 });
   await assert.rejects(f.sandboxes.runtime(a.tenant), /suspended/i);
+});
+
+test("sandbox mappings block platform billing before Stripe calls", async (t) => {
+  const f = await fixture();
+  t.after(() => f.close());
+  const { tenant } = await f.sandboxes.create(f.parent, f.seller, "fixture");
+  const platform = new PlatformBilling(f.db, {
+    ...f.config,
+    stripeSecret: "sk_test_fixture",
+    stripeConnectClientId: "ca_fixture",
+    platformPriceId: "price_starter",
+  });
+  await f.db("oauth_states").insert({
+    id: hash("sandbox-state"),
+    tenant_id: tenant.id,
+    user_id: f.seller.user.id,
+    session_id: f.seller.sessionHash,
+    redirect_uri: `${f.config.origin}/api/v1/platform/stripe/callback`,
+    expires_at: Date.now() + 60000,
+  });
+  await assert.rejects(platform.connect(tenant, f.seller), { code: "sandbox_unsupported" });
+  await assert.rejects(platform.callback("code", "sandbox-state", f.seller), { code: "sandbox_unsupported" });
+  await assert.rejects(platform.checkout(tenant, f.seller), { code: "sandbox_unsupported" });
+  await assert.rejects(platform.portal(tenant), { code: "sandbox_unsupported" });
+  assert.equal((await f.db("oauth_states").first()).used, 0);
+});
+
+test("sandbox creation and platform Connect recheck seller recovery and session generation", async (t) => {
+  const f = await fixture();
+  t.after(() => f.close());
+  const platform = new PlatformBilling(f.db, {
+    ...f.config,
+    stripeSecret: "sk_test_fixture",
+    stripeConnectClientId: "ca_fixture",
+  });
+  await f.db("seller_sessions").where({ id: f.seller.sessionHash }).update({ recovery_id: "recovery" });
+  await assert.rejects(f.sandboxes.create(f.parent, f.seller, "fixture"), { code: "recovery_restricted" });
+  await assert.rejects(platform.connect(f.parent, f.seller), { code: "recovery_restricted" });
+  await f.db("seller_users").where({ id: f.seller.user.id }).update({ security_generation: 1 });
+  await assert.rejects(f.sandboxes.create(f.parent, f.seller, "fixture"), { code: "seller_login_required" });
+  await assert.rejects(platform.connect(f.parent, f.seller), { code: "seller_login_required" });
 });
 
 test("Stripe test sandboxes require explicit test credentials and always use fresh parent account state", async (t) => {
@@ -215,7 +257,7 @@ test("sandbox options cannot use live credentials or bypass the merchant context
     .update({ verified_at: null });
   await assert.rejects(
     f.sandboxes.create(f.parent, f.seller, "fixture"),
-    /own/,
+    { code: "seller_login_required" },
   );
   await f
     .db("seller_users")

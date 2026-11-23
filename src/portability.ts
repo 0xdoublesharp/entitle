@@ -72,6 +72,12 @@ const queue = {
   last_error: small.nullable(),
   created_at: number,
 };
+const planCatalog = {
+  unit_amount: number.nullable().optional(),
+  currency: z.string().length(3).nullable().optional(),
+  billing_interval: z.string().max(20).nullable().optional(),
+  archived_at: number.nullable().optional(),
+};
 const shapes = {
   products: z
     .object({
@@ -93,6 +99,7 @@ const shapes = {
       name: z.string().max(150),
       site_allowance: number,
       stripe_price_id: identifier,
+      ...planCatalog,
     })
     .strict(),
   customers: z
@@ -548,6 +555,9 @@ function validateManifest(input: unknown, maxBytes: number): Manifest {
       find("customers", row.customer_id) &&
         find("licenses", row.license_id)?.customer_id === row.customer_id,
     );
+    valid(
+      (row.payload === "") === ["sent", "canceled"].includes(String(row.state)),
+    );
     if (row.payload !== "") {
       const message = JSON.parse(String(row.payload));
       valid(
@@ -561,6 +571,9 @@ function validateManifest(input: unknown, maxBytes: number): Manifest {
     valid(find("releases", row.release_id));
   for (const row of manifest.tables.work) {
     valid(row.kind === "stripe_event" || row.kind === "reconcile");
+    valid(
+      (row.payload === "") === ["sent", "canceled"].includes(String(row.state)),
+    );
     if (row.payload !== "") {
       const payload = JSON.parse(String(row.payload));
       valid(
@@ -848,7 +861,7 @@ export class Portability {
       await mkdir(entry.directory, { mode: 0o700 });
       const manifest = await this.options.db.transaction(
         async (tx) => {
-          for (const name of ["schema", "billing", "work", "email", "auth"])
+          for (const name of ["schema", "auth", "billing", "work", "email"])
             await lock(tx, name, tenantId);
           const tenant = await tx("tenants").where({ id: tenantId }).first();
           check(tenant, 404, "tenant_not_found", "Tenant not found.");
@@ -892,6 +905,7 @@ export class Portability {
             "A verified source Stripe merchant account is required for portability.",
           );
           const rows = {} as Record<Table, Row[]>;
+          const pageSize = 500;
           let metadataBytes = Buffer.byteLength(JSON.stringify(source)) + 1024,
             totalRows = 0;
           for (const table of tableNames) {
@@ -905,14 +919,25 @@ export class Portability {
                   : table === "invoice_metrics"
                     ? ["invoice_id"]
                     : ["id"];
+            let columns = Object.keys(shapes[table].shape);
+            if (table === "plans") {
+              // Catalog columns are optional in version 1 bundles and may not
+              // exist on the source database yet.
+              const available = await tx(table).columnInfo();
+              columns = columns.filter(
+                (name) =>
+                  !Object.hasOwn(planCatalog, name) ||
+                  Object.hasOwn(available, name),
+              );
+            }
             let previous: Row | undefined;
             for (;;) {
               checkpoint();
               const query = tx(table)
                 .where({ tenant_id: tenantId })
-                .select(Object.keys(shapes[table].shape))
+                .select(columns)
                 .orderBy(keys)
-                .first();
+                .limit(pageSize);
               if (table === "emails") query.andWhere({ kind: "license_key" });
               if (previous) {
                 const cursor = previous;
@@ -928,19 +953,21 @@ export class Portability {
                     });
                 });
               }
-              const row = await query;
-              if (!row) break;
-              metadataBytes += Buffer.byteLength(JSON.stringify(row)) + 1;
-              totalRows++;
-              check(
-                metadataBytes <= this.options.maxManifestBytes &&
-                  totalRows <= 100000,
-                413,
-                "export_limit",
-                "Export manifest exceeds the configured limit.",
-              );
-              rows[table].push(row);
-              previous = row;
+              const page = await query;
+              for (const row of page) {
+                metadataBytes += Buffer.byteLength(JSON.stringify(row)) + 1;
+                totalRows++;
+                check(
+                  metadataBytes <= this.options.maxManifestBytes &&
+                    totalRows <= 100000,
+                  413,
+                  "export_limit",
+                  "Export manifest exceeds the configured limit.",
+                );
+                rows[table].push(row);
+              }
+              if (page.length < pageSize) break;
+              previous = page.at(-1);
             }
           }
           const artifactCount = artifactRows(rows).length;
@@ -1439,29 +1466,32 @@ export async function importPortability(
           key!,
           salt!,
         );
-        if (options.store.putFile)
-          await options.store.putFile(
-            "primary",
-            blob.id,
-            file,
-            blob.checksum,
-            blob.size,
-          );
-        else {
-          check(
-            blob.size <= MAX_ARTIFACT_BYTES,
-            503,
-            "streaming_storage_required",
-            "Streaming storage is required for large artifacts.",
-          );
-          await options.store.put(
-            "primary",
-            blob.id,
-            await readFile(file),
-            blob.checksum,
-          );
+        try {
+          if (options.store.putFile) {
+            created.push(blob.id);
+            await options.store.putFile(
+              "primary",
+              blob.id,
+              file,
+              blob.checksum,
+              blob.size,
+            );
+          } else {
+            check(
+              blob.size <= MAX_ARTIFACT_BYTES,
+              503,
+              "streaming_storage_required",
+              "Streaming storage is required for large artifacts.",
+            );
+            const bytes = await readFile(file);
+            created.push(blob.id);
+            await options.store.put("primary", blob.id, bytes, blob.checksum);
+          }
+        } catch (error) {
+          if (error instanceof AppError && error.code === "artifact_exists")
+            created.pop();
+          throw error;
         }
-        created.push(blob.id);
         await rm(file);
         const verify = join(working, `${blob.id}.verify`);
         if (options.store.getToFile)
@@ -1599,7 +1629,8 @@ export async function completePortabilityImport(options: {
     .db("work")
     .where({ tenant_id: "primary", state: "held" });
   for (const row of work)
-    row.payload = JSON.stringify(unseal(row.payload, options.secret));
+    if (row.payload !== "")
+      row.payload = JSON.stringify(unseal(row.payload, options.secret));
   const closures = await options
     .db("account_closures")
     .where({ tenant_id: "primary", status: "completed" });
@@ -1670,7 +1701,10 @@ export async function verifyEmptyPrivatePortabilityBucket(
       new ListObjectsV2Command({ Bucket: bucket, MaxKeys: 1 }),
     );
     check(
-      listing.KeyCount === 0 && !listing.Contents?.length,
+      (listing.KeyCount === undefined || listing.KeyCount === 0) &&
+        !listing.IsTruncated &&
+        !listing.Contents?.length &&
+        !listing.CommonPrefixes?.length,
       409,
       "destination_storage_busy",
       "Destination bucket must be empty.",

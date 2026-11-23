@@ -579,7 +579,7 @@ export async function verifyArtifact(
   try {
     const size =
       typeof source === "string" ? (await stat(source)).size : source.length;
-    const expanded = Math.max(MAX_EXPANDED, size);
+    const expanded = Math.min(4 * 1024 ** 3, Math.max(MAX_EXPANDED, size * 4));
     let bytes: Buffer;
     if (typeof source === "string") {
       const file = await open(source, "r");
@@ -666,7 +666,9 @@ export async function verifyArtifact(
             identity &&
             (cfg.folder === undefined || manifest["@group"] === cfg.folder) &&
             (cfg.client === undefined ||
-              (manifest["@client"] ?? "site") === cfg.client),
+              (manifest["@client"] ??
+                (cfg.extensionType === "component" ? "administrator" : "site")) ===
+                cfg.client),
           400,
           "invalid_package",
           "Joomla manifest identity or version does not match.",

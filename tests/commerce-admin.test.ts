@@ -81,6 +81,9 @@ for (const deploymentMode of ["standalone", "hosted"] as const)
       });
       if (deploymentMode === "hosted") {
         tenant.stripe_account_id = "acct_admin";
+        // Sandbox middleware resolves the tier from the parent workspace.
+        tenant.pro_period_start = Date.now() - 1000;
+        tenant.pro_paid_through = Date.now() + 60000;
         await db("tenants")
           .where({ id: tenant.id })
           .update({ stripe_account_id: tenant.stripe_account_id });
@@ -183,6 +186,7 @@ for (const deploymentMode of ["standalone", "hosted"] as const)
       assert.equal(response.json().features.tax, true);
       response = await app.inject({ url: "/commerce/settings", headers });
       assert.deepEqual(response.json().settings, payload);
+      assert.equal(response.json().features.automations, true);
       assert.equal(response.body.includes(config.secret), false);
       assert.equal(response.body.includes("stripeSecret"), false);
       assert.equal(

@@ -9,6 +9,7 @@ import type {
   CheckoutSdk,
   CheckoutActions,
   CheckoutSession,
+  PlanPricing,
 } from "../web/checkout.ts";
 
 registerHooks({
@@ -66,6 +67,7 @@ const product = (): Product => ({
     { id: "plan-five", name: "Annual five", site_allowance: 5 },
   ],
 });
+const priced = (plans: (Product["plans"][number] & PlanPricing)[]) => plans;
 const license = (overrides: Partial<License> = {}): License => ({
   id: "license-one",
   product_id: "product-1",
@@ -307,8 +309,55 @@ test("empty catalogs and products without configured plans never enable checkout
     fixture.products = [{ ...product(), plans: [] }];
   });
   await flush();
-  assert.equal(findButton("Continue to payment").disabled, true);
+  assert.match(text(), /No paid plans are available yet/);
+  assert.equal(dom.document.querySelector(".checkout-form"), null);
+  assert.equal(dom.document.querySelector("fieldset"), null);
   assert.equal(dom.document.querySelector('input[type="radio"]'), null);
+});
+
+test("the first purchasable plan is preselected and plan-less products are omitted", async () => {
+  await mount((fixture) => {
+    fixture.products = [
+      { ...product(), id: "pilot", name: "Pilot product", plans: [] },
+      product(),
+    ];
+  });
+  await flush();
+  assert.equal(find<HTMLInputElement>('input[value="plan-one"]').checked, true);
+  assert.doesNotMatch(text(), /Pilot product/);
+  assert.equal(findButton("Continue to payment").disabled, false);
+});
+
+test("catalog plans show formatted monthly and annual prices with safe fallbacks", async () => {
+  await mount((fixture) => {
+    fixture.products = [
+      {
+        ...product(),
+        plans: priced([
+          { id: "m", name: "Monthly", site_allowance: 1, unit_amount: 900, currency: "usd", billing_interval: "month" },
+          { id: "y", name: "Yearly", site_allowance: 1, unit_amount: 4999, currency: "usd", billing_interval: "year" },
+          { id: "j", name: "Yen", site_allowance: 1, unit_amount: 1200, currency: "jpy", billing_interval: "year" },
+          { id: "bad", name: "Bad currency", site_allowance: 1, unit_amount: 100, currency: "us", billing_interval: "month" },
+          { id: "legacy", name: "Legacy", site_allowance: 1, unit_amount: null, currency: null, billing_interval: null },
+          { id: "nocur", name: "No currency", site_allowance: 1, unit_amount: 500, currency: null, billing_interval: "month" },
+        ]),
+      },
+    ];
+  });
+  await flush();
+  const card = (id: string) =>
+    find(`input[value="${id}"]`).closest(".plan-card")!.textContent || "";
+  assert.match(card("m"), /\$9 \/ month/);
+  assert.match(card("m"), /Monthly subscription/);
+  assert.match(card("y"), /\$49\.99 \/ year/);
+  assert.match(card("y"), /Annual subscription/);
+  assert.match(card("j"), /¥1,200 \/ year/);
+  assert.doesNotMatch(card("bad"), /\//);
+  assert.match(card("bad"), /Monthly subscription/);
+  assert.match(card("legacy"), /Annual subscription/);
+  assert.doesNotMatch(card("legacy"), /\//);
+  assert.doesNotMatch(card("nocur"), /\//);
+  assert.equal(dom.document.querySelectorAll(".plan-price").length, 3);
 });
 
 test("login email submission trims input, prevents duplicate in-flight requests, and resets its notice on edits", async () => {
@@ -1147,8 +1196,18 @@ test("checkout identity conflicts retain the signed-in account, CSRF and visible
 });
 
 test("buyer mounting requires a tenant route and all requests use that tenant", async () => {
-  dom.history.replaceState(null, "", "/");
-  assert.throws(() => ui.mountCustomerApp("#app", server.fetch), /tenant/);
+  mounted.unmount();
+  dom.history.replaceState(null, "", "/t/Not_A_Workspace");
+  const requests: string[] = [];
+  mounted = ui.mountCustomerApp("#app", async (input) => {
+    requests.push(String(input));
+    return denied();
+  });
+  await flush();
+  assert.match(find('[role="alert"]').textContent || "", /Invalid workspace address\./);
+  assert.equal(find("main a").getAttribute("href"), "/");
+  assert.deepEqual(requests, []);
+  mounted.unmount();
   dom.history.replaceState(null, "", "/t/another-seller");
   const paths: string[] = [];
   mounted = ui.mountCustomerApp("#app", async (input) => {
@@ -1282,6 +1341,62 @@ test("Elements checkout mounts branded payment fields, shows canonical total, re
   assert.equal(dom.sessionStorage.length, 0);
   await click("Close checkout");
   assert.equal(dom.document.querySelector(".payment-panel"), null);
+});
+test("monthly Elements checkout states its renewal and a signed-in buyer can refresh licenses afterward", async () => {
+  const p = paymentFixture();
+  await mount(
+    (fixture) => {
+      fixture.currentAccount = account();
+      fixture.products = [
+        {
+          ...product(),
+          plans: priced([
+            { id: "plan-month", name: "Monthly", site_allowance: 1, unit_amount: 900, currency: "usd", billing_interval: "month" },
+          ]),
+        },
+      ];
+      fixture.on("POST", "/checkout", p.response);
+    },
+    "",
+    p.loader,
+  );
+  await flush();
+  await submit(".checkout-form");
+  assert.deepEqual(server.calls("/checkout")[0]?.body, {
+    planId: "plan-month",
+    email: "customer@example.test",
+    uiMode: "elements",
+  });
+  assert.match(text(), /Renews monthly until canceled/);
+  await click("Pay now");
+  assert.match(text(), /Payment completed/);
+  server.currentAccount = account([
+    license(),
+    license({ id: "license-two", product_name: "Second plugin" }),
+  ]);
+  const refreshed = deferred<Response>();
+  server.on("GET", "/me", () => refreshed.promise);
+  findButton("Refresh licenses", find(".payment-result")).click();
+  await flush();
+  assert.equal(findButton("Refreshing licenses…").disabled, true);
+  refreshed.resolve(Response.json(server.currentAccount));
+  await flush();
+  assert.match(text(), /Second plugin/);
+  assert.equal(server.calls("/me").length, 2);
+});
+test("a signed-in buyer opening another sign-in link is asked to switch accounts", async () => {
+  await mount((fixture) => {
+    fixture.currentAccount = account();
+  });
+  await flush();
+  dom.location.hash = "#login=other-account";
+  dom.dispatchEvent(new dom.HashChangeEvent("hashchange"));
+  await flush();
+  assert.match(text(), /Switch to the account from this link\?/);
+  assert.match(text(), /You are signed in as customer@example.test/);
+  await click("Cancel");
+  assert.equal(dom.document.querySelector(".login-confirm"), null);
+  assert.ok(dom.document.querySelector(".dashboard"));
 });
 test("Elements loader errors offer a fresh session retry and cancellation destroys mounted fields", async () => {
   const p = paymentFixture();

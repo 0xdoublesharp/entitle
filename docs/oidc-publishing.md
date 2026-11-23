@@ -24,21 +24,25 @@ re-enroll credentials before changing domains.
 
 ## Configure a trusted publisher
 
-1. Open **Security** in the seller dashboard. Enroll two independent hardware keys
-   and have your operator provision them using the [hardware policy](authentication-policy.md).
+1. Open **Security** in the seller dashboard and enroll a passkey or FIDO2 security key.
    Your first enrollment requires a fresh email verification and confirmation
    with the new factor. Adding another factor requires an existing factor.
+   Deployments with `PRIVILEGED_AUTH_POLICY=passkey` allow any enrolled user-verified
+   passkey or security key; deployments with the default `hardware` policy require two
+   operator-provisioned hardware keys under the [authentication policy](authentication-policy.md).
 2. Under **Trusted publishers**, choose the product and CI provider. For GitHub,
    enter the repository, its numeric repository and owner IDs, the exact Git ref
    (for example `refs/heads/main`), and workflow path. Find the IDs with
    `gh api repos/OWNER/REPO --jq '{repository_id: .id, repository_owner_id: .owner.id}'`.
-3. Verify with an independently provisioned hardware key, and save.
+3. Verify with an eligible passkey or hardware key, and save.
    Copy the publisher ID and audience into your CI configuration. They are public
    configuration values.
 
-Every creation or revocation requires a new independently provisioned hardware-key approval.
+Every creation or revocation requires a fresh WebAuthn approval (any eligible passkey in
+`passkey` mode, or an independently provisioned hardware key in `hardware` mode).
 The approval is valid for five minutes, works once in the current seller session,
-and covers the exact workspace and change shown. Email verification cannot authorize these changes. See [ordinary and privileged recovery](authentication-policy.md) for replacement-key
+and covers the exact workspace and change shown. Email verification cannot authorize these
+changes. See [ordinary and privileged recovery](authentication-policy.md) for replacement-key
 restrictions and the independently authorized operator path.
 
 GitHub trust requires `repository_id`, `repository_owner_id`, `ref` and either

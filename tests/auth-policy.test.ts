@@ -10,6 +10,8 @@ import {
 import { csrf, hash, random, unseal } from "../src/crypto.ts";
 
 import { AuthProvisioner } from "../src/auth-recovery.ts";
+import { canonicalAuth } from "../src/auth-policy.ts";
+import { randomUUID } from "node:crypto";
 
 const account = "/api/v1/platform/account";
 const intent = {
@@ -963,6 +965,244 @@ test("AUTH-07: recovery supersession and standalone owner boundaries preserve th
       (await f.db("auth_recoveries").where({ state: "restricted" })).length,
       1,
     );
+  } finally {
+    await f.close();
+  }
+});
+
+async function seedFlow(
+  f: Awaited<ReturnType<typeof oidcFixture>>,
+  state: "restricted" | "complete" = "restricted",
+) {
+  const id = randomUUID();
+  await f.db("auth_recoveries").insert({
+    id,
+    user_id: f.userId,
+    mode: "ordinary",
+    state,
+    generation: 0,
+    not_before: 0,
+    expires_at: Date.now() + 3600000,
+    created_at: Date.now(),
+  });
+  return id;
+}
+async function seedFactor(
+  f: Awaited<ReturnType<typeof oidcFixture>>,
+  values: Record<string, unknown> = {},
+) {
+  const key = passkeyFixture(f.config.origin);
+  await key.seed(f.db, f.userId, f.config.secret);
+  const factor = f.db("seller_factors").where({ credential_hash: hash(key.id) });
+  if (Object.keys(values).length) await factor.clone().update(values);
+  return { key, factorId: (await factor.first()).id as string };
+}
+async function grantFor(
+  f: Awaited<ReturnType<typeof oidcFixture>>,
+  factorId: string,
+  intent: object,
+) {
+  const proof = random();
+  await f.db("account_challenges").insert({
+    id: randomUUID(),
+    user_id: f.userId,
+    session_hash: hash(f.session),
+    purpose: "strong",
+    token_hash: hash(proof),
+    second_hash: hash(canonicalAuth(intent)),
+    auth_generation: 0,
+    factor_id: factorId,
+    created_at: Date.now(),
+    expires_at: Date.now() + 300000,
+  });
+  return proof;
+}
+
+test("AUTH-07: an unfinished recovery key cannot authorize normal-session security changes", async () => {
+  const f = await oidcFixture();
+  try {
+    const flowId = await seedFlow(f);
+    const pending = await seedFactor(f, {
+      provenance: "recovery",
+      recovery_id: flowId,
+    });
+    // Not offered and not accepted by the normal session's WebAuthn ceremony.
+    const none = await f.app.inject({
+      method: "POST",
+      url: `${account}/reauth/options`,
+      headers: f.ownerHeaders,
+      payload: { action: "security.manage" },
+    });
+    assert.equal(none.json().error.code, "factor_required", none.body);
+    const status = await f.app.inject({
+      url: `${account}/security`,
+      headers: f.ownerHeaders,
+    });
+    assert.deepEqual(status.json().factors, []);
+    const real = await seedFactor(f);
+    const start = await f.app.inject({
+      method: "POST",
+      url: `${account}/reauth/options`,
+      headers: f.ownerHeaders,
+      payload: { action: "security.manage" },
+    });
+    assert.equal(start.json().options.allowCredentials.length, 1);
+    const verify = await f.app.inject({
+      method: "POST",
+      url: `${account}/reauth/verify`,
+      headers: f.ownerHeaders,
+      payload: {
+        challengeId: start.json().challengeId,
+        response: pending.key.authentication(start.json().options.challenge),
+      },
+    });
+    assert.equal(verify.json().error.code, "reauth_invalid", verify.body);
+    // Even a stored grant naming the recovery key is refused at the policy layer.
+    const intent = { action: "security.email_login", enabled: false };
+    const enable = await f.app.inject({
+      method: "POST",
+      url: `${account}/security/email-login`,
+      headers: {
+        ...f.ownerHeaders,
+        "x-account-verification": await grantFor(f, pending.factorId, intent),
+      },
+      payload: { enabled: false },
+    });
+    assert.equal(enable.statusCode, 403, enable.body);
+    assert.equal(enable.json().error.code, "recovery_restricted");
+    // Removing the only real key does not count the pending recovery key.
+    await f
+      .db("seller_users")
+      .where({ id: f.userId })
+      .update({ email_login_disabled: 1 });
+    const proof = await proofFor(f, real.key, {
+      action: "security.remove",
+      factorId: real.factorId,
+    });
+    assert.equal(proof.statusCode, 200, proof.body);
+    const removed = await f.app.inject({
+      method: "POST",
+      url: `${account}/security/factors/${real.factorId}/remove`,
+      headers: {
+        ...f.ownerHeaders,
+        "x-account-verification": proof.json().verification,
+      },
+      payload: {},
+    });
+    assert.equal(removed.statusCode, 409, removed.body);
+    assert.equal(removed.json().error.code, "login_lockout");
+    assert.ok(
+      await f.db("seller_factors").where({ id: real.factorId }).first(),
+    );
+    // Disabling email sign-in likewise needs a real key, not the recovery key.
+    await f.db("seller_factors").where({ id: real.factorId }).delete();
+    const disable = await f.app.inject({
+      method: "POST",
+      url: `${account}/security/email-login`,
+      headers: {
+        ...f.ownerHeaders,
+        "x-account-verification": await grantFor(f, pending.factorId, intent),
+      },
+      payload: { enabled: false },
+    });
+    assert.equal(disable.json().error.code, "recovery_restricted");
+  } finally {
+    await f.close();
+  }
+});
+
+test("AUTH-07: legacy credentials without provenance stay usable and count toward sign-in safety", async () => {
+  const f = await oidcFixture();
+  try {
+    const legacy = await seedFactor(f, { provenance: null });
+    const other = await seedFactor(f);
+    await f
+      .db("seller_users")
+      .where({ id: f.userId })
+      .update({ email_login_disabled: 1 });
+    const proof = await proofFor(f, other.key, {
+      action: "security.remove",
+      factorId: other.factorId,
+    });
+    assert.equal(proof.statusCode, 200, proof.body);
+    const removed = await f.app.inject({
+      method: "POST",
+      url: `${account}/security/factors/${other.factorId}/remove`,
+      headers: {
+        ...f.ownerHeaders,
+        "x-account-verification": proof.json().verification,
+      },
+      payload: {},
+    });
+    assert.equal(removed.statusCode, 200, removed.body);
+    const fresh = await f.db("seller_sessions").where({ id: hash(f.session) }).first();
+    assert.ok(fresh, "the acting session survives with the new generation");
+    const status = await f.app.inject({
+      url: `${account}/security`,
+      headers: f.ownerHeaders,
+    });
+    assert.deepEqual(
+      status.json().factors.map((factor: { id: string }) => factor.id),
+      [legacy.factorId],
+    );
+    assert.equal(
+      (await proofFor(f, legacy.key, { action: "security.manage" })).statusCode,
+      200,
+    );
+  } finally {
+    await f.close();
+  }
+});
+
+test("AUTH-07: a key surviving a completed recovery can cancel a later recovery flow", async () => {
+  const f = await oidcFixture();
+  try {
+    const completed = await seedFlow(f, "complete");
+    const survivor = await seedFactor(f, {
+      provenance: "ordinary_recovered",
+      recovery_id: completed,
+    });
+    await f
+      .db("seller_users")
+      .where({ id: f.userId })
+      .update({ recovered_ordinary: 1 });
+    const later = await seedFlow(f);
+    const proof = await proofFor(f, survivor.key, {
+      action: "security.recovery_cancel",
+      flowId: later,
+    });
+    assert.equal(proof.statusCode, 200, proof.body);
+    const cancel = await f.app.inject({
+      method: "POST",
+      url: `${account}/recovery/cancel`,
+      headers: {
+        ...f.ownerHeaders,
+        "x-account-verification": proof.json().verification,
+      },
+      payload: { flowId: later },
+    });
+    assert.equal(cancel.statusCode, 200, cancel.body);
+    assert.equal(
+      (await f.db("auth_recoveries").where({ id: later }).first()).state,
+      "canceled",
+    );
+    // A completed flow's own key still cannot name that flow for cancellation.
+    const self = await f.app.inject({
+      method: "POST",
+      url: `${account}/reauth/options`,
+      headers: f.ownerHeaders,
+      payload: { action: "security.recovery_cancel", flowId: completed },
+    });
+    const denied = await f.app.inject({
+      method: "POST",
+      url: `${account}/reauth/verify`,
+      headers: f.ownerHeaders,
+      payload: {
+        challengeId: self.json().challengeId,
+        response: survivor.key.authentication(self.json().options.challenge, 2),
+      },
+    });
+    assert.equal(denied.json().error.code, "recovery_restricted", denied.body);
   } finally {
     await f.close();
   }

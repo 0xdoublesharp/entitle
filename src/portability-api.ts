@@ -124,6 +124,7 @@ export async function portabilityRoutes(
           .strict()
           .parse(req.params),
         { tenant, portability } = await authorize(req);
+      handlerOwnsSocketTimeout(req, reply, api.server.timeout);
       reply
         .header("cache-control", "no-store")
         .type("application/octet-stream");
@@ -133,7 +134,7 @@ export async function portabilityRoutes(
     },
   );
   api.delete("/exports/:id", { config: rate(10) }, async (req) => {
-    empty.parse(req.body);
+    empty.optional().parse(req.body);
     const params = z
         .object({ tenant: tenantSlug, id })
         .strict()

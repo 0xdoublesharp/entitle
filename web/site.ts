@@ -6,11 +6,14 @@ import {
   onMounted,
   onUnmounted,
   ref,
+  toRaw,
+  type PropType,
 } from "vue";
 import { ApiClient, ApiError, errorMessage } from "./api.ts";
 import {
   frameworkInfo,
   frameworkOf,
+  installationName,
   seatUnit,
   setupConfiguration,
 } from "./frameworks.ts";
@@ -19,7 +22,13 @@ import { type Tenant, workspaceArchived } from "../packages/shared/tenant.ts";
 import { WorkspaceManager } from "./workspaces.ts";
 import { site } from "../packages/shared/site.ts";
 import { SellerFeaturePanel, verifiedRequest } from "./features.ts";
-import { hardwareVerification, passkeyCeremony } from "./oidc.ts";
+import {
+  hardwareVerification,
+  passkeyCeremony,
+  privilegedPolicyOf,
+} from "./oidc.ts";
+import type { PrivilegedPolicy } from "./oidc.ts";
+import { planPrice, stripeExponent } from "./checkout.ts";
 import type { EmailChangeDraft } from "./features.ts";
 import { appHeader } from "./chrome.ts";
 import { applicationHref } from "./navigation.ts";
@@ -47,7 +56,18 @@ interface SellerProduct extends FrameworkProduct {
     name: string;
     site_allowance: number;
     stripe_price_id: string;
+    unit_amount?: number | null;
+    currency?: string | null;
+    billing_interval?: string | null;
+    archived_at?: number | null;
   }[];
+}
+interface SellerInstallation {
+  id: string;
+  site_url: string;
+  label?: string | null;
+  active: boolean;
+  exempt: boolean;
 }
 interface Overview {
   billingAvailable?: boolean;
@@ -222,7 +242,7 @@ const money = (currency: string, minor: string) => {
   });
   const digits = formatter.resolvedOptions().maximumFractionDigits!;
   const value = BigInt(minor),
-    scale = 10n ** BigInt(digits),
+    scale = 10n ** BigInt(stripeExponent(currency)),
     negative = value < 0n,
     absolute = negative ? -value : value;
   const whole = absolute / scale,
@@ -236,10 +256,30 @@ const money = (currency: string, minor: string) => {
   );
 };
 
+const policyCopy: Record<
+  PrivilegedPolicy,
+  { keys: string; release: string; browser: string }
+> = {
+  hardware: {
+    keys: "API key changes require fresh hardware verification. Keep two independent keys provisioned with your Entitle operator.",
+    release: "Publication requires fresh hardware verification.",
+    browser:
+      "Browser publication requires fresh hardware verification. Use trusted OIDC publishers from CI.",
+  },
+  passkey: {
+    keys: "API key changes require fresh verification with a passkey or security key on this account.",
+    release:
+      "Publication requires fresh verification with a passkey or security key.",
+    browser:
+      "Browser publication requires fresh verification with a passkey or security key. Use trusted OIDC publishers from CI.",
+  },
+};
+
 const SellerConfirmation = defineComponent({
   props: {
     title: { type: String, required: true },
     label: { type: String, required: true },
+    description: { type: String as PropType<string | undefined> },
   },
   emits: ["confirm", "cancel"],
   setup(props, { emit }) {
@@ -259,7 +299,7 @@ const SellerConfirmation = defineComponent({
         },
         [
           h("h2", { id: "seller-confirm-title" }, props.title),
-          h("p", "This changes access immediately. Confirm to continue."),
+          props.description && h("p", props.description),
           h("div", { class: "button-row" }, [
             h(
               "button",
@@ -291,8 +331,12 @@ export function mountSellerApp(
           accountProof = ref(""),
           emailChange = ref<EmailChangeDraft | null>(null),
           proofRound = ref(0),
-          panelProof = ref<{ page: SellerPage; token: string } | null>(null),
+          panelProof = ref<{
+            page: SellerPage;
+            token: string;
+          } | null>(null),
           proofPurpose = ref("security_enroll");
+        const panelPurpose = ref("");
         const hosted = ref(true),
           applicationFeePercent = ref(0);
         const seller = ref<Seller | null>(null),
@@ -348,7 +392,16 @@ export function mountSellerApp(
           confirmation = ref<{
             title: string;
             label: string;
+            description?: string | undefined;
             run: () => Promise<void>;
+          } | null>(null);
+        const privilegedPolicy = ref<PrivilegedPolicy>("hardware"),
+          editProduct = ref(""),
+          addPlan = ref(false),
+          inspected = ref<{
+            license: Overview["licenses"][number];
+            installations: SellerInstallation[];
+            nextCursor: string | null;
           } | null>(null);
         const fields = ref<Record<string, string>>({
           "seller-email": "",
@@ -388,6 +441,10 @@ export function mountSellerApp(
           "complimentary-allowance": "1",
           "complimentary-expiry": "",
           "complimentary-note": "",
+          "edit-product-name": "",
+          "edit-plan-name": "",
+          "edit-site-allowance": "1",
+          "edit-price-id": "",
         });
         let complimentaryDraft: {
           signature: string;
@@ -497,6 +554,10 @@ export function mountSellerApp(
           workspaceCreateOpen.value = false;
           clearComplimentary();
           complimentaryWorkspace = "";
+          privilegedPolicy.value = "hardware";
+          editProduct.value = "";
+          addPlan.value = false;
+          inspected.value = null;
         };
         const run = async (action: () => Promise<void>, expire = true) => {
           if (busy.value) return;
@@ -525,6 +586,9 @@ export function mountSellerApp(
             setupProduct.value = "";
             setupStep.value = null;
             clearComplimentary();
+            editProduct.value = "";
+            addPlan.value = false;
+            inspected.value = null;
             complimentaryWorkspace = selected.value;
           }
           panelProof.value = null;
@@ -591,7 +655,7 @@ export function mountSellerApp(
             recovery.value = true;
           }
         };
-        const session = async () => {
+        const session = async (keepRecovery = false) => {
           let value: Seller;
           try {
             value = await platform.get<Seller>("/me");
@@ -607,6 +671,8 @@ export function mountSellerApp(
             if (!(failure instanceof ApiError) || failure.status !== 401)
               throw failure;
             clearSession();
+            // Set in the same tick so the recovery result is never unmounted.
+            if (keepRecovery) recoveryOpen.value = true;
             return;
           }
           if (
@@ -631,7 +697,20 @@ export function mountSellerApp(
             value.tenants.find((item) => !workspaceArchived(item))?.slug ||
             value.tenants[0]?.slug ||
             "";
-          await dashboard();
+          await Promise.all([
+            dashboard(),
+            platform
+              .get<{ privilegedPolicy?: string }>("/account/security")
+              .then(
+                (security) => {
+                  privilegedPolicy.value = privilegedPolicyOf(
+                    security.privilegedPolicy,
+                  );
+                },
+                // Policy-specific guidance is optional; the hardware wording is the safe default.
+                () => undefined,
+              ),
+          ]);
         };
         const refreshWorkspaces = async (message: string) => {
           const ownerId = seller.value!.user.id;
@@ -659,10 +738,12 @@ export function mountSellerApp(
           const fragment = new URLSearchParams(window.location.hash.slice(1));
           if (fragment.has("account-verification")) {
             panelProof.value = null;
+            // Remount an open panel so it drops any earlier, now-superseded proof.
+            proofRound.value++;
             accountProof.value = fragment.get("account-verification") || "";
             notice.value =
               "Verification link received. Choose the action you requested below.";
-            activePage.value = "keys";
+            activePage.value = "security";
             window.history.replaceState(
               null,
               "",
@@ -709,6 +790,9 @@ export function mountSellerApp(
         window.addEventListener("hashchange", readToken);
         onUnmounted(() => window.removeEventListener("hashchange", readToken));
         onMounted(() => {
+          // run() clears messages; keep those set by a link opened on this load.
+          const linkNotice = notice.value,
+            linkError = error.value;
           void run(async () => {
             const info = await platform.get<Info>("/info");
             hosted.value = info.deploymentMode !== "standalone";
@@ -716,6 +800,10 @@ export function mountSellerApp(
             maxUpload.value = info.maxUploadBytes;
             maxNativeUpload.value = info.maxNativeUploadBytes ?? 104857600;
             await session();
+            if (seller.value) {
+              notice.value = linkNotice;
+              if (linkError) error.value = linkError;
+            }
           }).finally(() => {
             loading.value = false;
           });
@@ -860,8 +948,11 @@ export function mountSellerApp(
                   type: "submit",
                   disabled:
                     busy.value ||
-                    (id === "complimentary-issue" &&
-                      !overview.value?.products.length),
+                    (["complimentary-issue", "release-upload"].includes(id) &&
+                      !overview.value?.products.length) ||
+                    (id === "product-edit" &&
+                      addPlan.value &&
+                      !unmappedPrices().length),
                 },
                 label,
               ),
@@ -1070,10 +1161,12 @@ export function mountSellerApp(
           title: string,
           label: string,
           action: () => Promise<void>,
+          description?: string,
         ) => {
           confirmation.value = {
             title,
             label,
+            description,
             run: async () => {
               await action();
               await dashboard();
@@ -1091,6 +1184,88 @@ export function mountSellerApp(
             notice.value = "Selected. Copy it using your keyboard.";
           }
         };
+        const sellerInstallationName = (item: SellerInstallation) =>
+          installationName({ ...item, installation_id: item.id });
+        const planSummary = (
+          product: SellerProduct,
+          plan: SellerProduct["plans"][number],
+        ) => {
+          const price = planPrice(plan);
+          return `${plan.name} · ${plan.site_allowance} ${seatUnit(product)}${plan.site_allowance === 1 ? "" : "s"} · ${plan.stripe_price_id}${price ? ` · ${price}` : ""}${plan.archived_at ? " · Archived" : ""}`;
+        };
+        const startEdit = (product: SellerProduct) => {
+          editProduct.value = product.id;
+          addPlan.value = false;
+          fields.value["edit-product-name"] = product.name;
+          fields.value["edit-plan-name"] = "";
+          fields.value["edit-site-allowance"] = "1";
+          void nextTick(() =>
+            document.getElementById("edit-product-name")?.focus(),
+          );
+        };
+        const archivePlan = (plan: SellerProduct["plans"][number]) =>
+          confirm(
+            `${plan.archived_at ? "Restore" : "Archive"} the ${plan.name} plan?`,
+            plan.archived_at ? "Confirm restore plan" : "Confirm archive plan",
+            async () => {
+              await tenantApi().post(
+                `/plans/${encodeURIComponent(plan.id)}/archive`,
+                { archived: !plan.archived_at },
+              );
+            },
+            plan.archived_at
+              ? "Buyers can choose this plan again at checkout."
+              : "New buyers can no longer choose this plan. Existing licenses are not changed.",
+          );
+        const loadInstallations = async (
+          license: Overview["licenses"][number],
+          after = "",
+        ) => {
+          const result = await tenantApi().get<{
+            installations: SellerInstallation[];
+            nextCursor: string | null;
+          }>(
+            `/licenses/${encodeURIComponent(license.id)}${after ? `?after=${encodeURIComponent(after)}` : ""}`,
+          );
+          inspected.value = {
+            license,
+            installations: [
+              ...(after ? inspected.value!.installations : []),
+              ...result.installations,
+            ],
+            nextCursor: result.nextCursor,
+          };
+        };
+        const deactivateInstallation = (
+          license: Overview["licenses"][number],
+          installation: SellerInstallation,
+        ) =>
+          confirm(
+            `Deactivate ${sellerInstallationName(installation)}?`,
+            "Confirm deactivation",
+            async () => {
+              await tenantApi().post(
+                `/licenses/${encodeURIComponent(license.id)}/installations/${encodeURIComponent(installation.id)}/deactivate`,
+                {},
+              );
+              await loadInstallations(license);
+              notice.value = "Installation deactivated.";
+            },
+            "It stops receiving licensed updates and frees its seat. Installed software stays available, and the customer can activate it again with their license key.",
+          );
+        // A Stripe price maps to one plan per workspace, archived plans included.
+        const unmappedPrices = () =>
+          prices.value.filter(
+            (price) =>
+              !overview.value!.products.some((product) =>
+                product.plans.some((plan) => plan.stripe_price_id === price.id),
+              ),
+          );
+        const priceOptions = (list: Price[]) =>
+          list.map((price) => ({
+            value: price.id,
+            label: `${price.productName} · ${price.nickname || price.id} · ${price.unit_amount === null ? "Custom price" : money(price.currency, String(price.unit_amount))}/${price.interval}`,
+          }));
         const releaseProduct = () =>
           overview.value!.products.find(
             (p) => p.id === fields.value["release-product"],
@@ -1142,10 +1317,7 @@ export function mountSellerApp(
             h("dd", String(value)),
           ]);
         const keyVerification = () =>
-          h(
-            "p",
-            "API key changes require fresh hardware verification. Keep two independent keys provisioned with your Entitle operator.",
-          );
+          h("p", policyCopy[privilegedPolicy.value].keys);
         const renderKeyList = () =>
           h(
             "ul",
@@ -1180,6 +1352,7 @@ export function mountSellerApp(
                             {},
                           );
                         },
+                        "Automation that uses this key stops working immediately.",
                       ),
                     busy.value,
                   ),
@@ -1262,7 +1435,7 @@ export function mountSellerApp(
               title: "Publish a release",
               location: "Products & sales → Releases",
               description:
-                "Upload a versioned package or release asset for your product. Publication requires fresh hardware verification.",
+                `Upload a versioned package or release asset for your product. ${policyCopy[privilegedPolicy.value].release}`,
               action: "Publish your first release",
               complete:
                 !!product &&
@@ -1653,6 +1826,9 @@ export function mountSellerApp(
                 return license.customer_email;
             }
           };
+          const editing = data.products.find(
+            (product) => product.id === editProduct.value,
+          );
           const licenses = data.licenses
             .filter((license) => {
               const query = licenseQuery.value.trim().toLowerCase();
@@ -2100,8 +2276,8 @@ export function mountSellerApp(
                 h(
                   "p",
                   data.billingAvailable === false
-                    ? "Create a product for complimentary licensing. Configure Stripe and an annual price before selling paid plans."
-                    : "Create a product for complimentary licensing now. Connect Stripe and create an active annual recurring price to add a paid plan.",
+                    ? "Create a product for complimentary licensing. Configure Stripe and a monthly or annual price before selling paid plans."
+                    : "Create a product for complimentary licensing now. Connect Stripe and create an active monthly or annual recurring price to add a paid plan.",
                 ),
               form(
                 "product-create",
@@ -2213,7 +2389,7 @@ export function mountSellerApp(
                           ).checked;
                         },
                       }),
-                      " Include annual paid plan",
+                      " Include a paid plan (monthly or annual)",
                     ]),
                   ]),
                   includePaidPlan.value &&
@@ -2243,11 +2419,8 @@ export function mountSellerApp(
                   includePaidPlan.value &&
                     select(
                       "price-id",
-                      "Annual Stripe price",
-                      prices.value.map((price) => ({
-                        value: price.id,
-                        label: `${price.productName} · ${price.nickname || price.id} · ${price.unit_amount === null ? "Custom price" : money(price.currency, String(price.unit_amount))}/${price.interval}`,
-                      })),
+                      "Stripe price (monthly or annual)",
+                      priceOptions(prices.value),
                     ),
                 ],
                 "Create product",
@@ -2266,15 +2439,143 @@ export function mountSellerApp(
                     h(
                       "ul",
                       product.plans.map((plan) =>
-                        h(
-                          "li",
-                          `${plan.name} · ${plan.site_allowance} ${seatUnit(product)}${plan.site_allowance === 1 ? "" : "s"} · ${plan.stripe_price_id}`,
-                        ),
+                        h("li", planSummary(product, plan)),
                       ),
+                    ),
+                    h(
+                      "button",
+                      {
+                        type: "button",
+                        disabled: busy.value,
+                        "aria-label": `Edit ${product.name}`,
+                        onClick: () => startEdit(product),
+                      },
+                      "Edit product",
                     ),
                   ]),
                 ),
               ),
+              editing &&
+                h(
+                  "section",
+                  {
+                    id: "product-editor",
+                    class: "product-editor",
+                    "aria-labelledby": "product-edit-title",
+                  },
+                  [
+                    h("h3", { id: "product-edit-title" }, `Edit ${editing.name}`),
+                    h("h4", "Plans"),
+                    editing.plans.length
+                      ? h(
+                          "ul",
+                          { class: "record-list plan-records" },
+                          editing.plans.map((plan) =>
+                            h("li", { key: plan.id }, [
+                              planSummary(editing, plan),
+                              " ",
+                              btn(
+                                `${plan.archived_at ? "Restore" : "Archive"} ${plan.name}`,
+                                () => archivePlan(plan),
+                                busy.value,
+                              ),
+                            ]),
+                          ),
+                        )
+                      : h(
+                          "p",
+                          "No paid plans yet, so this product offers complimentary licenses only. Add a monthly or annual plan to start selling it.",
+                        ),
+                    form(
+                      "product-edit",
+                      async () => {
+                        if (
+                          addPlan.value &&
+                          !unmappedPrices().some(
+                            (price) =>
+                              price.id === fields.value["edit-price-id"],
+                          )
+                        )
+                          throw new ApiError(
+                            "That Stripe price is already used by a plan. Choose another price.",
+                          );
+                        await tenantApi().post("/products", {
+                          slug: editing.slug,
+                          name: fields.value["edit-product-name"],
+                          plans: addPlan.value
+                            ? [
+                                {
+                                  name: fields.value["edit-plan-name"],
+                                  siteAllowance: Number(
+                                    fields.value["edit-site-allowance"],
+                                  ),
+                                  priceId: fields.value["edit-price-id"],
+                                },
+                              ]
+                            : [],
+                        });
+                        await dashboard();
+                        addPlan.value = false;
+                        notice.value = "Product updated.";
+                      },
+                      [
+                        field("edit-product-name", "Product name"),
+                        h("div", { class: "form-field product-plan-choice" }, [
+                          h("label", { for: "edit-add-plan" }, [
+                            h("input", {
+                              id: "edit-add-plan",
+                              type: "checkbox",
+                              checked: addPlan.value,
+                              // Stay enabled while checked so it can be cleared.
+                              disabled:
+                                !addPlan.value &&
+                                (data.billingAvailable === false ||
+                                  !unmappedPrices().length),
+                              onChange: (event: Event) => {
+                                addPlan.value = (
+                                  event.target as HTMLInputElement
+                                ).checked;
+                                fields.value["edit-price-id"] =
+                                  unmappedPrices()[0]?.id || "";
+                              },
+                            }),
+                            " Add a paid plan (monthly or annual)",
+                          ]),
+                        ]),
+                        prices.value.length > 0 &&
+                          !unmappedPrices().length &&
+                          h(
+                            "p",
+                            { id: "edit-price-note", role: "status" },
+                            "Every Stripe price is already used by a plan. Create a new monthly or annual price in Stripe to add another plan.",
+                          ),
+                        addPlan.value && field("edit-plan-name", "Plan name"),
+                        addPlan.value &&
+                          field(
+                            "edit-site-allowance",
+                            seatUnit(editing) === "site"
+                              ? "Site allowance"
+                              : "Device allowance",
+                            "number",
+                          ),
+                        addPlan.value &&
+                          select(
+                            "edit-price-id",
+                            "Stripe price (monthly or annual)",
+                            priceOptions(unmappedPrices()),
+                          ),
+                      ],
+                      "Save product",
+                    ),
+                    btn(
+                      "Close editor",
+                      () => {
+                        editProduct.value = "";
+                      },
+                      busy.value,
+                    ),
+                  ],
+                ),
             ]),
             panel("releases", "Private releases", [
               h(
@@ -2284,14 +2585,21 @@ export function mountSellerApp(
               form(
                 "release-upload",
                 async () => {
-                  const framework = frameworkOf(releaseProduct());
-                  if (!file.value)
+                  const product = releaseProduct();
+                  if (!product)
+                    throw new ApiError(
+                      "Create a product before publishing a release.",
+                    );
+                  const framework = frameworkOf(product);
+                  // fetch needs the File itself, not Vue's reactive proxy.
+                  const upload = toRaw(file.value);
+                  if (!upload)
                     throw new ApiError(
                       framework === "wordpress"
                         ? "Choose a plugin ZIP."
                         : "Choose a release asset.",
                     );
-                  if (file.value.size > releaseUploadLimit())
+                  if (upload.size > releaseUploadLimit())
                     throw new ApiError(
                       `Choose a ${framework === "wordpress" ? "ZIP" : "release asset"} no larger than ${releaseUploadLimit() / 1048576} MiB.`,
                     );
@@ -2327,7 +2635,7 @@ export function mountSellerApp(
                       ? requirements
                       : {
                           target: fields.value["release-target"],
-                          filename: file.value.name,
+                          filename: upload.name,
                           ...(fields.value["release-signature"]
                             ? { signature: fields.value["release-signature"] }
                             : {}),
@@ -2349,8 +2657,7 @@ export function mountSellerApp(
                     .replaceAll("/", "_")
                     .replace(/=+$/, "");
                   const uploadApi = tenantApi();
-                  const uploadPath = `/${framework === "wordpress" ? "releases" : "assets"}/${encodeURIComponent(releaseProduct()!.slug)}/${encodeURIComponent(fields.value["release-version"]!)}`;
-                  const uploadBody = await file.value.arrayBuffer();
+                  const uploadPath = `/${framework === "wordpress" ? "releases" : "assets"}/${encodeURIComponent(product.slug)}/${encodeURIComponent(fields.value["release-version"]!)}`;
 
                   const grant = {
                     verification: await hardwareVerification(platform, {
@@ -2370,16 +2677,14 @@ export function mountSellerApp(
                       "X-Release-Metadata": encoded,
                       "X-Account-Verification": grant.verification,
                     },
-                    body: uploadBody,
+                    // Stream the selected file instead of buffering it in memory.
+                    body: upload,
                   });
                   await dashboard();
                   notice.value = "Release published.";
                 },
                 [
-                  h(
-                    "p",
-                    "Browser publication requires fresh hardware verification. Use trusted OIDC publishers from CI.",
-                  ),
+                  h("p", policyCopy[privilegedPolicy.value].browser),
                   select(
                     "release-product",
                     "Release product",
@@ -2491,6 +2796,7 @@ export function mountSellerApp(
                                 {},
                               );
                             },
+                            "Customers can no longer download this version.",
                           ),
                         busy.value,
                       ),
@@ -2581,6 +2887,7 @@ export function mountSellerApp(
                       notice.value =
                         "License issued; license key email queued.";
                     },
+                    "The customer receives the license key by email.",
                   );
                 },
                 [
@@ -2772,8 +3079,26 @@ export function mountSellerApp(
                                   access(license),
                                 ),
                               ),
-                              h(
-                                "td",
+                              h("td", { class: "license-actions" }, [
+                                h(
+                                  "button",
+                                  {
+                                    type: "button",
+                                    disabled: busy.value,
+                                    "aria-label": `View installations for ${license.customer_email}`,
+                                    onClick: () =>
+                                      void run(async () => {
+                                        await loadInstallations(license);
+                                        await nextTick();
+                                        document
+                                          .getElementById(
+                                            "license-installations-title",
+                                          )
+                                          ?.focus();
+                                      }),
+                                  },
+                                  "Installations",
+                                ),
                                 btn(
                                   license.revoked
                                     ? "Restore license"
@@ -2790,10 +3115,13 @@ export function mountSellerApp(
                                           { revoked: !license.revoked },
                                         );
                                       },
+                                      license.revoked
+                                        ? "The customer regains downloads and updates for this license."
+                                        : "The customer loses downloads and updates immediately. Installed software stays available.",
                                     ),
                                   busy.value,
                                 ),
-                              ),
+                              ]),
                             ],
                           ),
                         )
@@ -2811,6 +3139,68 @@ export function mountSellerApp(
                   ),
                 ]),
               ]),
+              inspected.value &&
+                h(
+                  "section",
+                  {
+                    id: "license-installations",
+                    class: "license-installations",
+                    "aria-labelledby": "license-installations-title",
+                  },
+                  [
+                    h(
+                      "h3",
+                      { id: "license-installations-title", tabindex: -1 },
+                      `Installations · ${inspected.value.license.product_name} · ${inspected.value.license.customer_email}`,
+                    ),
+                    inspected.value.installations.length
+                      ? h(
+                          "ul",
+                          { class: "record-list installation-records" },
+                          inspected.value.installations.map((item) =>
+                            h("li", { key: item.id }, [
+                              h("strong", sellerInstallationName(item)),
+                              ` · ${item.active ? "Active" : "Inactive"}${item.exempt ? " · Does not use a seat" : ""} `,
+                              item.active &&
+                                btn(
+                                  `Deactivate ${sellerInstallationName(item)}`,
+                                  () =>
+                                    deactivateInstallation(
+                                      inspected.value!.license,
+                                      item,
+                                    ),
+                                  busy.value,
+                                ),
+                            ]),
+                          ),
+                        )
+                      : h(
+                          "p",
+                          "No installations have been activated with this license.",
+                        ),
+                    h("div", { class: "button-row" }, [
+                      inspected.value.nextCursor &&
+                        btn(
+                          "Load more installations",
+                          () =>
+                            void run(() =>
+                              loadInstallations(
+                                inspected.value!.license,
+                                inspected.value!.nextCursor!,
+                              ),
+                            ),
+                          busy.value,
+                        ),
+                      btn(
+                        "Close installations",
+                        () => {
+                          inspected.value = null;
+                        },
+                        busy.value,
+                      ),
+                    ]),
+                  ],
+                ),
             ]),
             panel("keys", "API keys", [
               keyVerification(),
@@ -3159,7 +3549,7 @@ export function mountSellerApp(
                               hosted: hosted.value,
                               products: [],
                               confirm,
-                              onSignedOut: () => void run(session),
+                              onSignedOut: () => void run(() => session(true)),
                             }),
                         ],
                       ),
@@ -3374,6 +3764,12 @@ export function mountSellerApp(
                                 ].includes(proofPurpose.value)
                                   ? "security"
                                   : "export";
+                                if (page === "export" && !selected.value) {
+                                  error.value =
+                                    "Create or select a workspace before exporting it.";
+                                  return;
+                                }
+                                panelPurpose.value = proofPurpose.value;
                                 panelProof.value = {
                                   page,
                                   token: accountProof.value,
@@ -3402,6 +3798,7 @@ export function mountSellerApp(
                                 tenants: seller.value.tenants,
                                 platform,
                                 busy: busy.value,
+                                privilegedPolicy: privilegedPolicy.value,
                                 execute: (action: () => Promise<void>) => {
                                   void run(action);
                                 },
@@ -3409,10 +3806,12 @@ export function mountSellerApp(
                                   title: string,
                                   label: string,
                                   action: () => Promise<void>,
+                                  description?: string,
                                 ) => {
                                   confirmation.value = {
                                     title,
                                     label,
+                                    description,
                                     run: action,
                                   };
                                 },
@@ -3451,7 +3850,6 @@ export function mountSellerApp(
                               h(SellerFeaturePanel, {
                                 key: `${selected.value}:${activePage.value}:${proofRound.value}`,
                                 page: activePage.value,
-                                embedded: !!overview.value,
                                 api: tenantApi(),
                                 platform,
                                 hosted: hosted.value,
@@ -3463,10 +3861,12 @@ export function mountSellerApp(
                                   title: string,
                                   label: string,
                                   action: () => Promise<void>,
+                                  description?: string,
                                 ) => {
                                   confirmation.value = {
                                     title,
                                     label,
+                                    description,
                                     run: action,
                                   };
                                 },
@@ -3479,6 +3879,7 @@ export function mountSellerApp(
                                   panelProof.value?.page === activePage.value
                                     ? panelProof.value.token
                                     : "",
+                                initialPurpose: panelPurpose.value,
                                 invalidateProof: (
                                   page: string,
                                   token: string,
@@ -3503,6 +3904,7 @@ export function mountSellerApp(
                 h(SellerConfirmation, {
                   title: confirmation.value.title,
                   label: confirmation.value.label,
+                  description: confirmation.value.description,
                   onCancel: () => {
                     confirmation.value = null;
                   },

@@ -27,6 +27,96 @@ interface PublisherList {
   publishers: Publisher[];
 }
 
+type DescriptorJSON = { id: string; type: string; transports?: string[] };
+type BinaryField =
+  | "clientDataJSON"
+  | "attestationObject"
+  | "authenticatorData"
+  | "signature"
+  | "userHandle";
+const fromBase64url = (value: string) =>
+  Uint8Array.from(
+    atob(
+      value
+        .replaceAll("-", "+")
+        .replaceAll("_", "/")
+        .padEnd(Math.ceil(value.length / 4) * 4, "="),
+    ),
+    (character) => character.charCodeAt(0),
+  );
+const toBase64url = (value: ArrayBuffer) =>
+  btoa(String.fromCharCode(...new Uint8Array(value)))
+    .replaceAll("+", "-")
+    .replaceAll("/", "_")
+    .replace(/=+$/, "");
+const descriptors = (list?: DescriptorJSON[]) =>
+  list?.map((item) => ({ ...item, id: fromBase64url(item.id) }));
+// Browsers without WebAuthn Level 3 JSON helpers (Safari before 18.4) need manual decoding.
+const decodeOptions = {
+  create: (json: PublicKeyCredentialCreationOptionsJSON) => ({
+    ...json,
+    challenge: fromBase64url(json.challenge),
+    user: { ...json.user, id: fromBase64url(json.user.id) },
+    excludeCredentials: descriptors(json.excludeCredentials),
+  }) as unknown as PublicKeyCredentialCreationOptions,
+  get: (json: PublicKeyCredentialRequestOptionsJSON) => ({
+    ...json,
+    challenge: fromBase64url(json.challenge),
+    allowCredentials: descriptors(json.allowCredentials),
+  }) as unknown as PublicKeyCredentialRequestOptions,
+};
+const credentialJSON = (credential: PublicKeyCredential) => {
+  if (typeof credential.toJSON === "function") return credential.toJSON();
+  const response = credential.response as unknown as Partial<
+    Record<BinaryField, ArrayBuffer | null>
+  > & { getTransports?: () => string[] };
+  const fields: BinaryField[] = [
+    "clientDataJSON",
+    "attestationObject",
+    "authenticatorData",
+    "signature",
+    "userHandle",
+  ];
+  return {
+    id: credential.id,
+    rawId: toBase64url(credential.rawId),
+    type: credential.type,
+    authenticatorAttachment: credential.authenticatorAttachment,
+    response: {
+      ...Object.fromEntries(
+        fields
+          .filter((field) => response[field])
+          .map((field) => [field, toBase64url(response[field]!)]),
+      ),
+      transports: response.getTransports?.(),
+    },
+    clientExtensionResults: credential.getClientExtensionResults(),
+  };
+};
+const ceremonyErrors = new Map([
+  [
+    "NotAllowedError",
+    "Passkey verification was canceled or timed out. Try again when you are ready.",
+  ],
+  [
+    "InvalidStateError",
+    "This passkey or security key is already registered. Use a different key.",
+  ],
+  [
+    "SecurityError",
+    "Passkeys are unavailable on this page. Open the site at its configured HTTPS address.",
+  ],
+  ["AbortError", "Passkey verification was interrupted. Try again."],
+  [
+    "NotSupportedError",
+    "This browser or key does not support the requested passkey type.",
+  ],
+  [
+    "ConstraintError",
+    "This key cannot meet the verification requirements. Use a key that supports a PIN or biometric check.",
+  ],
+]);
+
 export async function passkeyCeremony(
   kind: "create" | "get",
   options: unknown,
@@ -35,19 +125,39 @@ export async function passkeyCeremony(
     throw new ApiError(
       "Use a browser with WebAuthn support to verify with a passkey or security key.",
     );
-  const credential = (await (kind === "create"
-    ? navigator.credentials.create({
-        publicKey: PublicKeyCredential.parseCreationOptionsFromJSON(
-          options as PublicKeyCredentialCreationOptionsJSON,
-        ),
-      })
-    : navigator.credentials.get({
-        publicKey: PublicKeyCredential.parseRequestOptionsFromJSON(
-          options as PublicKeyCredentialRequestOptionsJSON,
-        ),
-      }))) as PublicKeyCredential | null;
+  let credential: PublicKeyCredential | null;
+  try {
+    credential = (await (kind === "create"
+      ? navigator.credentials.create({
+          publicKey:
+            typeof PublicKeyCredential.parseCreationOptionsFromJSON ===
+            "function"
+              ? PublicKeyCredential.parseCreationOptionsFromJSON(
+                  options as PublicKeyCredentialCreationOptionsJSON,
+                )
+              : decodeOptions.create(
+                  options as PublicKeyCredentialCreationOptionsJSON,
+                ),
+        })
+      : navigator.credentials.get({
+          publicKey:
+            typeof PublicKeyCredential.parseRequestOptionsFromJSON ===
+            "function"
+              ? PublicKeyCredential.parseRequestOptionsFromJSON(
+                  options as PublicKeyCredentialRequestOptionsJSON,
+                )
+              : decodeOptions.get(
+                  options as PublicKeyCredentialRequestOptionsJSON,
+                ),
+        }))) as PublicKeyCredential | null;
+  } catch (failure) {
+    throw new ApiError(
+      ceremonyErrors.get((failure as Error).name) ??
+        "Passkey verification failed. Try again or use another key.",
+    );
+  }
   if (!credential) throw new ApiError("Passkey verification was canceled.");
-  return credential.toJSON();
+  return credentialJSON(credential);
 }
 
 export async function hardwareVerification(
@@ -66,6 +176,34 @@ export async function hardwareVerification(
     })
   ).verification;
 }
+
+const publisherPolicyCopy: Record<PrivilegedPolicy, string> = {
+  hardware:
+    "Trust a CI identity to publish releases for one product. Creating or revoking trust requires fresh verification with independently provisioned hardware. Enroll two physical keys and ask your operator to inventory them before configuring publishers.",
+  passkey:
+    "Trust a CI identity to publish releases for one product. Creating or revoking trust requires fresh verification with a passkey or security key on this account.",
+};
+const privilegedSetupCopy: Record<PrivilegedPolicy, string> = {
+  hardware:
+    "Privileged actions stay locked until your operator approves two of your hardware keys.",
+  passkey:
+    "Enroll a passkey or security key to approve API keys, browser releases, and trusted publishers.",
+};
+const parseClaims = (value: string): object => {
+  try {
+    const claims: unknown = JSON.parse(value);
+    if (claims && typeof claims === "object" && !Array.isArray(claims))
+      return claims;
+  } catch {
+    // Reported below with the same guidance as other invalid values.
+  }
+  throw new ApiError(
+    'Required claims must be a JSON object, such as {"project_id":"123"}.',
+  );
+};
+export type PrivilegedPolicy = "hardware" | "passkey";
+export const privilegedPolicyOf = (value: unknown): PrivilegedPolicy =>
+  value === "passkey" ? "passkey" : "hardware";
 
 export const PublisherSecurity = defineComponent({
   props: {
@@ -88,6 +226,8 @@ export const PublisherSecurity = defineComponent({
       notice = ref("");
     const emailToken = ref(props.initialToken);
     const emailLoginEnabled = ref(true);
+    const policy = ref<PrivilegedPolicy>("hardware"),
+      privilegedReady = ref(true);
     const pendingRecoveries = ref<{ id: string; mode: string }[]>([]);
     const label = ref("My device"),
       publisherName = ref("Release workflow"),
@@ -121,37 +261,48 @@ export const PublisherSecurity = defineComponent({
         pending.value = false;
       }
     };
+    const publisherError = ref("");
+    // Workspace failures, such as a suspended workspace, must not hide passkey
+    // management or recovery cancellation, so publishers load independently.
+    const listPublishers = () =>
+      props.api.get<PublisherList>("/oidc/publishers").then(
+        (list) =>
+          Array.isArray(list.publishers) && Array.isArray(list.providers)
+            ? list
+            : new ApiError(
+                "Trusted publishers could not be loaded. Try again.",
+              ),
+        (failure: unknown) => failure as Error,
+      );
     const load = async () => {
       const [security, trusted] = await Promise.all([
         props.platform.get<{
           factors: Factor[];
           emailLoginEnabled?: boolean;
           pendingRecoveries?: { id: string; mode: string }[];
+          privilegedPolicy?: PrivilegedPolicy;
+          privilegedReady?: boolean;
         }>("/account/security"),
-        tenantScoped
-          ? props.api.get<PublisherList>("/oidc/publishers")
-          : Promise.resolve({
-              audience: "",
-              providers: [],
-              publishers: [],
-            } as PublisherList),
+        tenantScoped ? listPublishers() : null,
       ]);
-      if (
-        !Array.isArray(security.factors) ||
-        !Array.isArray(trusted.publishers) ||
-        !Array.isArray(trusted.providers)
-      )
-        throw new ApiError(
-          "Publishing settings could not be loaded. Try again.",
-        );
+      if (!Array.isArray(security.factors))
+        throw new ApiError("Security settings could not be loaded. Try again.");
       if (alive) {
         factors.value = security.factors;
         pendingRecoveries.value = security.pendingRecoveries ?? [];
         emailLoginEnabled.value = security.emailLoginEnabled ?? true;
-        publishers.value = trusted;
-        if (!trusted.providers.some((p) => p.id === provider.value))
-          provider.value = trusted.providers[0]?.id ?? "";
+        policy.value = privilegedPolicyOf(security.privilegedPolicy);
+        privilegedReady.value = security.privilegedReady !== false;
         loaded.value = true;
+        if (trusted instanceof Error) {
+          publishers.value = null;
+          publisherError.value = errorMessage(trusted);
+        } else if (trusted) {
+          publishers.value = trusted;
+          publisherError.value = "";
+          if (!trusted.providers.some((p) => p.id === provider.value))
+            provider.value = trusted.providers[0]?.id ?? "";
+        }
       }
     };
     onMounted(() => void run(load));
@@ -260,7 +411,7 @@ export const PublisherSecurity = defineComponent({
               ref: gitRef.value,
               workflow_ref: `${repository.value}/${workflow.value}@${gitRef.value}`,
             }
-          : (JSON.parse(customClaims.value) as object),
+          : parseClaims(customClaims.value),
       };
       const proof = await verify({
         action: "oidc.create",
@@ -275,15 +426,17 @@ export const PublisherSecurity = defineComponent({
       h(
         "section",
         {
+          id: "security-passkeys",
+          tabindex: -1,
           class: "feature-card publisher-security",
           "aria-busy": pending.value,
         },
         [
           h("h3", "Passkeys and sign-in"),
-          h(
-            "p",
-            "Trust a CI identity to publish releases for one product. Creating or revoking trust requires fresh verification with independently provisioned hardware. Enroll two physical keys and ask your operator to inventory them before configuring publishers.",
-          ),
+          h("p", publisherPolicyCopy[policy.value]),
+          loaded.value &&
+            !privilegedReady.value &&
+            h("p", { role: "status" }, privilegedSetupCopy[policy.value]),
           error.value && h("p", { role: "alert" }, error.value),
           notice.value && h("p", { role: "status" }, notice.value),
           !loaded.value
@@ -391,7 +544,13 @@ export const PublisherSecurity = defineComponent({
                         : "Email-link sign-in disabled.";
                     },
                   ),
-                tenantScoped
+                tenantScoped && !publishers.value
+                  ? h("div", [
+                      h("h4", "Trusted publishers"),
+                      h("p", { role: "alert" }, publisherError.value),
+                      button("Retry loading publishers", load),
+                    ])
+                  : tenantScoped
                   ? h("div", [
                       h("h4", "Trusted publishers"),
                       h("p", [

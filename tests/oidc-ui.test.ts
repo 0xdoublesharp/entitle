@@ -497,6 +497,49 @@ test("custom-provider publishing preserves typed claims and security-key enrollm
   }
 });
 
+test("workspace publisher failures leave passkey management and recovery cancellation available", async () => {
+  const text = () => dom.document.body.textContent!;
+  const buttons = () =>
+    [...dom.document.querySelectorAll("button")].map((b) => b.textContent);
+  const suspended = await mockPanel((path) =>
+    path.endsWith("/account/security")
+      ? {
+          factors: [{ id: "f1", kind: "passkey", name: "Laptop" }],
+          pendingRecoveries: [{ id: "flow", mode: "host" }],
+        }
+      : new Response(
+          '{"error":{"code":"tenant_suspended","message":"This publisher\'s service is suspended."}}',
+          { status: 403 },
+        ),
+  );
+  try {
+    assert.match(text(), /Laptop \(passkey\)/);
+    assert.ok(buttons().includes("Remove key"));
+    assert.ok(buttons().includes("Verify original key and cancel recovery"));
+    assert.match(
+      dom.document.querySelector('[role="alert"]')!.textContent!,
+      /service is suspended/,
+    );
+    assert.equal(dom.document.querySelector("form"), null);
+  } finally {
+    suspended.unmount();
+  }
+  let inventory: object = { audience: "x" };
+  const malformed = await mockPanel((path) =>
+    path.endsWith("/account/security") ? { factors: [] } : inventory,
+  );
+  try {
+    assert.match(text(), /Trusted publishers could not be loaded/);
+    assert.ok(buttons().includes("Enroll passkey"));
+    inventory = mockInventory();
+    await click("Retry loading publishers");
+    await until(() => text().includes("Add a trusted publisher"));
+    assert.equal(dom.document.querySelector('[role="alert"]'), null);
+  } finally {
+    malformed.unmount();
+  }
+});
+
 test("account key setup works before creating a workspace and does not request tenant publishing settings", async () => {
   const paths: string[] = [];
   const app = await mockPanel(
@@ -542,4 +585,184 @@ test("existing-key holders can see and cancel pending recovery from security set
     assert.equal((await f.db("seller_factors")).length, 1);
     assert.equal(dom.document.querySelector(".recovery-notice"), null);
   } finally { await f.close(); }
+});
+
+test("WebAuthn ceremonies decode JSON options and serialize credentials without Level 3 helpers", async (t) => {
+  const bytes = (...values: number[]) => Uint8Array.from(values).buffer;
+  const seen: Record<string, unknown>[] = [];
+  Object.defineProperty(globalThis, "PublicKeyCredential", {
+    configurable: true,
+    value: {},
+  });
+  t.after(() => Reflect.deleteProperty(globalThis, "PublicKeyCredential"));
+  Object.defineProperty(dom.navigator, "credentials", {
+    configurable: true,
+    value: {
+      create: async ({ publicKey }: { publicKey: Record<string, unknown> }) => {
+        seen.push(publicKey);
+        return {
+          id: "cred",
+          rawId: bytes(1, 2, 3),
+          type: "public-key",
+          authenticatorAttachment: "platform",
+          response: {
+            clientDataJSON: bytes(123, 125),
+            attestationObject: bytes(255, 254),
+            getTransports: () => ["internal"],
+          },
+          getClientExtensionResults: () => ({ credProps: { rk: true } }),
+        };
+      },
+      get: async ({ publicKey }: { publicKey: Record<string, unknown> }) => {
+        seen.push(publicKey);
+        return {
+          id: "cred",
+          rawId: bytes(1, 2, 3),
+          type: "public-key",
+          authenticatorAttachment: null,
+          response: {
+            clientDataJSON: bytes(123, 125),
+            authenticatorData: bytes(9),
+            signature: bytes(8, 7),
+            userHandle: null,
+          },
+          getClientExtensionResults: () => ({}),
+        };
+      },
+    },
+  });
+  const registration = await passkeyCeremony("create", {
+    challenge: "AQID",
+    rp: { name: "Entitle" },
+    user: { id: "BAU", name: "seller", displayName: "Seller" },
+    pubKeyCredParams: [{ type: "public-key", alg: -7 }],
+    excludeCredentials: [{ id: "Bg", type: "public-key" }],
+  });
+  assert.deepEqual([...(seen[0]!.challenge as Uint8Array)], [1, 2, 3]);
+  assert.deepEqual(
+    [...((seen[0]!.user as { id: Uint8Array }).id)],
+    [4, 5],
+  );
+  assert.deepEqual(
+    [...(seen[0]!.excludeCredentials as { id: Uint8Array }[])[0]!.id],
+    [6],
+  );
+  assert.deepEqual(JSON.parse(JSON.stringify(registration)), {
+    id: "cred",
+    rawId: "AQID",
+    type: "public-key",
+    authenticatorAttachment: "platform",
+    response: {
+      clientDataJSON: "e30",
+      attestationObject: "__4",
+      transports: ["internal"],
+    },
+    clientExtensionResults: { credProps: { rk: true } },
+  });
+  const assertion = await passkeyCeremony("get", { challenge: "AQID" });
+  assert.equal(seen[1]!.allowCredentials, undefined);
+  assert.deepEqual(JSON.parse(JSON.stringify(assertion)), {
+    id: "cred",
+    rawId: "AQID",
+    type: "public-key",
+    authenticatorAttachment: null,
+    response: { clientDataJSON: "e30", authenticatorData: "CQ", signature: "CAc" },
+    clientExtensionResults: {},
+  });
+  await passkeyCeremony("get", {
+    challenge: "AQID",
+    allowCredentials: [{ id: "Bg", type: "public-key" }],
+  });
+  assert.deepEqual(
+    [...(seen[2]!.allowCredentials as { id: Uint8Array }[])[0]!.id],
+    [6],
+  );
+});
+
+test("WebAuthn browser errors become readable messages", async (t) => {
+  Object.defineProperty(globalThis, "PublicKeyCredential", {
+    configurable: true,
+    value: {
+      parseRequestOptionsFromJSON: (value: unknown) => value,
+      parseCreationOptionsFromJSON: (value: unknown) => value,
+    },
+  });
+  t.after(() => Reflect.deleteProperty(globalThis, "PublicKeyCredential"));
+  let failure: unknown;
+  Object.defineProperty(dom.navigator, "credentials", {
+    configurable: true,
+    value: {
+      get: async () => {
+        throw failure;
+      },
+      create: async () => {
+        throw failure;
+      },
+    },
+  });
+  for (const [name, message] of [
+    ["NotAllowedError", /canceled or timed out/],
+    ["InvalidStateError", /already registered/],
+    ["SecurityError", /configured HTTPS address/],
+    ["UnknownBrowserError", /Passkey verification failed/],
+  ] as const) {
+    failure = new DOMException("browser detail", name);
+    await assert.rejects(passkeyCeremony("get", {}), (error: Error) => {
+      assert.equal(error.name, "ApiError");
+      assert.match(error.message, message);
+      assert.doesNotMatch(error.message, /browser detail/);
+      return true;
+    });
+  }
+  failure = new DOMException("duplicate", "InvalidStateError");
+  await assert.rejects(passkeyCeremony("create", {}), /already registered/);
+});
+
+test("trusted-publisher claims must be a JSON object and passkey policy wording is shown", async () => {
+  const writes: unknown[] = [];
+  const app = await mockPanel((path, body) => {
+    if (path.endsWith("/security"))
+      return {
+        factors: [{ id: "key", kind: "passkey", name: "Device" }],
+        privilegedPolicy: "passkey",
+        privilegedReady: false,
+      };
+    if (path.endsWith("/oidc/publishers") && Object.keys(body).length === 0)
+      return mockInventory([{ id: "custom", issuer: "https://custom.test" }]);
+    writes.push(body);
+    return { id: "publisher" };
+  });
+  try {
+    const text = () => dom.document.body.textContent!;
+    assert.match(text(), /fresh verification with a passkey or security key on this account/);
+    assert.doesNotMatch(text(), /independently provisioned hardware/);
+    assert.match(text(), /Enroll a passkey or security key to approve API keys/);
+    field("Product", "plugin", true);
+    field("Exact OIDC subject", "project:123");
+    for (const claims of ["{", "[]", "null", "5"]) {
+      field("Required claims", claims);
+      dom.document
+        .querySelector("form")!
+        .dispatchEvent(new dom.Event("submit", { bubbles: true, cancelable: true }));
+      await flush();
+      assert.match(text(), /Required claims must be a JSON object/);
+    }
+    assert.deepEqual(writes, []);
+  } finally {
+    app.unmount();
+  }
+});
+
+test("hardware policy wording explains operator approval when privileged actions are locked", async () => {
+  const app = await mockPanel((path) =>
+    path.endsWith("/security")
+      ? { factors: [], privilegedPolicy: "hardware", privilegedReady: false }
+      : mockInventory(),
+  );
+  try {
+    assert.match(dom.document.body.textContent!, /independently provisioned hardware/);
+    assert.match(dom.document.body.textContent!, /until your operator approves two of your hardware keys/);
+  } finally {
+    app.unmount();
+  }
 });

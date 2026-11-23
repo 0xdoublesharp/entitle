@@ -4,14 +4,36 @@ Entitle combines ordinary online accounts with a privileged publishing control
 plane. WebAuthn uses `@simplewebauthn/server`, exact `PUBLIC_ORIGIN`, that origin's
 hostname as RP ID, and required user verification. Keep staging and production
 origins separate. Credentials are discoverable. Entitle stores public keys,
-verified backup properties, provenance and counters; it never collects a key PIN.
+verified backup properties, provenance, and counters; it never collects a key PIN.
+
+## Choose the privileged policy
+
+`PRIVILEGED_AUTH_POLICY` decides which credentials can approve privileged
+actions: publisher trust changes, automation-key changes, interactive release
+publication, and workspace removal. Every approval is a fresh WebAuthn assertion
+bound to one action, whichever policy you choose.
+
+| Policy | Accepted approval | Operator work |
+| --- | --- | --- |
+| `hardware` (default when omitted; `.env.example` sets `passkey`) | A key from at least two hardware keys that an operator inventoried and approved | Witness, inventory, and approve each key as described in [provision hardware](#provision-hardware-before-enabling-publishing-privileges) |
+| `passkey` | Any user-verified passkey or security key the seller enrolled, except a credential added by an unfinished recovery | None; sellers approve with the passkeys they enroll themselves |
+
+Choose `hardware` when you can verify each publisher's physical keys and want to
+keep synced and backed-up passkeys out of privileged actions. Choose `passkey` for
+self-service publishing. When a credential does not qualify, the API returns
+`hardware_required` under `hardware` and `passkey_required` under `passkey`. The
+seller security status at `GET /api/v1/platform/account/security` reports
+`privilegedPolicy` and whether the account is `privilegedReady`. Under either
+policy, ordinary recovery suspends privileged access until infrastructure
+recovery, and removing an operator-approved key still needs a different approved
+key.
 
 | Capability | Required authority |
 | --- | --- |
 | Ordinary account access | Verified email link where enabled, or a user-verified passkey/FIDO2 assertion; synced passkeys are allowed |
 | First ordinary credential | Fresh browser/session-bound email confirmation |
 | Additional ordinary credentials and email fallback preference | Fresh intent-bound assertion from an existing credential |
-| Publisher trust, automation-key changes, interactive release publication, workspace removal | Fresh assertion from an independently provisioned hardware credential; two independent approved keys must remain enrolled |
+| Publisher trust, automation-key changes, interactive release publication, workspace removal | `hardware`: fresh assertion from an independently provisioned hardware credential, with two independent approved keys enrolled. `passkey`: fresh assertion from any eligible user-verified passkey |
 | Remove an approved hardware credential | Fresh proof from a different remaining approved hardware key; privileges suspend below two keys |
 | Ordinary recovery | Saved code, separate confirmation through the previously verified email, new credential enrollment and assertion |
 | Restore privileged authority after all-key loss | Protected host/database provisioner, 24-hour objection period and two independently inventoried replacement hardware keys |
@@ -39,6 +61,8 @@ delegations in owned workspaces; review and recreate them with the remaining
 approved keys. The last usable key cannot be removed while email sign-in is disabled.
 
 ## Provision hardware before enabling publishing privileges
+
+This procedure applies to the default `hardware` policy. Under `passkey`, skip it.
 
 The `security_key` label, cross-platform attachment, AAGUID, and non-backup flag
 are not hardware evidence. Entitle uses **operational assurance**: a protected

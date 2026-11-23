@@ -233,3 +233,58 @@ export class CheckoutController {
     this.update({ ...emptyCheckoutState });
   }
 }
+
+export interface PlanPricing {
+  unit_amount?: number | null;
+  currency?: string | null;
+  billing_interval?: string | null;
+}
+const intervals = {
+  month: {
+    suffix: " / month",
+    label: "Monthly subscription",
+    renewal: "Renews monthly until canceled.",
+  },
+  year: {
+    suffix: " / year",
+    label: "Annual subscription",
+    renewal: "Renews annually until canceled.",
+  },
+};
+// Plans recorded before billing intervals existed accepted annual prices only.
+export const planInterval = (plan: PlanPricing) =>
+  intervals[plan.billing_interval === "month" ? "month" : "year"];
+// Stripe's documented amount exponents. Every other currency, including ISK,
+// UGX, HUF and TWD, uses two decimals even where Intl displays no minor units
+// (unit_amount 500 is 5 ISK).
+const stripeZeroDecimal = new Set([
+  "BIF", "CLP", "DJF", "GNF", "JPY", "KMF", "KRW", "MGA",
+  "PYG", "RWF", "VND", "VUV", "XAF", "XOF", "XPF",
+]);
+const stripeThreeDecimal = new Set(["BHD", "JOD", "KWD", "OMR", "TND"]);
+/** Decimal places in Stripe's integer amounts for a currency. */
+export const stripeExponent = (currency: string) => {
+  const code = currency.toUpperCase();
+  return stripeZeroDecimal.has(code) ? 0 : stripeThreeDecimal.has(code) ? 3 : 2;
+};
+/** Formats a catalog price such as "$49 / year", or "" when the plan has no usable price. */
+export function planPrice(plan: PlanPricing) {
+  if (typeof plan.unit_amount !== "number" || !plan.currency) return "";
+  const currency = plan.currency.toUpperCase();
+  let digits: number;
+  try {
+    digits = new Intl.NumberFormat("en-US", {
+      style: "currency",
+      currency,
+    }).resolvedOptions().maximumFractionDigits!;
+  } catch {
+    return "";
+  }
+  const scale = 10 ** stripeExponent(currency);
+  return `${new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency,
+    minimumFractionDigits: plan.unit_amount % scale ? digits : 0,
+    maximumFractionDigits: digits,
+  }).format(plan.unit_amount / scale)}${planInterval(plan).suffix}`;
+}

@@ -244,6 +244,47 @@ test("monthly Pro checkout uses only server price and validates paid monthly rec
   );
 });
 
+test("Starter checkout requires a positive recurring price", async () => {
+  price.unit_amount = 0;
+  await assert.rejects(billing.checkout(tenant, seller, "starter"), {
+    code: "platform_price",
+  });
+  assert.equal(requests.some(({ path }) => path === "/v1/checkout/sessions"), false);
+});
+
+test("Pro includes prepaid contiguous renewals and delays future-only grants until their start", async () => {
+  line.period.start = now + 10;
+  await billing.reconcile(tenant.id);
+  let paid = (await current())!;
+  assert.equal(Number(paid.pro_period_start), (now + 10) * 1000);
+  assert.equal(Number(paid.pro_paid_through), end * 1000);
+  assert.equal(featureEntitlements(config, paid).automations, false);
+
+  line.period.start = now - 100;
+  const renewal = { ...line, id: "il_next", period: { start: end, end: end + 86400 } };
+  const afterGap = { ...line, id: "il_later", period: { start: end + 86401, end: end + 172800 } };
+  routes.set("GET /v1/invoices/in_pro/lines", () =>
+    list("/v1/invoices/in_pro/lines", [line, renewal, afterGap]),
+  );
+  await billing.reconcile(tenant.id);
+  paid = (await current())!;
+  assert.equal(Number(paid.pro_period_start), (now - 100) * 1000);
+  assert.equal(Number(paid.pro_paid_through), (end + 86400) * 1000);
+  assert.equal(featureEntitlements(config, paid).automations, true);
+});
+
+test("full cash refund of a mixed cash and credit invoice restores trial quotas", async () => {
+  invoice.total = 200;
+  await billing.reconcile(tenant.id);
+  assert.equal(featureEntitlements(config, (await current())!).automations, true);
+  refund = 100;
+  await billing.reconcile(tenant.id);
+  const trial = (await current())!;
+  assert.equal(featureEntitlements(config, trial).automations, false);
+  assert.equal(trial.max_products, 3);
+  assert.equal(trial.max_storage_bytes, config.trialStorageBytes);
+});
+
 test("only durable paid Pro invoices grant Pro and cancellation or downgrade preserves paid period", async () => {
   invoice.status = "open";
   await billing.reconcile(tenant.id);
@@ -443,6 +484,20 @@ test("canonical refund and dispute webhooks find the platform tenant without cus
     id: "re_unbound",
     charge: null,
   }));
+  routes.set("GET /v1/refunds/re_customer", () => ({
+    id: "re_customer",
+    customer: "cus_pro",
+    charge: null,
+  }));
+  routes.set("GET /v1/refunds/re_intent", () => ({
+    id: "re_intent",
+    customer: null,
+    charge: null,
+    payment_intent: { id: "pi_event" },
+  }));
+  routes.set("GET /v1/payment_intents/pi_event", () => ({
+    id: "pi_event", customer: "cus_pro", livemode: false,
+  }));
   routes.set("GET /v1/charges/ch_event", () => ({
     id: "ch_event",
     customer: { id: "cus_pro" },
@@ -452,6 +507,8 @@ test("canonical refund and dispute webhooks find the platform tenant without cus
     ["charge.dispute.created", "dp_event"],
     ["charge.refunded", "ch_event"],
     ["refund.updated", "re_event"],
+    ["refund.created", "re_customer"],
+    ["charge.refund.updated", "re_intent"],
     ["refund.updated", "re_unbound"],
   ]) {
     disputed = true;

@@ -16,6 +16,9 @@ import {
 } from "./auth-policy.ts";
 import { OidcPublishing } from "./oidc-publishing.ts";
 
+/** Seller email sign-in links stay valid for fifteen minutes. */
+const loginLinkTtlMs = 900000;
+
 export interface SellerUser {
   email_login_disabled?: number;
   security_generation?: number;
@@ -53,6 +56,21 @@ export class PlatformAuth {
   async request(email: string, req: FastifyRequest, reply: FastifyReply) {
     this.origin(req);
     email = email.trim().toLowerCase();
+    const supplied = req.cookies[this.preauthCookieName];
+    const browser =
+      typeof supplied === "string" && /^[A-Za-z0-9_-]{43}$/.test(supplied)
+        ? supplied
+        : random();
+    // Set the binding cookie on every same-origin request, before any account
+    // lookup, so its presence never reveals whether an account exists, is
+    // disabled, is not the standalone owner, or was rate limited.
+    reply.setCookie(this.preauthCookieName, browser, {
+      path: "/",
+      httpOnly: true,
+      secure: this.config.production,
+      sameSite: "lax",
+      maxAge: 86400,
+    });
     if (
       this.config.deploymentMode === "standalone" &&
       email !== this.config.standaloneOwnerEmail
@@ -64,16 +82,11 @@ export class PlatformAuth {
       "invalid_email",
       "Enter a valid email address.",
     );
-    const supplied = req.cookies[this.preauthCookieName];
-    const browser =
-      typeof supplied === "string" && /^[A-Za-z0-9_-]{43}$/.test(supplied)
-        ? supplied
-        : random();
-    const issued = await this.db.transaction(async (tx) => {
+    await this.db.transaction(async (tx) => {
       await lock(tx, "auth");
       const now = Date.now();
       let user = await tx<SellerUser>("seller_users").where({ email }).first();
-      if (user?.email_login_disabled) return false;
+      if (user?.email_login_disabled) return;
       if (!user) {
         // All accounts start unverified; later verification must not free a creation slot.
         const signups = await tx("seller_users")
@@ -83,7 +96,7 @@ export class PlatformAuth {
         if (
           Number(signups!.total) >= (this.config.maxSellerSignupsPerHour ?? 500)
         )
-          return false;
+          return;
         user = {
           id: randomUUID(),
           email,
@@ -110,15 +123,17 @@ export class PlatformAuth {
       if (
         recent ||
         Number(daily!.total) >= 10 ||
-        Number(addressDaily!.total) >= 1000
+        // Sign-in links draw on their own daily SMTP budget; this cap keeps one
+        // address from exhausting it for everyone else.
+        Number(addressDaily!.total) >= 30
       )
-        return false;
+        return;
       const token = random();
       const id = randomUUID();
       await tx("seller_login_tokens").insert({
         id: hash(token),
         user_id: user.id,
-        expires_at: now + 900000,
+        expires_at: now + loginLinkTtlMs,
         browser_hash: browserHash,
         created_at: now,
       });
@@ -138,16 +153,7 @@ export class PlatformAuth {
           this.config.secret,
         ),
       });
-      return true;
     });
-    if (issued)
-      reply.setCookie(this.preauthCookieName, browser, {
-        path: "/",
-        httpOnly: true,
-        secure: this.config.production,
-        sameSite: "lax",
-        maxAge: 86400,
-      });
   }
   origin(req: FastifyRequest) {
     check(
@@ -309,7 +315,9 @@ export class PlatformAuth {
       typeof proof === "string" && proof.length <= 200,
       403,
       "reauth_required",
-      "Fresh hardware verification is required.",
+      this.config.privilegedAuthPolicy === "passkey"
+        ? "Fresh passkey or security-key verification is required."
+        : "Fresh hardware verification is required.",
     );
     return async (tx: Tx, commit = true) => {
       await lock(tx, "auth");
@@ -320,6 +328,7 @@ export class PlatformAuth {
         { action: "account.privileged", purpose, path: req.url.split("?")[0]! },
         this.config.secret,
         consume && commit,
+        this.config.privilegedAuthPolicy,
       );
     };
   }
@@ -492,9 +501,24 @@ export class PlatformOutbox {
         .where({ id: job.id })
         .first();
       if (current?.state === "canceled") return;
+      const login = job.kind === "seller_login";
+      if (login && Number(job.created_at) + loginLinkTtlMs <= Date.now()) {
+        // The link inside has expired; drop it without spending SMTP budget.
+        await this.db("platform_emails")
+          .where({ id: job.id, lease_owner: job.lease_owner, state: "running" })
+          .update({
+            state: "canceled",
+            payload: "",
+            lease_until: 0,
+            lease_owner: null,
+          });
+        return;
+      }
       // Reserve attempts before SMTP. Failures consume budget; deferral preserves credentials.
+      // Unauthenticated sign-in requests have a separate budget so they cannot
+      // starve recovery, verification, and account-security mail.
       const day = Math.floor(Date.now() / 86400000),
-        id = `platform:email-budget:${day}`;
+        id = `platform:${login ? "login-email" : "email"}-budget:${day}`;
       const allowed = await this.db.transaction(async (tx) => {
         await tx("locks").insert({ id, version: 0 }).onConflict("id").ignore();
         return tx("locks")
