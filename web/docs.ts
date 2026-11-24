@@ -1,7 +1,8 @@
-import { h } from "vue";
+import { defineComponent, h, ref } from "vue";
 import { applicationHref, applicationAsset } from "./navigation.ts";
 import type { VNodeChild } from "vue";
 import { site } from "../packages/shared/site.ts";
+import { disclosureLabel, icon, icons } from "./icons.ts";
 
 interface ServerInfo {
   maxUploadBytes: number;
@@ -65,15 +66,142 @@ const groups = [
       ["licensing", "Source and licenses"],
     ],
   },
-];
+] as const;
 
-const navigationGroups = () =>
+const navigationGroups = (onJump?: (event: MouseEvent, id: string) => void) =>
   groups.map((group) =>
     h("div", { class: "docs-nav-group" }, [
       h("p", group.label),
-      ...group.links.map(([id, label]) => h("a", { href: `#${id}` }, label)),
+      ...group.links.map(([id, label]) =>
+        h(
+          "a",
+          {
+            href: `#${id}`,
+            onClick: onJump && ((event: MouseEvent) => onJump(event, id)),
+          },
+          label,
+        ),
+      ),
     ]),
   );
+
+const DocsJump = defineComponent({
+  setup() {
+    const query = ref("");
+    const browse = ref<HTMLDetailsElement | null>(null);
+    const jump = (event: MouseEvent, id: string) => {
+      if (
+        event.defaultPrevented ||
+        event.metaKey ||
+        event.ctrlKey ||
+        event.altKey ||
+        event.shiftKey
+      )
+        return;
+      (event.currentTarget as HTMLElement)
+        .closest("details")
+        ?.removeAttribute("open");
+      query.value = "";
+      document.getElementById(id)?.focus({ preventScroll: true });
+    };
+    return () => {
+      const terms = query.value.trim().toLocaleLowerCase().split(/\s+/);
+      const searching = terms[0] !== "";
+      const results = searching
+        ? groups.flatMap(({ label: group, links }) =>
+            [...links].filter(([id, label]) =>
+              terms.every((term) =>
+                `${group} ${label} ${id}`.toLocaleLowerCase().includes(term),
+              ),
+            ),
+          )
+        : [];
+      return h("div", { class: "docs-jump" }, [
+        h("div", { class: "docs-jump-controls" }, [
+          h(
+            "div",
+            {
+              class: "docs-search",
+              role: "search",
+              "aria-label": "Documentation",
+            },
+            [
+              h(
+                "label",
+                { class: "sr-only", for: "docs-search" },
+                "Find a section",
+              ),
+              icon(icons.search),
+              h("input", {
+                id: "docs-search",
+                type: "search",
+                placeholder: "Find a section",
+                autocomplete: "off",
+                value: query.value,
+                onFocus: () => browse.value?.removeAttribute("open"),
+                onInput: (event: Event) => {
+                  query.value = (event.target as HTMLInputElement).value;
+                },
+                onKeydown: (event: KeyboardEvent) => {
+                  if (event.key === "Escape") query.value = "";
+                },
+              }),
+            ],
+          ),
+          h(
+            "details",
+            {
+              ref: browse,
+              class: "docs-mobile-nav",
+              onToggle: (event: Event) => {
+                if ((event.currentTarget as HTMLDetailsElement).open)
+                  query.value = "";
+              },
+            },
+            [
+              h("summary", disclosureLabel("Browse sections")),
+              h(
+                "nav",
+                {
+                  class: "docs-mobile-links",
+                  "aria-label": "Mobile documentation sections",
+                },
+                navigationGroups(jump),
+              ),
+            ],
+          ),
+        ]),
+        h(
+          "p",
+          { class: "sr-only", role: "status" },
+          searching ? `${results.length} matching sections` : "",
+        ),
+        searching &&
+          h(
+            "div",
+            { class: "docs-search-results" },
+            results.length
+              ? h(
+                  "ul",
+                  results.map(([id, label]) =>
+                    h("li", { key: id }, [
+                      h(
+                        "a",
+                        {
+                          href: `#${id}`,
+                          onClick: (event: MouseEvent) => jump(event, id),
+                        },
+                        [label, icon(icons.arrow)],
+                      ),
+                    ]),
+                  ),
+                )
+              : h("p", "No sections match. Try a different search."),
+          ),
+      ]);
+    };
+  },
+});
 
 const paragraph = (text: string) => h("p", text);
 const note = (title: string, text: string) =>
@@ -86,7 +214,12 @@ const section = (
 ) =>
   h(
     "section",
-    { id, class: "docs-section", "aria-labelledby": `${id}-title` },
+    {
+      id,
+      tabindex: -1,
+      class: "docs-section",
+      "aria-labelledby": `${id}-title`,
+    },
     [
       h("p", { class: "eyebrow" }, label),
       h("h2", { id: `${id}-title` }, h("a", { href: `#${id}` }, title)),
@@ -163,17 +296,7 @@ export function publicDocs(
           "Set up your first product, integrate its updater, automate releases and support your buyers. These guides cover hosted publishing and operating your own standalone installation.",
         ),
       ]),
-      h("details", { class: "docs-mobile-nav" }, [
-        h("summary", "Browse documentation"),
-        h(
-          "nav",
-          {
-            class: "docs-mobile-links",
-            "aria-label": "Mobile documentation sections",
-          },
-          navigationGroups(),
-        ),
-      ]),
+      h(DocsJump),
       h("aside", { class: "docs-start" }, [
         h("span", { class: "docs-start-icon", "aria-hidden": "true" }, "↗"),
         h("div", [
@@ -214,7 +337,10 @@ export function publicDocs(
               "Configure your server, protect data and plan backup and recovery.",
             ],
           ].map(([href, title, copy]) =>
-            h("a", { href }, [h("strong", title), h("span", copy)]),
+            h("a", { href }, [
+              h("strong", [title, icon(icons.arrow)]),
+              h("span", copy),
+            ]),
           ),
         ],
       ),
@@ -1619,7 +1745,7 @@ export function publicDocs(
           ],
         ].map(([title, description]) =>
           h("details", { class: "docs-faq" }, [
-            h("summary", title),
+            h("summary", disclosureLabel(title!)),
             paragraph(description!),
           ]),
         ),

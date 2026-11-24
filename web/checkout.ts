@@ -55,7 +55,7 @@ export const appearance: Appearance = {
     colorPrimary: "#286551",
     colorBackground: "#ffffff",
     colorText: "#1d302d",
-    colorDanger: "#943c32",
+    colorDanger: "#8b2d38",
     fontFamily:
       'Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
     borderRadius: "6px",
@@ -63,11 +63,11 @@ export const appearance: Appearance = {
   },
   rules: {
     ".Input": {
-      borderColor: "#bfcfc4",
+      borderColor: "#788b7e",
       boxShadow: "none",
       padding: "12px 13px",
     },
-    ".Input:focus": { borderColor: "#286551", boxShadow: "0 0 0 3px #e5efe8" },
+    ".Input:focus": { borderColor: "#165e44", boxShadow: "0 0 0 3px #e5efe8" },
     ".Label": { fontWeight: "650", fontSize: "13px", marginBottom: "8px" },
   },
 };

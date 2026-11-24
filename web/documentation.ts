@@ -3,6 +3,7 @@ import { ApiClient, errorMessage } from "./api.ts";
 import { site } from "../packages/shared/site.ts";
 import { publicDocs } from "./docs.ts";
 import { appHeader } from "./chrome.ts";
+import { icon, icons } from "./icons.ts";
 import { applicationHref } from "./navigation.ts";
 interface Info {
   maxUploadBytes: number;
@@ -41,21 +42,30 @@ export function mountDocumentation(
             ),
             h("footer", { class: "site-footer" }, [
               h("span", site.name),
-              h("a", { href: applicationHref("/docs") }, "Documentation"),
               h(
-                "a",
-                { href: applicationHref("/docs#troubleshooting") },
-                "Support guide",
-              ),
-              h(
-                "a",
-                { href: applicationHref("/docs#licensing") },
-                "Source & licenses",
-              ),
-              h(
-                "a",
-                { href: site.hostedOrigin },
-                new URL(site.hostedOrigin).host,
+                "nav",
+                {
+                  class: "site-footer-links",
+                  "aria-label": "Footer navigation",
+                },
+                [
+                  h("a", { href: applicationHref("/docs") }, "Documentation"),
+                  h(
+                    "a",
+                    { href: applicationHref("/docs#troubleshooting") },
+                    "Support guide",
+                  ),
+                  h(
+                    "a",
+                    { href: applicationHref("/docs#licensing") },
+                    "Source & licenses",
+                  ),
+                  h("a", { href: site.hostedOrigin }, [
+                    new URL(site.hostedOrigin).host,
+                    " ",
+                    icon(icons.external),
+                  ]),
+                ],
               ),
             ]),
           ]);

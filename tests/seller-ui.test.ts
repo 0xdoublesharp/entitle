@@ -1005,6 +1005,71 @@ test("seller overview displays real private metrics with exact separate currenci
       .every((c) => c.path.startsWith("/api/v1/tenants/alpha/seller/")),
   );
 });
+test("seller overview shows a shared 30-day and all-time download count once", async () => {
+  await mount("/seller", () => {
+    getOverview = () => {
+      const data = overview();
+      return {
+        ...data,
+        metrics: {
+          ...data.metrics,
+          downloads: { successfulResponses: 61, last30Days: 61 },
+        },
+      };
+    };
+  });
+  const overviewPanel = el("#seller-panel-overview");
+  const counts = [...overviewPanel.querySelectorAll("dd")];
+  assert.equal(counts.filter((count) => count.textContent === "61").length, 1);
+  assert.match(
+    overviewPanel.textContent!,
+    /30-day count includes all successful downloads/,
+  );
+});
+
+test("seller releases show their product and sort versions numerically", async () => {
+  await mount("/seller", () => {
+    getOverview = () => {
+      const data = overview();
+      return {
+        ...data,
+        releases: [
+          ...data.releases,
+          { ...data.releases[0]!, id: "r2", version: "1.9.0" },
+          { ...data.releases[0]!, id: "r3", version: "1.10.0" },
+        ],
+      };
+    };
+  });
+  await click("Releases");
+  const rows = [...dom.document.querySelectorAll(".release-records > li")];
+  assert.deepEqual(
+    rows.map((row) => row.querySelector(".release-version")?.textContent),
+    ["1.10.0", "1.9.0", "1.0.0"],
+  );
+  assert.ok(rows.every((row) => row.textContent?.includes("My plugin")));
+});
+
+test("seller releases without assets render no stray count", async () => {
+  await mount("/seller", () => {
+    getOverview = () => {
+      const data = overview();
+      return {
+        ...data,
+        releases: [{ ...data.releases[0]!, assets: [] }],
+      };
+    };
+  });
+  await click("Releases");
+  const row = el(".release-records > li");
+  assert.equal(row.querySelector(".release-assets"), null);
+  const strayText = [...row.childNodes]
+    .filter((node) => node.nodeType === 3)
+    .map((node) => node.textContent!.trim())
+    .filter(Boolean);
+  assert.deepEqual(strayText, []);
+});
+
 test("publisher workspaces explain their products, sort business names and open the product list", async () => {
   for (const count of [0, 1, 4]) {
     await mount("/seller?tenant=alpha", () => {
@@ -1180,7 +1245,10 @@ test("seller email token clears before requests and requires explicit confirmati
   await input("#seller-email", " person@example.test ");
   await submit("#seller-login");
   assert.deepEqual(calls.at(-1)?.body, { email: "person@example.test" });
-  assert.match(text(), /Check your email/);
+  const sent = el('.seller-signin-sent[role="status"]');
+  assert.match(sent.textContent!, /Check your email/);
+  assert.equal(sent.querySelector("strong")?.textContent, "person@example.test");
+  assert.match(sent.textContent!, /send another link/);
 });
 test("seller creates a tenant and selects only a membership returned by the server", async () => {
   await mount("/seller?tenant=not-owned", () => {
@@ -3712,6 +3780,12 @@ test("marketing documentation is static and points account actions to the config
     await flush();
     assert.equal(calls.length, 0);
     assert.match(text(), /Documentation/);
+    await input("#docs-search", "webhooks");
+    const matches = el(".docs-search-results");
+    assert.ok(matches.querySelector('a[href="#webhooks"]'));
+    assert.equal(matches.querySelector('a[href="#licensing"]'), null);
+    assert.ok(el("#licensing"));
+    await input("#docs-search", "");
     assert.doesNotMatch(text(), /Loading server limits/);
     assert.ok(dom.document.querySelector('a[href="/app/seller"]'));
     assert.ok(dom.document.querySelector('a[href="/app/docs#server-limits"]'));
@@ -4517,4 +4591,61 @@ test("recovery restrictions open recovery and its outcome stays visible after th
   assert.match(text(), /Recovery canceled. Your original credentials remain available/);
   assert.equal(el<HTMLDetailsElement>(".account-recovery").open, true);
   assert.match(text(), /Sign in to sell/);
+});
+
+test("empty workspace actions keep DOM order, license billing labels capitalize cleanly, and sort sits outside filters", async () => {
+  await mount("/seller", () => {
+    getOverview = () => ({
+      ...overview(),
+      products: [],
+      releases: [],
+      licenses: [],
+    });
+  });
+  const startSetup = button("Start setup");
+  const createFirst = button("Create your first product");
+  assert.ok(
+    startSetup.compareDocumentPosition(createFirst) &
+      dom.Node.DOCUMENT_POSITION_FOLLOWING,
+  );
+  await mount("/seller", () => {
+    getOverview = () => {
+      const data = overview();
+      const base = data.licenses[0]!;
+      return {
+        ...data,
+        licenses: [
+          { ...base, id: "l-active", billing_status: "active" },
+          { ...base, id: "l-canceled", billing_status: "canceled" },
+          { ...base, id: "l-refunded", billing_status: "refunded" },
+          {
+            ...base,
+            id: "l-comp",
+            provenance: "complimentary" as const,
+            billing_status: "complimentary",
+            expires_at: 4102444800000,
+          },
+        ],
+      };
+    };
+  });
+  await click("Licenses");
+  assert.equal(el("#license-sort").closest(".license-filters"), null);
+  const clearBtn = button("Clear filters") as unknown as HTMLButtonElement;
+  assert.equal(clearBtn.hidden, true);
+  assert.equal(clearBtn.disabled, true);
+  await input("#license-search", "buyer");
+  assert.equal(clearBtn.hidden, false);
+  assert.equal(clearBtn.disabled, false);
+  await click("Clear filters");
+  assert.equal(clearBtn.hidden, true);
+  const billingCells = [
+    ...dom.document.querySelectorAll("#licenses-table td.license-billing"),
+  ].map((cell) => cell.textContent?.replace(/^Billing/, ""));
+  assert.deepEqual(billingCells, [
+    "Active",
+    "Canceled",
+    "No subscription",
+    "Refunded",
+  ]);
 });

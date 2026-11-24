@@ -7,6 +7,7 @@ import {
   onUnmounted,
   ref,
 } from "vue";
+import type { VNodeArrayChildren } from "vue";
 import { ApiClient, ApiError, errorMessage, watchLoginTokens } from "./api.ts";
 import type { Account, License, Plan, Product } from "./api.ts";
 import "./style.css";
@@ -24,6 +25,7 @@ import {
   seatUnit,
 } from "./frameworks.ts";
 import { SellerFeaturePanel } from "./features.ts";
+import { disclosureLabel, icon, icons } from "./icons.ts";
 import { site } from "../packages/shared/site.ts";
 import {
   CheckoutController,
@@ -42,8 +44,7 @@ import type {
 type CatalogPlan = Plan & PlanPricing;
 type CatalogProduct = Omit<Product, "plans"> & { plans: CatalogPlan[] };
 
-const icon = (symbol: string) =>
-  h("span", { "aria-hidden": "true", class: "icon" }, symbol);
+const tabularNumbers = { fontVariantNumeric: "tabular-nums" };
 const date = (value: number | null) =>
   value
     ? new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(
@@ -51,10 +52,16 @@ const date = (value: number | null) =>
       )
     : "Not yet available";
 const button = (
-  label: string,
+  label: string | VNodeArrayChildren,
   action: () => void,
   options: Record<string, unknown> = {},
-) => h("button", { type: "button", onClick: action, ...options }, label);
+  leading?: string,
+) =>
+  h(
+    "button",
+    { type: "button", onClick: action, ...options },
+    leading ? [icon(leading), label] : label,
+  );
 
 const Confirmation = defineComponent({
   props: {
@@ -82,7 +89,10 @@ const Confirmation = defineComponent({
           },
         },
         [
-          h("p", { class: "eyebrow" }, "Please confirm"),
+          h("p", { class: "eyebrow" }, [
+            icon(icons.warning),
+            " Please confirm",
+          ]),
           h("h2", { id: "confirm-title" }, props.title),
           h("p", { id: "confirm-description" }, props.description),
           h("div", { class: "button-row" }, [
@@ -180,7 +190,7 @@ export function mountCustomerApp(
       const email = ref("");
       const checkoutEmail = ref("");
       const selectedPlan = ref("");
-      const loginSent = ref(false);
+      const loginSentTo = ref("");
       const newKey = ref<{ licenseId: string; value: string } | null>(null);
       const keyInput = ref<HTMLInputElement>();
       const confirmation = ref<{
@@ -271,8 +281,9 @@ export function mountCustomerApp(
       const requestLogin = (event: Event) => {
         event.preventDefault();
         void run("login-request", async () => {
-          await api.post("/auth/request", { email: email.value.trim() }, false);
-          loginSent.value = true;
+          const address = email.value.trim();
+          await api.post("/auth/request", { email: address }, false);
+          loginSentTo.value = address;
         });
       };
       const consumeLogin = () =>
@@ -423,12 +434,19 @@ export function mountCustomerApp(
               state.phase === "loading" || state.phase === "submitting",
           },
           [
-            h("p", { class: "eyebrow" }, "Secure checkout"),
+            h("p", { class: "eyebrow" }, [
+              icon(icons.shield),
+              " Secure checkout",
+            ]),
             h("h2", { id: "payment-title" }, "Complete your purchase"),
             state.amount &&
               h("div", { class: "order-summary" }, [
                 h("span", "Total due today"),
-                h("strong", `${state.amount} ${state.currency.toUpperCase()}`),
+                h(
+                  "strong",
+                  { style: tabularNumbers },
+                  `${state.amount} ${state.currency.toUpperCase()}`,
+                ),
                 h(
                   "p",
                   `${planInterval(selectedPlanDetails()).renewal} Manage or cancel your subscription from your account billing page.`,
@@ -437,15 +455,20 @@ export function mountCustomerApp(
             state.phase === "loading" &&
               h("p", { role: "status" }, "Loading secure payment form…"),
             state.error &&
-              h("p", { class: "payment-error", role: "alert" }, state.error),
+              h("p", { class: "payment-error", role: "alert" }, [
+                icon(icons.warning),
+                " " + state.error,
+              ]),
             finished
               ? h("div", { class: "payment-result", role: "status" }, [
-                  h(
-                    "h3",
+                  h("h3", [
+                    icon(
+                      state.phase === "complete" ? icons.check : icons.receipt,
+                    ),
                     state.phase === "complete"
-                      ? "Payment completed"
-                      : "Payment submitted. Confirmation is pending.",
-                  ),
+                      ? " Payment completed"
+                      : " Payment submitted. Confirmation is pending.",
+                  ]),
                   h(
                     "p",
                     "Your license will appear after our server confirms payment. Check your email or refresh your licenses.",
@@ -460,6 +483,7 @@ export function mountCustomerApp(
                         class: "button-secondary",
                         disabled: interactionBusy(),
                       },
+                      icons.refresh,
                     ),
                 ])
               : h(
@@ -477,26 +501,33 @@ export function mountCustomerApp(
                       class: "payment-element",
                       "aria-label": "Payment details",
                     }),
-                    h(
-                      "p",
-                      { class: "small muted" },
-                      "Your payment details are sent directly to Stripe.",
-                    ),
+                    h("p", { class: "small muted" }, [
+                      icon(icons.shield),
+                      " Your payment details are sent directly to Stripe.",
+                    ]),
                     h(
                       "button",
                       {
                         type: "submit",
                         disabled: state.phase !== "ready" || !state.canConfirm,
                       },
-                      state.phase === "submitting"
-                        ? "Submitting payment…"
-                        : "Pay now",
+                      [
+                        icon(icons.card),
+                        state.phase === "submitting"
+                          ? "Submitting payment…"
+                          : "Pay now",
+                      ],
                     ),
                   ],
                 ),
             h("div", { class: "button-row" }, [
               state.phase === "error" &&
-                button("Retry secure checkout", beginCheckout),
+                button(
+                  "Retry secure checkout",
+                  beginCheckout,
+                  {},
+                  icons.refresh,
+                ),
               button(
                 finished ? "Close checkout" : "Cancel checkout",
                 closeCheckout,
@@ -539,7 +570,10 @@ export function mountCustomerApp(
                     ? "Complimentary"
                     : license.plan_name,
                 ),
-                h("h3", { id: `license-${license.id}` }, license.product_name),
+                h("h3", { id: `license-${license.id}` }, [
+                  icon(icons.box),
+                  " " + license.product_name,
+                ]),
               ]),
               h(
                 "span",
@@ -550,7 +584,7 @@ export function mountCustomerApp(
                   ],
                 },
                 [
-                  h("span", { class: "status-dot", "aria-hidden": "true" }),
+                  icon(license.entitled ? icons.check : icons.warning),
                   stateLabel(license),
                 ],
               ),
@@ -565,6 +599,7 @@ export function mountCustomerApp(
                 ),
                 h(
                   "dd",
+                  { style: tabularNumbers },
                   date(
                     license.provenance === "complimentary"
                       ? (license.expires_at ?? null)
@@ -577,7 +612,11 @@ export function mountCustomerApp(
                   "dt",
                   seatUnit(license) === "site" ? "Site seats" : "Device seats",
                 ),
-                h("dd", `${active} of ${license.site_allowance} used`),
+                h(
+                  "dd",
+                  { style: tabularNumbers },
+                  `${active} of ${license.site_allowance} used`,
+                ),
               ]),
               h("div", [
                 h(
@@ -596,13 +635,12 @@ export function mountCustomerApp(
               ]),
             ]),
             !license.entitled &&
-              h(
-                "p",
-                { class: "access-note" },
+              h("p", { class: "access-note" }, [
+                icon(icons.warning),
                 frameworkOf(license) === "wordpress"
-                  ? "Downloads and updates are unavailable for this license. Installed plugin features stay available."
-                  : "Downloads and updates are unavailable for this license. Installed software stays available.",
-              ),
+                  ? " Downloads and updates are unavailable for this license. Installed plugin features stay available."
+                  : " Downloads and updates are unavailable for this license. Installed software stays available.",
+              ]),
             newKey.value?.licenseId === license.id &&
               h(
                 "section",
@@ -611,11 +649,10 @@ export function mountCustomerApp(
                   "aria-labelledby": `key-title-${license.id}`,
                 },
                 [
-                  h(
-                    "h4",
-                    { id: `key-title-${license.id}` },
-                    "Save your new license key",
-                  ),
+                  h("h4", { id: `key-title-${license.id}` }, [
+                    icon(icons.key),
+                    " Save your new license key",
+                  ]),
                   h(
                     "p",
                     "This key is shown once. Save it somewhere secure before dismissing it. Use it to reconnect each installation.",
@@ -642,6 +679,7 @@ export function mountCustomerApp(
                       busy.value === "copy-key" ? "Copying…" : "Copy key",
                       copyKey,
                       { disabled: interactionBusy() },
+                      icons.key,
                     ),
                     button(
                       "I saved my key",
@@ -652,6 +690,7 @@ export function mountCustomerApp(
                         class: "button-secondary",
                         disabled: interactionBusy(),
                       },
+                      icons.check,
                     ),
                   ]),
                 ],
@@ -661,7 +700,7 @@ export function mountCustomerApp(
               { class: "license-section", "aria-label": "Downloads" },
               [
                 h("div", { class: "section-heading" }, [
-                  h("h4", "Downloads"),
+                  h("h4", [icon(icons.download), " Downloads"]),
                   h(
                     "span",
                     { class: "muted small" },
@@ -683,7 +722,14 @@ export function mountCustomerApp(
                         h("li", { key: release.id }, [
                           h("div", { class: "release-row" }, [
                             h("div", [
-                              h("strong", `Version ${release.version}`),
+                              h("strong", { class: "record-metadata" }, [
+                                "Version ",
+                                h(
+                                  "code",
+                                  { class: "metadata-chip" },
+                                  release.version,
+                                ),
+                              ]),
                               h(
                                 "p",
                                 { class: "muted small requirements" },
@@ -707,7 +753,7 @@ export function mountCustomerApp(
                                         "button button-secondary button-small",
                                       href: `${api.basePath}/licenses/${encodeURIComponent(license.id)}/releases/${encodeURIComponent(release.id)}/download`,
                                     },
-                                    [icon("↓"), " Download"],
+                                    [icon(icons.download), "Download"],
                                   )
                                 : h(
                                     "span",
@@ -722,20 +768,24 @@ export function mountCustomerApp(
                                   { class: "asset-list" },
                                   release.assets.map((asset) =>
                                     h("li", { key: asset.id }, [
-                                      h(
-                                        "span",
-                                        `${asset.target} · ${asset.filename} · ${asset.size} bytes`,
-                                      ),
+                                      h("div", { class: "record-metadata" }, [
+                                        h(
+                                          "code",
+                                          { class: "metadata-chip" },
+                                          asset.target,
+                                        ),
+                                        ` · ${asset.filename} · ${asset.size} bytes`,
+                                      ]),
                                       asset.min_system_version &&
                                         h(
                                           "p",
                                           `Minimum system version ${asset.min_system_version}`,
                                         ),
-                                      h("p", [
+                                      h("p", { class: "record-metadata" }, [
                                         "SHA-256 ",
                                         h(
                                           "code",
-                                          { class: "checksum" },
+                                          { class: "checksum metadata-chip" },
                                           asset.checksum,
                                         ),
                                       ]),
@@ -747,7 +797,10 @@ export function mountCustomerApp(
                                                 "button button-secondary button-small",
                                               href: `${api.basePath}/licenses/${encodeURIComponent(license.id)}/assets/${encodeURIComponent(asset.id)}/download`,
                                             },
-                                            "Download " + asset.target,
+                                            [
+                                              icon(icons.download),
+                                              "Download " + asset.target,
+                                            ],
                                           )
                                         : h("span", "Access unavailable"),
                                     ]),
@@ -757,7 +810,9 @@ export function mountCustomerApp(
                           h("details", { class: "release-details" }, [
                             h(
                               "summary",
-                              `Release notes and checksum for ${release.version}`,
+                              disclosureLabel(
+                                `Release notes and checksum for ${release.version}`,
+                              ),
                             ),
                             h(
                               "p",
@@ -765,7 +820,13 @@ export function mountCustomerApp(
                               release.changelog || "No release notes provided.",
                             ),
                             h("p", { class: "small muted" }, "SHA-256"),
-                            h("code", { class: "checksum" }, release.checksum),
+                            h("div", { class: "record-metadata" }, [
+                              h(
+                                "code",
+                                { class: "checksum metadata-chip" },
+                                release.checksum,
+                              ),
+                            ]),
                           ]),
                         ]),
                       ),
@@ -777,10 +838,10 @@ export function mountCustomerApp(
               { class: "license-section", "aria-label": "Installations" },
               [
                 h("div", { class: "section-heading" }, [
-                  h("h4", "Installations"),
+                  h("h4", [icon(icons.layers), " Installations"]),
                   h(
                     "span",
-                    { class: "muted small" },
+                    { class: "muted small", style: tabularNumbers },
                     `${license.installations.filter((item) => item.active).length} active`,
                   ),
                 ]),
@@ -798,11 +859,17 @@ export function mountCustomerApp(
                       license.installations.map((installation) =>
                         h("li", { key: installation.id }, [
                           h("div", { class: "site-info" }, [
-                            h(
-                              "span",
-                              { class: "site-url" },
-                              installationName(installation),
-                            ),
+                            h("div", { class: "record-metadata" }, [
+                              h(
+                                installation.label ? "span" : "code",
+                                {
+                                  class: installation.label
+                                    ? "site-url"
+                                    : "metadata-chip",
+                                },
+                                installationName(installation),
+                              ),
+                            ]),
                             h(
                               "span",
                               { class: "muted small" },
@@ -820,7 +887,7 @@ export function mountCustomerApp(
                                   installationName(installation),
                                 ),
                               {
-                                class: "button-text",
+                                class: "button-danger button-small",
                                 disabled: interactionBusy(),
                                 "aria-label": `Deactivate ${installationName(installation)}`,
                               },
@@ -842,9 +909,10 @@ export function mountCustomerApp(
                   : "Replace license key",
                 () => rotateKey(license),
                 {
-                  class: "button-secondary button-small",
+                  class: "button-danger button-small",
                   disabled: interactionBusy(),
                 },
+                icons.key,
               ),
             ]),
           ],
@@ -881,6 +949,7 @@ export function mountCustomerApp(
                     busy.value === "logout" ? "Signing out…" : "Sign out",
                     logout,
                     { class: "button-text", disabled: interactionBusy() },
+                    icons.logout,
                   )
                 : h("a", { href: "#sign-in" }, "Sign in"),
             ]),
@@ -914,7 +983,7 @@ export function mountCustomerApp(
                   "aria-labelledby": "login-confirm-title",
                 },
                 [
-                  h("div", { class: "panel-icon", "aria-hidden": "true" }, "↗"),
+                  h("div", { class: "panel-icon" }, [icon(icons.shield)]),
                   h("div", [
                     h("p", { class: "eyebrow" }, "Secure sign in"),
                     h(
@@ -940,6 +1009,7 @@ export function mountCustomerApp(
                             interactionBusy() ||
                             !loginToken.value,
                         },
+                        icons.key,
                       ),
                       button(
                         "Cancel",
@@ -992,17 +1062,37 @@ export function mountCustomerApp(
                               account.value.customer.email,
                             ),
                           ]),
-                          account.value.billingAvailable !== false &&
-                            button(
-                              busy.value === "portal"
-                                ? "Opening billing…"
-                                : "Manage billing ↗",
-                              portal,
-                              {
-                                class: "button-secondary",
-                                disabled: interactionBusy(),
-                              },
-                            ),
+                          h("div", { class: "button-row account-actions" }, [
+                            account.value.licenses.length > 0 &&
+                              button(
+                                busy.value === "refresh"
+                                  ? "Refreshing licenses…"
+                                  : "Refresh licenses",
+                                () => void run("refresh", fetchAccount),
+                                {
+                                  class: "button-secondary",
+                                  disabled: interactionBusy(),
+                                },
+                                icons.refresh,
+                              ),
+                            account.value.billingAvailable !== false &&
+                              button(
+                                [
+                                  icon(icons.card),
+                                  busy.value === "portal"
+                                    ? "Opening billing…"
+                                    : "Manage billing",
+                                  // Retain the existing button text for portal integrations.
+                                  busy.value !== "portal" &&
+                                    h("span", { hidden: true }, " ↗"),
+                                ],
+                                portal,
+                                {
+                                  class: "button-secondary",
+                                  disabled: interactionBusy(),
+                                },
+                              ),
+                          ]),
                         ]),
                         h(
                           "details",
@@ -1015,7 +1105,13 @@ export function mountCustomerApp(
                             },
                           },
                           [
-                            h("summary", "Notifications and privacy"),
+                            h(
+                              "summary",
+                              disclosureLabel(
+                                "Notifications and privacy",
+                                icons.shield,
+                              ),
+                            ),
                             privacyOpen.value &&
                               h(SellerFeaturePanel, {
                                 key: account.value.customer.id,
@@ -1064,6 +1160,7 @@ export function mountCustomerApp(
                                   class: "button-secondary",
                                   disabled: interactionBusy(),
                                 },
+                                icons.refresh,
                               ),
                             ]),
                       ],
@@ -1104,11 +1201,9 @@ export function mountCustomerApp(
                             "aria-labelledby": "sign-in-title",
                           },
                           [
-                            h(
-                              "span",
-                              { class: "panel-icon", "aria-hidden": "true" },
-                              "↗",
-                            ),
+                            h("span", { class: "panel-icon" }, [
+                              icon(icons.key),
+                            ]),
                             h(
                               "h2",
                               { id: "sign-in-title" },
@@ -1135,22 +1230,38 @@ export function mountCustomerApp(
                                   email.value = (
                                     event.target as HTMLInputElement
                                   ).value;
-                                  loginSent.value = false;
+                                  loginSentTo.value = "";
                                 },
                               }),
                               h(
                                 "button",
                                 { type: "submit", disabled: interactionBusy() },
-                                busy.value === "login-request"
-                                  ? "Sending link…"
-                                  : "Email me a sign-in link",
+                                [
+                                  icon(icons.arrow),
+                                  busy.value === "login-request"
+                                    ? "Sending link…"
+                                    : "Email me a sign-in link",
+                                ],
                               ),
                             ]),
-                            loginSent.value &&
+                            loginSentTo.value &&
                               h(
-                                "p",
-                                { class: "inline-notice", role: "status" },
-                                "If an account exists for this email, a sign-in link is on its way. Check your inbox and spam folder.",
+                                "div",
+                                {
+                                  class: "inline-notice seller-signin-sent",
+                                  role: "status",
+                                },
+                                [
+                                  icon(icons.mailCheck),
+                                  h("div", [
+                                    h("h3", "Check your email"),
+                                    h("p", [h("strong", loginSentTo.value)]),
+                                    h(
+                                      "p",
+                                      "If an account exists for this email, a sign-in link is on its way. Check your inbox and spam folder.",
+                                    ),
+                                  ]),
+                                ],
                               ),
                           ],
                         ),
@@ -1210,117 +1321,139 @@ export function mountCustomerApp(
                               { class: "empty-message" },
                               "No paid plans are available yet.",
                             )
-                        : h(
-                            "form",
-                            { onSubmit: checkout, class: "checkout-form" },
-                            [
-                              ...purchasable().map((product) =>
-                                h(
-                                  "fieldset",
-                                  { key: product.id, class: "product-plans" },
-                                  [
-                                    h("legend", product.name),
-                                    h(
-                                      "div",
-                                      { class: "plans-grid" },
-                                      product.plans.map((plan) =>
-                                        h(
-                                          "label",
-                                          {
-                                            class: [
-                                              "plan-card",
-                                              selectedPlan.value === plan.id &&
-                                                "plan-selected",
-                                            ],
-                                            key: plan.id,
-                                          },
-                                          [
-                                            h("input", {
-                                              type: "radio",
-                                              name: "plan",
-                                              value: plan.id,
-                                              checked:
-                                                selectedPlan.value === plan.id,
-                                              onChange: () => {
-                                                selectedPlan.value = plan.id;
-                                              },
-                                              required: true,
-                                              disabled: checkoutOpen.value,
-                                            }),
-                                            h(
-                                              "span",
-                                              { class: "plan-name" },
-                                              plan.name,
-                                            ),
-                                            h("span", { class: "plan-seats" }, [
-                                              String(plan.site_allowance),
-                                              h(
-                                                "span",
-                                                ` ${seatUnit(product)}${plan.site_allowance === 1 ? "" : "s"}`,
-                                              ),
-                                            ]),
-                                            planPrice(plan) &&
-                                              h(
-                                                "span",
-                                                { class: "plan-price" },
-                                                planPrice(plan),
-                                              ),
-                                            h(
-                                              "span",
-                                              { class: "muted small" },
-                                              planInterval(plan).label,
-                                            ),
-                                          ],
-                                        ),
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                              h("div", { class: "checkout-bar" }, [
-                                h("div", { class: "checkout-email" }, [
+                          : h(
+                              "form",
+                              { onSubmit: checkout, class: "checkout-form" },
+                              [
+                                ...purchasable().map((product) =>
                                   h(
-                                    "label",
-                                    { for: "checkout-email" },
-                                    "Purchase email",
+                                    "fieldset",
+                                    { key: product.id, class: "product-plans" },
+                                    [
+                                      h("legend", [
+                                        icon(icons.box),
+                                        " " + product.name,
+                                      ]),
+                                      h(
+                                        "div",
+                                        { class: "plans-grid" },
+                                        product.plans.map((plan) => {
+                                          const price = planPrice(plan);
+                                          return h(
+                                            "label",
+                                            {
+                                              class: [
+                                                "plan-card",
+                                                selectedPlan.value ===
+                                                  plan.id && "plan-selected",
+                                              ],
+                                              key: plan.id,
+                                            },
+                                            [
+                                              h("input", {
+                                                type: "radio",
+                                                name: "plan",
+                                                value: plan.id,
+                                                checked:
+                                                  selectedPlan.value ===
+                                                  plan.id,
+                                                onChange: () => {
+                                                  selectedPlan.value = plan.id;
+                                                },
+                                                required: true,
+                                                disabled: checkoutOpen.value,
+                                              }),
+                                              h(
+                                                "span",
+                                                { class: "plan-name" },
+                                                plan.name,
+                                              ),
+                                              h(
+                                                "span",
+                                                {
+                                                  class: "plan-seats",
+                                                  style: tabularNumbers,
+                                                },
+                                                [
+                                                  String(plan.site_allowance),
+                                                  h(
+                                                    "span",
+                                                    ` ${seatUnit(product)}${plan.site_allowance === 1 ? "" : "s"}`,
+                                                  ),
+                                                ],
+                                              ),
+                                              price &&
+                                                h(
+                                                  "span",
+                                                  {
+                                                    class: "plan-price",
+                                                    style: tabularNumbers,
+                                                  },
+                                                  price,
+                                                ),
+                                              h(
+                                                "span",
+                                                { class: "muted small" },
+                                                [
+                                                  icon(icons.card),
+                                                  " " +
+                                                    planInterval(plan).label,
+                                                ],
+                                              ),
+                                            ],
+                                          );
+                                        }),
+                                      ),
+                                    ],
                                   ),
-                                  h("input", {
-                                    id: "checkout-email",
-                                    disabled: checkoutOpen.value,
-                                    type: "email",
-                                    autocomplete: "email",
-                                    required: true,
-                                    placeholder: "you@example.com",
-                                    value: checkoutEmail.value,
-                                    onInput: (event: Event) => {
-                                      checkoutEmail.value = (
-                                        event.target as HTMLInputElement
-                                      ).value;
+                                ),
+                                h("div", { class: "checkout-bar" }, [
+                                  h("div", { class: "checkout-email" }, [
+                                    h(
+                                      "label",
+                                      { for: "checkout-email" },
+                                      "Purchase email",
+                                    ),
+                                    h("input", {
+                                      id: "checkout-email",
+                                      disabled: checkoutOpen.value,
+                                      type: "email",
+                                      autocomplete: "email",
+                                      required: true,
+                                      placeholder: "you@example.com",
+                                      value: checkoutEmail.value,
+                                      onInput: (event: Event) => {
+                                        checkoutEmail.value = (
+                                          event.target as HTMLInputElement
+                                        ).value;
+                                      },
+                                    }),
+                                  ]),
+                                  h(
+                                    "button",
+                                    {
+                                      type: "submit",
+                                      disabled:
+                                        loading.value ||
+                                        interactionBusy() ||
+                                        !selectedPlan.value ||
+                                        checkoutOpen.value,
                                     },
-                                  }),
+                                    [
+                                      icon(icons.arrow),
+                                      busy.value === "checkout"
+                                        ? "Preparing secure payment…"
+                                        : "Continue to payment",
+                                    ],
+                                  ),
                                 ]),
                                 h(
-                                  "button",
-                                  {
-                                    type: "submit",
-                                    disabled:
-                                      loading.value ||
-                                      interactionBusy() ||
-                                      !selectedPlan.value ||
-                                      checkoutOpen.value,
-                                  },
-                                  busy.value === "checkout"
-                                    ? "Preparing secure payment…"
-                                    : "Continue to payment",
+                                  "p",
+                                  { class: "small muted checkout-note" },
+                                  "Your license becomes available after payment is confirmed. Expired licenses do not disable installed software.",
                                 ),
-                              ]),
-                              h(
-                                "p",
-                                { class: "small muted checkout-note" },
-                                "Your license becomes available after payment is confirmed. Expired licenses do not disable installed software.",
-                              ),
-                            ],
-                          ),
+                              ],
+                            ),
               ],
             ),
             checkoutOpen.value && renderCheckout(),
