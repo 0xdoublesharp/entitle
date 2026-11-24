@@ -1076,7 +1076,7 @@ location / { default_type application/json; return 404 '{"error":"api_not_found"
       return response;
     }
     let inspectionCount = 0;
-    function inspectResponses(uris) {
+    function inspectResponses(uris, host = "entitle.example") {
       // BusyBox wget follows redirects and omits error-response headers.
       // Batch probes in Node to inspect first responses without container churn.
       const name = `${runtime}-inspect-${++inspectionCount}`;
@@ -1105,7 +1105,7 @@ try {
   for (const uri of JSON.parse(process.argv[1])) {
     results.push(await new Promise((resolve, reject) => {
       const req = http.get(new URL(uri, "http://127.0.0.1:8080"),
-        { headers: { host: "entitle.example" } }, (res) => {
+        { headers: { host: process.argv[2] } }, (res) => {
           const chunks = [];
           res.on("error", reject);
           res.on("data", (chunk) => chunks.push(chunk));
@@ -1120,6 +1120,7 @@ try {
   console.log(JSON.stringify(results));
 } catch (error) { console.error(error.message); process.exitCode = 1; }`,
           JSON.stringify(uris),
+          host,
         ],
         { encoding: "utf8", timeout: 30000 },
       );
@@ -1130,6 +1131,7 @@ try {
       requests.push(
         ...responses.map((response, index) => ({
           uri: uris[index],
+          host,
           ...response,
           followRedirects: false,
         })),
@@ -1423,6 +1425,40 @@ for (const file of JSON.parse(process.argv[2])) {
           );
         }
       });
+      await t.test(
+        `analytics CSP applies only to production marketing pages at ${base}`,
+        () => {
+          const production = "entitle.doublesharp.com";
+          const collector = "https://umami.apps.doublesharp.com";
+          const publicPages = ["/", "/docs", "/docs/?source=sample"];
+          const excludedPages = [
+            `${base}/seller`,
+            `${base}/docs`,
+            `${base}/t/alpha`,
+          ];
+          const paths = [...publicPages, ...excludedPages, "/missing"];
+          const responses = inspectResponses(paths, production);
+          for (const [index, uri] of paths.entries()) {
+            const response = responses[index];
+            assert.equal(response.status, uri === "/missing" ? 404 : 200, uri);
+            const connect = response.headers["content-security-policy"]
+              .split("; ")
+              .find((directive) => directive.startsWith("connect-src "));
+            assert.ok(connect, uri);
+            assert.equal(
+              connect.split(" ").includes(collector),
+              publicPages.includes(uri),
+              uri,
+            );
+          }
+          for (const response of inspectResponses(publicPages)) {
+            assert.doesNotMatch(
+              response.headers["content-security-policy"],
+              /umami/,
+            );
+          }
+        },
+      );
       await t.test(
         `hosted redirects preserve queries and use relative Location at ${base}`,
         () => {

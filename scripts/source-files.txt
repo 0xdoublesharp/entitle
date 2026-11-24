@@ -360,6 +360,8 @@ web/features.ts
 web/frameworks.ts
 web/index.html
 web/main.ts
+web/marketing-analytics.test.ts
+web/marketing-analytics.ts
 web/marketing-entry.ts
 web/marketing.css
 web/marketing.html
