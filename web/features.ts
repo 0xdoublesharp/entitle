@@ -1,3 +1,4 @@
+import { disclosureLabel, icon, icons } from "./icons.ts";
 import { applicationHref } from "./navigation.ts";
 import {
   defineComponent,
@@ -8,7 +9,7 @@ import {
   ref,
   watch,
 } from "vue";
-import type { PropType } from "vue";
+import type { PropType, VNodeArrayChildren } from "vue";
 import { ApiClient, ApiError, errorMessage } from "./api.ts";
 import { RecoveryPanel } from "./auth-recovery.ts";
 import { hardwareVerification, PublisherSecurity } from "./oidc.ts";
@@ -123,10 +124,24 @@ const eventTitles: Record<string, string> = {
   "release.withdrawn": "Release withdrawn",
   "alert.raised": "Health alert",
 };
-const button = (label: string, action: () => void, disabled: boolean) =>
-  h("button", { type: "button", disabled, onClick: action }, label);
+const button = (
+  label: string | VNodeArrayChildren,
+  action: () => void,
+  disabled: boolean,
+  className?: string,
+) =>
+  h(
+    "button",
+    { type: "button", disabled, class: className, onClick: action },
+    label,
+  );
 
 const human = (value: string) => value.replaceAll("_", " ");
+const statusText = (value: string) =>
+  human(value).replace(/^./, (letter) => letter.toUpperCase());
+const metadata = (value: string) =>
+  h("code", { class: "metadata-chip" }, value);
+const numeric = { style: { fontVariantNumeric: "tabular-nums" } };
 const numberText = (value: number | undefined) =>
   value === undefined ? "—" : value.toLocaleString("en-US");
 const bytesText = (value: number) => {
@@ -151,7 +166,11 @@ const trendChart = (
   return h("figure", { class: "trend-chart" }, [
     h("figcaption", [
       h("span", title),
-      h("strong", format(rows.reduce((sum, row) => sum + row.value, 0))),
+      h(
+        "strong",
+        numeric,
+        format(rows.reduce((sum, row) => sum + row.value, 0)),
+      ),
     ]),
     h(
       "svg",
@@ -192,7 +211,7 @@ const trendChart = (
         ),
       ],
     ),
-    h("div", { class: "chart-axis" }, [
+    h("div", { class: "chart-axis", ...numeric }, [
       h("span", rows[0]?.day || ""),
       h(
         "span",
@@ -215,15 +234,30 @@ const disclosure = (
   title: string,
   description: string,
   children: unknown[],
-  open = false,
+  { open = false, create = false }: { open?: boolean; create?: boolean } = {},
 ) =>
-  h("details", { id, class: "feature-disclosure", open }, [
-    h("summary", title),
-    h("div", { class: "feature-disclosure-content" }, [
-      h("p", { class: "feature-description" }, description),
-      ...children,
-    ] as Parameters<typeof h>[2]),
-  ]);
+  h(
+    "details",
+    { id, class: create ? "seller-create" : "feature-disclosure", open },
+    [
+      h("summary", disclosureLabel(title, create ? icons.plus : undefined)),
+      h("div", { class: "feature-disclosure-content" }, [
+        h("p", { class: "feature-description" }, description),
+        ...children,
+      ] as Parameters<typeof h>[2]),
+    ],
+  );
+
+const panels: Record<string, { title: string; glyph: string }> = {
+  commerce: { title: "Tax settings", glyph: icons.receipt },
+  sandbox: { title: "Sandbox", glyph: icons.flask },
+  operations: { title: "Operations", glyph: icons.pulse },
+  webhooks: { title: "Outgoing webhooks", glyph: icons.webhook },
+  security: { title: "Account security", glyph: icons.shield },
+  export: { title: "Tenant export", glyph: icons.download },
+  customer: { title: "Account privacy and notifications", glyph: icons.shield },
+  recovery: { title: "Recover seller access", glyph: icons.key },
+};
 
 // Every call consumes the email proof. Neither proof nor returned grant is persisted.
 export async function verifiedRequest<T>(
@@ -525,6 +559,7 @@ export const SellerFeaturePanel = defineComponent({
         h("input", {
           id,
           type,
+          class: id.startsWith("tax-") ? "metadata-chip" : undefined,
           required,
           step: "any",
           minlength: id === "passphrase" ? 12 : undefined,
@@ -720,10 +755,10 @@ export const SellerFeaturePanel = defineComponent({
             h("div", { class: "sandbox-workspace-heading" }, [
               h("div", [
                 h("strong", { class: "sandbox-label" }, "TEST WORKSPACE"),
-                h(
-                  "p",
-                  `Mode: ${sandbox.value.mode}. Parent: ${sandbox.value.parentSlug}`,
-                ),
+                h("p", { class: "record-metadata" }, [
+                  `Mode: ${sandbox.value.mode}. Parent: `,
+                  metadata(sandbox.value.parentSlug),
+                ]),
               ]),
               h(
                 "a",
@@ -737,9 +772,10 @@ export const SellerFeaturePanel = defineComponent({
               ),
             ]),
             h("details", { class: "sandbox-api-details" }, [
-              h("summary", "API endpoint"),
+              h("summary", disclosureLabel("API endpoint", icons.code)),
               h(
                 "code",
+                { class: "metadata-chip" },
                 `${window.location.origin}${props.api.basePath.replace(/\/seller$/, "")}`,
               ),
             ]),
@@ -781,16 +817,19 @@ export const SellerFeaturePanel = defineComponent({
               ),
           ])
         : sandbox.value
-          ? h(
-              "a",
-              {
-                "data-sandbox-open": "",
-                href: applicationHref(
-                  `/seller?tenant=${encodeURIComponent(sandbox.value.sandboxSlug)}`,
-                ),
-              },
-              "Open Sandbox",
-            )
+          ? h("div", { class: "record-metadata" }, [
+              h(
+                "a",
+                {
+                  "data-sandbox-open": "",
+                  href: applicationHref(
+                    `/seller?tenant=${encodeURIComponent(sandbox.value.sandboxSlug)}`,
+                  ),
+                },
+                "Open Sandbox",
+              ),
+              metadata(sandbox.value.sandboxSlug),
+            ])
           : form(
               "sandbox-create",
               "Create Sandbox",
@@ -821,17 +860,23 @@ export const SellerFeaturePanel = defineComponent({
             ),
       child.value &&
         h("div", [
-          h(
-            "a",
-            {
-              "data-sandbox-open": "",
-              href: applicationHref(
-                `/seller?tenant=${encodeURIComponent(child.value.slug)}`,
-              ),
-            },
-            "Open Sandbox",
-          ),
-          h("p", `Test API: ${window.location.origin}${child.value.apiBase}`),
+          h("div", { class: "record-metadata" }, [
+            h(
+              "a",
+              {
+                "data-sandbox-open": "",
+                href: applicationHref(
+                  `/seller?tenant=${encodeURIComponent(child.value.slug)}`,
+                ),
+              },
+              "Open Sandbox",
+            ),
+            metadata(child.value.slug),
+          ]),
+          h("p", { class: "record-metadata" }, [
+            "Test API: ",
+            metadata(`${window.location.origin}${child.value.apiBase}`),
+          ]),
           h("a", { href: child.value.customerUrl }, "Open test buyer page"),
         ]),
     ];
@@ -944,7 +989,7 @@ export const SellerFeaturePanel = defineComponent({
                 "is-attention": data.alerts.length > 0,
               },
             },
-            data.alerts.length ? "Needs attention" : "Monitoring active",
+            data.alerts.length > 0 ? "Needs attention" : "Monitoring active",
           ),
         ]),
         h("dl", { class: "feature-stats" }, [
@@ -1002,7 +1047,7 @@ export const SellerFeaturePanel = defineComponent({
             "Jobs retained in this workspace. Completed includes successful email sends; pending includes jobs currently running. Sandbox jobs belong to their own workspace.",
             [
               h("div", { class: "table-scroll" }, [
-                h("table", { class: "feature-queues" }, [
+                h("table", { class: "feature-queues", ...numeric }, [
                   h("thead", [
                     h(
                       "tr",
@@ -1114,9 +1159,12 @@ export const SellerFeaturePanel = defineComponent({
                   "Charts group jobs by the day they were queued. Sent means the configured mail transport accepted the message.",
                 ),
                 h("details", { class: "report-data" }, [
-                  h("summary", "View daily activity data"),
+                  h(
+                    "summary",
+                    disclosureLabel("View daily activity data", icons.chart),
+                  ),
                   h("div", { class: "table-scroll" }, [
-                    h("table", [
+                    h("table", numeric, [
                       h("thead", [
                         h(
                           "tr",
@@ -1152,9 +1200,9 @@ export const SellerFeaturePanel = defineComponent({
                   ]),
                 ]),
                 h("h4", "Recent email history"),
-                activity.value.emails.length
+                activity.value.emails.length > 0
                   ? h("div", { class: "table-scroll" }, [
-                      h("table", { class: "email-history" }, [
+                      h("table", { class: "email-history", ...numeric }, [
                         h("thead", [
                           h(
                             "tr",
@@ -1174,12 +1222,7 @@ export const SellerFeaturePanel = defineComponent({
                                   .replace("T", " ")
                                   .slice(0, 19),
                               ),
-                              h(
-                                "td",
-                                human(email.kind).replace(/^./, (value) =>
-                                  value.toUpperCase(),
-                                ),
-                              ),
+                              h("td", statusText(email.kind)),
                               h(
                                 "td",
                                 h(
@@ -1194,9 +1237,7 @@ export const SellerFeaturePanel = defineComponent({
                                           : "",
                                     ],
                                   },
-                                  human(email.state).replace(/^./, (value) =>
-                                    value.toUpperCase(),
-                                  ),
+                                  statusText(email.state),
                                 ),
                               ),
                               h("td", String(email.attempts)),
@@ -1300,78 +1341,78 @@ export const SellerFeaturePanel = defineComponent({
                 ),
                 proOptions.value && upgrade(),
               ]),
-          reports.value &&
-            reports.value.rows.length > 0 &&
-            h("div", { class: "download-performance" }, [
-              h("div", { class: "analytics-chart-grid" }, [
-                trendChart(
-                  "Successful download responses",
-                  chartRows.map((row) => ({
-                    day: row.day,
-                    value: row.responses ?? 0,
-                  })),
-                ),
-                trendChart(
-                  "Data delivered",
-                  chartRows.map((row) => ({
-                    day: row.day,
-                    value: row.servedBytes,
-                  })),
-                  bytesText,
-                ),
-                trendChart(
-                  "Origin storage reads",
-                  chartRows.map((row) => ({
-                    day: row.day,
-                    value: row.storageReads ?? 0,
-                  })),
-                ),
-                trendChart(
-                  "Origin data read",
-                  chartRows.map((row) => ({
-                    day: row.day,
-                    value: row.storageReadBytes ?? 0,
-                  })),
-                  bytesText,
-                ),
-              ]),
-              h("dl", { class: "feature-stats" }, [
-                h("div", [
-                  h("dt", "Successful responses"),
-                  h("dd", numberText(responseCount)),
-                ]),
-                h("div", [
-                  h("dt", "Average response size"),
-                  h(
-                    "dd",
-                    responseCount
-                      ? bytesText(deliveredBytes / responseCount)
-                      : "—",
+          reports.value && reports.value.rows.length > 0
+            ? h("div", { class: "download-performance" }, [
+                h("div", { class: "analytics-chart-grid" }, [
+                  trendChart(
+                    "Successful download responses",
+                    chartRows.map((row) => ({
+                      day: row.day,
+                      value: row.responses ?? 0,
+                    })),
+                  ),
+                  trendChart(
+                    "Data delivered",
+                    chartRows.map((row) => ({
+                      day: row.day,
+                      value: row.servedBytes,
+                    })),
+                    bytesText,
+                  ),
+                  trendChart(
+                    "Origin storage reads",
+                    chartRows.map((row) => ({
+                      day: row.day,
+                      value: row.storageReads ?? 0,
+                    })),
+                  ),
+                  trendChart(
+                    "Origin data read",
+                    chartRows.map((row) => ({
+                      day: row.day,
+                      value: row.storageReadBytes ?? 0,
+                    })),
+                    bytesText,
                   ),
                 ]),
-                h("div", [
-                  h("dt", "Storage read operations"),
-                  h(
-                    "dd",
-                    numberText(
-                      reportRows.reduce(
-                        (sum, row) => sum + (row.storageReads || 0),
-                        0,
+                h("dl", { class: "feature-stats" }, [
+                  h("div", [
+                    h("dt", "Successful responses"),
+                    h("dd", numberText(responseCount)),
+                  ]),
+                  h("div", [
+                    h("dt", "Average response size"),
+                    h(
+                      "dd",
+                      responseCount
+                        ? bytesText(deliveredBytes / responseCount)
+                        : "—",
+                    ),
+                  ]),
+                  h("div", [
+                    h("dt", "Storage read operations"),
+                    h(
+                      "dd",
+                      numberText(
+                        reportRows.reduce(
+                          (sum, row) => sum + (row.storageReads || 0),
+                          0,
+                        ),
                       ),
                     ),
-                  ),
+                  ]),
                 ]),
-              ]),
-              h(
-                "p",
-                { class: "analytics-footnote" },
-                "Download responses and origin reads are measured separately. Bytes describe transferred data, including partial responses.",
-              ),
-            ]),
+                h(
+                  "p",
+                  { class: "analytics-footnote" },
+                  "Download responses and origin reads are measured separately. Bytes describe transferred data, including partial responses.",
+                ),
+              ])
+            : null,
           reports.value &&
-            (reports.value.rows.length
+            (reports.value.rows.length > 0
               ? h("div", { class: "table-scroll" }, [
-                  h("table", { class: "feature-report-table" }, [
+                  h("table", { class: "feature-report-table", ...numeric }, [
                     h("thead", [
                       h(
                         "tr",
@@ -1461,16 +1502,24 @@ export const SellerFeaturePanel = defineComponent({
                   },
                 ),
               ],
-              !endpoints.value.some((endpoint) => endpoint.active),
+              {
+                create: true,
+                open: !endpoints.value.some((endpoint) => endpoint.active),
+              },
             ),
             h("div", { class: "feature-endpoint-list" }, [
               ...endpoints.value.map((endpoint) =>
                 h("article", { class: "feature-record" }, [
                   h("div", { class: "feature-record-heading" }, [
-                    h("h3", endpoint.url),
+                    h("h3", metadata(endpoint.url)),
                     h(
                       "span",
-                      { class: "feature-badge" },
+                      {
+                        class: [
+                          "license-access-badge",
+                          endpoint.active ? "license-access-active" : null,
+                        ],
+                      },
                       endpoint.active ? "Active" : "Disabled",
                     ),
                   ]),
@@ -1498,6 +1547,7 @@ export const SellerFeaturePanel = defineComponent({
                             "The new secret is shown once. Update your receiver before the next delivery.",
                           ),
                         pending.value,
+                        "button-danger",
                       ),
                       button(
                         "Disable webhook",
@@ -1515,6 +1565,7 @@ export const SellerFeaturePanel = defineComponent({
                             "Events stop being sent to this endpoint.",
                           ),
                         pending.value,
+                        "button-danger",
                       ),
                     ]),
                 ]),
@@ -1527,11 +1578,21 @@ export const SellerFeaturePanel = defineComponent({
                 { class: "feature-empty" },
                 "No deliveries yet. New events will appear here.",
               ),
-            ...deliveries.value.map((delivery) =>
-              h("article", { class: "feature-delivery" }, [
+            ...deliveries.value.map((delivery) => {
+              const url = endpoints.value.find(
+                (endpoint) => endpoint.id === delivery.endpointId,
+              )?.url;
+              return h("article", { class: "feature-delivery" }, [
                 h("div", { class: "feature-delivery-body" }, [
                   h(
                     "strong",
+                    {
+                      class: [
+                        "license-access-badge",
+                        delivery.state === "sent" && "license-access-active",
+                        delivery.state === "failed" && "license-access-revoked",
+                      ],
+                    },
                     (
                       {
                         pending: "Queued",
@@ -1542,14 +1603,12 @@ export const SellerFeaturePanel = defineComponent({
                       } as Record<string, string>
                     )[delivery.state] || human(delivery.state),
                   ),
+                  h("p", { class: "record-metadata" }, [
+                    url ? metadata(url) : "Webhook endpoint",
+                  ]),
                   h(
                     "p",
-                    endpoints.value.find(
-                      (endpoint) => endpoint.id === delivery.endpointId,
-                    )?.url || "Webhook endpoint",
-                  ),
-                  h(
-                    "p",
+                    numeric,
                     `${delivery.attempts} ${delivery.attempts === 1 ? "attempt" : "attempts"}`,
                   ),
                   delivery.lastError &&
@@ -1567,7 +1626,10 @@ export const SellerFeaturePanel = defineComponent({
                     ),
                   h(
                     "code",
-                    { class: "event-ref", title: delivery.eventId },
+                    {
+                      class: "event-ref metadata-chip",
+                      title: delivery.eventId,
+                    },
                     delivery.eventId.slice(0, 12),
                   ),
                 ]),
@@ -1584,8 +1646,8 @@ export const SellerFeaturePanel = defineComponent({
                       }),
                     pending.value,
                   ),
-              ]),
-            ),
+              ]);
+            }),
           ];
     const security = () => [
       h(PublisherSecurity, {
@@ -1607,19 +1669,24 @@ export const SellerFeaturePanel = defineComponent({
                 button(
                   "Revoke session",
                   () =>
-                    confirm("Revoke this session?", async () => {
-                      await props.platform.post("/account/sessions/revoke", {
-                        id: session.id,
-                      });
-                      if (session.current) emit("signedOut");
-                      else
-                        sessions.value = (
-                          await props.platform.get<{ sessions: Session[] }>(
-                            "/account/sessions",
-                          )
-                        ).sessions;
-                    }, "That browser is signed out immediately."),
+                    confirm(
+                      "Revoke this session?",
+                      async () => {
+                        await props.platform.post("/account/sessions/revoke", {
+                          id: session.id,
+                        });
+                        if (session.current) emit("signedOut");
+                        else
+                          sessions.value = (
+                            await props.platform.get<{ sessions: Session[] }>(
+                              "/account/sessions",
+                            )
+                          ).sessions;
+                      },
+                      "That browser is signed out immediately.",
+                    ),
                   pending.value,
+                  "button-danger",
                 ),
               ]),
             ),
@@ -1647,6 +1714,7 @@ export const SellerFeaturePanel = defineComponent({
                       : "Every other browser is signed out immediately.",
                   ),
                 pending.value,
+                "button-danger",
               ),
             ),
           ]),
@@ -1671,7 +1739,7 @@ export const SellerFeaturePanel = defineComponent({
             },
           ),
         ],
-        proofArrived,
+        { open: proofArrived, create: true },
       ),
       props.hosted &&
         disclosure(
@@ -1679,27 +1747,28 @@ export const SellerFeaturePanel = defineComponent({
           "Change account email",
           "Confirm from both mailboxes in this browser. Open each mailbox link in this tab and identify which mailbox supplied it. If you opened both before choosing, reopen the other link next. You'll sign in again, and your current recovery codes will stop working. Create new ones afterward.",
           [
-            pendingEmailTokens.value.length > 0 &&
-              h(
-                "div",
-                { id: "email-change-link", class: "verification-proof" },
-                [
-                  h(
-                    "p",
-                    "Which mailbox supplied the link you most recently opened?",
-                  ),
-                  button(
-                    "Use link from current mailbox",
-                    () => useEmailChangeLink("currentToken"),
-                    pending.value,
-                  ),
-                  button(
-                    "Use link from new mailbox",
-                    () => useEmailChangeLink("newToken"),
-                    pending.value,
-                  ),
-                ],
-              ),
+            pendingEmailTokens.value.length > 0
+              ? h(
+                  "div",
+                  { id: "email-change-link", class: "verification-proof" },
+                  [
+                    h(
+                      "p",
+                      "Which mailbox supplied the link you most recently opened?",
+                    ),
+                    button(
+                      "Use link from current mailbox",
+                      () => useEmailChangeLink("currentToken"),
+                      pending.value,
+                    ),
+                    button(
+                      "Use link from new mailbox",
+                      () => useEmailChangeLink("newToken"),
+                      pending.value,
+                    ),
+                  ],
+                )
+              : null,
             form(
               "email-change-request",
               "Request email change",
@@ -1753,7 +1822,7 @@ export const SellerFeaturePanel = defineComponent({
               },
             ),
           ],
-          Boolean(props.emailChange),
+          { open: Boolean(props.emailChange) },
         ),
     ];
     const exportDeletion =
@@ -1766,15 +1835,25 @@ export const SellerFeaturePanel = defineComponent({
         { class: "feature-export-list" },
         retainedExports.value.map((saved) =>
           h("article", { class: "feature-record" }, [
-            h("h3", "Saved export"),
-            h(
-              "p",
-              {
-                creating: "Creation in progress",
-                ready: "Ready to download",
-                cleanup_pending: "Cleanup pending",
-              }[saved.status],
-            ),
+            h("div", { class: "feature-record-heading" }, [
+              h("h3", "Saved export"),
+              h(
+                "span",
+                {
+                  class: [
+                    "license-access-badge",
+                    saved.status === "ready" && "license-access-active",
+                    saved.status === "cleanup_pending" &&
+                      "license-access-suspended",
+                  ],
+                },
+                {
+                  creating: "Creation in progress",
+                  ready: "Ready to download",
+                  cleanup_pending: "Cleanup pending",
+                }[saved.status],
+              ),
+            ]),
             saved.expiresAt !== null &&
               saved.expiresAt > 0 &&
               h("p", `Expires ${new Date(saved.expiresAt).toLocaleString()}`),
@@ -1793,16 +1872,21 @@ export const SellerFeaturePanel = defineComponent({
             button(
               "Delete saved export",
               () =>
-                confirm("Delete this saved encrypted export?", async () => {
-                  await mutate(
-                    `/exports/${encodeURIComponent(saved.id)}`,
-                    {},
-                    "DELETE",
-                  );
-                  if (bundle.value?.id === saved.id) bundle.value = null;
-                  await loadExports();
-                }, exportDeletion),
+                confirm(
+                  "Delete this saved encrypted export?",
+                  async () => {
+                    await mutate(
+                      `/exports/${encodeURIComponent(saved.id)}`,
+                      {},
+                      "DELETE",
+                    );
+                    if (bundle.value?.id === saved.id) bundle.value = null;
+                    await loadExports();
+                  },
+                  exportDeletion,
+                ),
               pending.value || saved.status === "creating",
+              "button-danger",
             ),
           ]),
         ),
@@ -1822,7 +1906,7 @@ export const SellerFeaturePanel = defineComponent({
             })),
           ].map((file) =>
             button(
-              `Download ${file.name}`,
+              ["Download ", metadata(file.name)],
               () =>
                 void run(async () => {
                   const data = await props.api.request<Blob>(
@@ -1838,16 +1922,21 @@ export const SellerFeaturePanel = defineComponent({
           button(
             "Delete export",
             () =>
-              confirm("Delete this encrypted export?", async () => {
-                await mutate(
-                  `/exports/${encodeURIComponent(bundle.value!.id)}`,
-                  {},
-                  "DELETE",
-                );
-                bundle.value = null;
-                await loadExports();
-              }, exportDeletion),
+              confirm(
+                "Delete this encrypted export?",
+                async () => {
+                  await mutate(
+                    `/exports/${encodeURIComponent(bundle.value!.id)}`,
+                    {},
+                    "DELETE",
+                  );
+                  bundle.value = null;
+                  await loadExports();
+                },
+                exportDeletion,
+              ),
             pending.value,
+            "button-danger",
           ),
         ]),
       disclosure(
@@ -1892,7 +1981,12 @@ export const SellerFeaturePanel = defineComponent({
             },
           ),
         ],
-        proofArrived || (retainedExports.value.length === 0 && !bundle.value),
+        {
+          create: true,
+          open:
+            proofArrived ||
+            (retainedExports.value.length === 0 && !bundle.value),
+        },
       ),
     ];
     const customer = () => [
@@ -1937,7 +2031,11 @@ export const SellerFeaturePanel = defineComponent({
       ),
       closure.value?.request &&
         h("div", { class: "feature-request-status" }, [
-          h("strong", human(closure.value.request.status)),
+          h(
+            "strong",
+            { class: "feature-badge" },
+            human(closure.value.request.status),
+          ),
           ...closure.value.request.blockers.map((reason) =>
             h("p", human(reason)),
           ),
@@ -1956,6 +2054,7 @@ export const SellerFeaturePanel = defineComponent({
               closure.value = await props.api.get("/account/closure");
             }),
           pending.value,
+          "button-danger",
         ),
     ];
     const recovery = () => [
@@ -1973,18 +2072,15 @@ export const SellerFeaturePanel = defineComponent({
         },
         [
           h(
-              "h2",
-              {
-                commerce: "Tax settings",
-                sandbox: "Sandbox",
-                operations: "Operations",
-                webhooks: "Outgoing webhooks",
-                security: "Account security",
-                export: "Tenant export",
-                customer: "Account privacy and notifications",
-                recovery: "Recover seller access",
-              }[props.page],
-            ),
+            "h2",
+            { class: "feature-panel-title" },
+            panels[props.page]
+              ? [
+                  icon(panels[props.page]!.glyph),
+                  h("span", panels[props.page]!.title),
+                ]
+              : undefined,
+          ),
           loading.value
             ? h("p", { role: "status" }, "Loading settings…")
             : error.value
@@ -2020,7 +2116,14 @@ export const SellerFeaturePanel = defineComponent({
                 "p",
                 "Shown once. Save these secrets securely before leaving this panel.",
               ),
-              h("pre", oneTime.value),
+              h(
+                "pre",
+                oneTime.value
+                  .split("\n")
+                  .flatMap((value, index) =>
+                    index ? ["\n", metadata(value)] : [metadata(value)],
+                  ),
+              ),
               button(
                 "Save secrets offline",
                 () =>

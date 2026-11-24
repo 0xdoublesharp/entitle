@@ -390,10 +390,17 @@ test("login email submission trims input, prevents duplicate in-flight requests,
     false,
   );
   assert.equal(findButton("Sending link…").disabled, true);
+  await input("#login-email", "edited-while-sending@example.test");
   pending.resolve(Response.json({ ok: true }));
   await flush();
+  const confirmation = find('.inline-notice[role="status"]');
+  assert.equal(confirmation.querySelector("h3")?.textContent, "Check your email");
+  assert.equal(
+    confirmation.querySelector("strong")?.textContent,
+    "known@example.test",
+  );
   assert.match(
-    find(".inline-notice").textContent || "",
+    confirmation.textContent || "",
     /If an account exists/,
   );
   await input("#login-email", "different@example.test");

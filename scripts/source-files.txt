@@ -358,6 +358,7 @@ web/docs.ts
 web/documentation.ts
 web/features.ts
 web/frameworks.ts
+web/icons.ts
 web/index.html
 web/main.ts
 web/marketing-analytics.test.ts

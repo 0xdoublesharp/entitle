@@ -30,8 +30,9 @@ import {
 import type { PrivilegedPolicy } from "./oidc.ts";
 import { planPrice, stripeExponent } from "./checkout.ts";
 import type { EmailChangeDraft } from "./features.ts";
-import { appHeader } from "./chrome.ts";
+import { appHeader, sellerHelpLink } from "./chrome.ts";
 import { applicationHref } from "./navigation.ts";
+import { disclosureLabel, icon, icons } from "./icons.ts";
 
 interface Info {
   deploymentMode: "standalone" | "hosted";
@@ -151,21 +152,21 @@ const emailChangeDraft = (value: unknown): value is EmailChangeDraft => {
 };
 
 const sellerPages = [
-  { id: "overview", label: "Overview" },
-  { id: "onboarding", label: "Getting started" },
-  { id: "products", label: "Products" },
-  { id: "releases", label: "Releases" },
-  { id: "licenses", label: "Licenses" },
-  { id: "setup", label: "Client setup" },
-  { id: "keys", label: "API keys" },
-  { id: "billing", label: "Billing" },
-  { id: "commerce", label: "Tax settings" },
-  { id: "sandbox", label: "Sandbox" },
-  { id: "operations", label: "Operations" },
-  { id: "webhooks", label: "Webhooks" },
-  { id: "security", label: "Account security" },
-  { id: "export", label: "Export" },
-  { id: "workspaces", label: "Workspaces" },
+  { id: "overview", label: "Overview", icon: icons.grid },
+  { id: "onboarding", label: "Getting started", icon: icons.compass },
+  { id: "products", label: "Products", icon: icons.box },
+  { id: "releases", label: "Releases", icon: icons.upload },
+  { id: "licenses", label: "Licenses", icon: icons.ticket },
+  { id: "setup", label: "Client setup", icon: icons.code },
+  { id: "keys", label: "API keys", icon: icons.key },
+  { id: "billing", label: "Billing", icon: icons.card },
+  { id: "commerce", label: "Tax settings", icon: icons.receipt },
+  { id: "sandbox", label: "Sandbox", icon: icons.flask },
+  { id: "operations", label: "Operations", icon: icons.pulse },
+  { id: "webhooks", label: "Webhooks", icon: icons.webhook },
+  { id: "security", label: "Account security", icon: icons.shield },
+  { id: "export", label: "Export", icon: icons.download },
+  { id: "workspaces", label: "Workspaces", icon: icons.workspace },
 ] as const;
 const sellerPageGroups = [
   {
@@ -179,6 +180,16 @@ const sellerPageGroups = [
   },
 ];
 type SellerPage = (typeof sellerPages)[number]["id"];
+const licenseColumns = [
+  "Customer",
+  "Product and plan",
+  "Seats",
+  "Billing",
+  "Paid through / Expires",
+  "Access",
+] as const;
+const releaseVersions = new Intl.Collator("en", { numeric: true });
+const copyIcon = "M8 8h12v12H8Z M16 8V4H4v12h4";
 
 const hasPlatformSubscription = (tenant: Tenant | undefined) =>
   !!tenant?.platform_subscription_id &&
@@ -207,6 +218,26 @@ const billingStatusLabel = (status: string) =>
       paused: "Paused",
     }) as Record<string, string>
   )[status] || status.replaceAll("_", " ");
+const licenseBillingLabel = (license: Overview["licenses"][number]) => {
+  if (license.provenance === "complimentary") return "No subscription";
+  const label =
+    (
+      ({
+        active: "Active",
+        canceled: "Canceled",
+        cancelled: "Canceled",
+        refunded: "Refunded",
+        trialing: "Trial",
+        trial: "Trial",
+        past_due: "Past due",
+        unpaid: "Unpaid",
+        incomplete: "Incomplete",
+        incomplete_expired: "Expired",
+        paused: "Paused",
+      }) as Record<string, string>
+    )[license.billing_status] || license.billing_status.replaceAll("_", " ");
+  return label ? label.charAt(0).toUpperCase() + label.slice(1) : "";
+};
 const readableBytes = (bytes: number) => {
   const [size, unit] =
     bytes >= 1073741824
@@ -218,8 +249,32 @@ const readableBytes = (bytes: number) => {
           : ([1, "B"] as const);
   return `${(bytes / size).toLocaleString("en-US", { maximumFractionDigits: 1 })} ${unit}`;
 };
-const btn = (label: string, action: () => void, disabled = false) =>
-  h("button", { type: "button", onClick: action, disabled }, label);
+const btn = (
+  label: string,
+  action: () => void,
+  disabled = false,
+  options: { icon?: string; class?: string | undefined } = {},
+) =>
+  h(
+    "button",
+    { type: "button", onClick: action, disabled, class: options.class },
+    options.icon ? [icon(options.icon), label] : label,
+  );
+const metadata = (value: string) =>
+  h("code", { class: "metadata-chip" }, value);
+const keyDate = (label: string, value: number | null, fallback: string) => {
+  const date = value === null ? null : new Date(value);
+  return h("span", { class: "key-fact" }, [
+    `${label}: `,
+    date && Number.isFinite(date.getTime())
+      ? h(
+          "time",
+          { class: "metadata-chip", datetime: date.toISOString() },
+          date.toLocaleDateString(),
+        )
+      : fallback,
+  ]);
+};
 const workspaceSlug = (value: string) =>
   value
     .normalize("NFKD")
@@ -355,6 +410,7 @@ export function mountSellerApp(
           token = ref<string | null>(null),
           secret = ref("");
         const setupProduct = ref("");
+        const signInRecipient = ref("");
         const setupStep = ref<string | null>(null);
         const guidedSetup = ref(false);
         const integrationConfirmations = ref<Record<string, boolean>>({});
@@ -364,8 +420,13 @@ export function mountSellerApp(
         const licenseProduct = ref("");
         const licenseType = ref("");
         const licenseAccess = ref("");
-        const licenseSort = ref("Customer");
+        const licenseSort = ref<(typeof licenseColumns)[number]>("Customer");
         const licenseDescending = ref(false);
+        const sortLicenses = (column: (typeof licenseColumns)[number]) => {
+          licenseDescending.value =
+            licenseSort.value === column && !licenseDescending.value;
+          licenseSort.value = column;
+        };
         const resetLicenseFilters = () => {
           licenseQuery.value = "";
           licenseProduct.value = "";
@@ -552,6 +613,7 @@ export function mountSellerApp(
           fields.value["tenant-slug"] = "";
           slugEdited.value = false;
           workspaceCreateOpen.value = false;
+          signInRecipient.value = "";
           clearComplimentary();
           complimentaryWorkspace = "";
           privilegedPolicy.value = "hardware";
@@ -965,7 +1027,7 @@ export function mountSellerApp(
             "complimentary-issue",
           ].includes(id)
             ? h("details", { id: `${id}-disclosure`, class: "seller-create" }, [
-                h("summary", label),
+                h("summary", disclosureLabel(label, icons.plus)),
                 node,
               ])
             : node;
@@ -1043,7 +1105,7 @@ export function mountSellerApp(
               h(
                 "summary",
                 { "aria-label": "Workspace and account actions" },
-                "More",
+                disclosureLabel("More", icons.more),
               ),
               h("div", { class: "seller-mobile-tools-content" }, [
                 h(
@@ -1058,6 +1120,7 @@ export function mountSellerApp(
                     void run(dashboard);
                   },
                   busy.value,
+                  { icon: icons.refresh },
                 ),
                 btn(
                   "New workspace",
@@ -1069,8 +1132,9 @@ export function mountSellerApp(
                     );
                   },
                   busy.value,
+                  { icon: icons.plus },
                 ),
-                btn("Sign out", signOut, busy.value),
+                btn("Sign out", signOut, busy.value, { icon: icons.logout }),
               ]),
             ],
           );
@@ -1083,11 +1147,10 @@ export function mountSellerApp(
                 hosted.value &&
                   h("div", { class: "workspace-selector" }, [
                     h("div", { class: "workspace-selector-title" }, [
-                      h(
-                        "label",
-                        { for: "tenant-select" },
+                      h("label", { for: "tenant-select" }, [
+                        icon(icons.workspace),
                         "Publisher workspace",
-                      ),
+                      ]),
                       h(
                         "p",
                         {
@@ -1134,7 +1197,14 @@ export function mountSellerApp(
                         ),
                     ),
                   ]),
-                btn("Refresh dashboard", () => void run(dashboard), busy.value),
+                btn(
+                  "Refresh dashboard",
+                  () => void run(dashboard),
+                  busy.value,
+                  {
+                    icon: icons.refresh,
+                  },
+                ),
               ]),
               hosted.value &&
                 h(
@@ -1149,7 +1219,10 @@ export function mountSellerApp(
                       ).open;
                     },
                   },
-                  [h("summary", "New workspace"), workspaceForm()],
+                  [
+                    h("summary", disclosureLabel("New workspace", icons.plus)),
+                    workspaceForm(),
+                  ],
                 ),
             ],
           );
@@ -1191,7 +1264,12 @@ export function mountSellerApp(
           plan: SellerProduct["plans"][number],
         ) => {
           const price = planPrice(plan);
-          return `${plan.name} · ${plan.site_allowance} ${seatUnit(product)}${plan.site_allowance === 1 ? "" : "s"} · ${plan.stripe_price_id}${price ? ` · ${price}` : ""}${plan.archived_at ? " · Archived" : ""}`;
+          return [
+            `${plan.name} · ${plan.site_allowance} ${seatUnit(product)}${plan.site_allowance === 1 ? "" : "s"} · `,
+            metadata(plan.stripe_price_id),
+            price && ` · ${price}`,
+            plan.archived_at && " · Archived",
+          ];
         };
         const startEdit = (product: SellerProduct) => {
           editProduct.value = product.id;
@@ -1278,13 +1356,74 @@ export function mountSellerApp(
           overview.value!.products.find(
             (p) => p.slug === fields.value["config-product"],
           );
-        const config = () =>
-          setupConfiguration(
-            configProduct(),
-            window.location.origin,
+        const renderClientSetup = () => {
+          const product = configProduct();
+          const origin = window.location.origin;
+          const slug = fields.value["config-product"] || "your-product";
+          const endpoint = `${origin}/api/v1/tenants/${encodeURIComponent(selected.value)}`;
+          const framework = frameworkOf(product);
+          const wordpress = framework === "wordpress";
+          const configuration = setupConfiguration(
+            product,
+            origin,
             selected.value,
-            fields.value["config-product"] || "your-product",
+            slug,
           );
+          return h("div", { class: "client-setup" }, [
+            select(
+              "config-product",
+              "Configuration product",
+              overview.value!.products.map((item) => ({
+                value: item.slug,
+                label: item.name,
+              })),
+            ),
+            h("section", { class: "feature-card client-adapter" }, [
+              h("h3", { class: "panel-icon-heading" }, [
+                icon(icons.code),
+                `${frameworkInfo[framework].name} adapter`,
+              ]),
+              h("dl", { class: "record-metadata client-adapter-metadata" }, [
+                h("div", [
+                  h("dt", "Tenant API endpoint"),
+                  h("dd", metadata(endpoint)),
+                ]),
+                h("div", [h("dt", "Product slug"), h("dd", metadata(slug))]),
+                wordpress && product?.plugin_basename
+                  ? h("div", [
+                      h("dt", "Plugin basename"),
+                      h("dd", metadata(product.plugin_basename)),
+                    ])
+                  : null,
+              ]),
+              h("div", { class: "client-config" }, [
+                h("div", { class: "client-config-heading" }, [
+                  h(
+                    "label",
+                    { for: "php-config" },
+                    wordpress
+                      ? "Tenant-specific PHP configuration"
+                      : "Tenant-specific setup configuration",
+                  ),
+                  btn(
+                    wordpress
+                      ? "Copy PHP configuration"
+                      : "Copy setup configuration",
+                    () => void run(() => copy(configuration, "php-config")),
+                    busy.value,
+                    { icon: copyIcon },
+                  ),
+                ]),
+                h("textarea", {
+                  id: "php-config",
+                  readonly: true,
+                  rows: 5,
+                  value: configuration,
+                }),
+              ]),
+            ]),
+          ]);
+        };
         const productConfig = () => {
           switch (fields.value["product-framework"]) {
             case "joomla":
@@ -1322,18 +1461,47 @@ export function mountSellerApp(
           h(
             "ul",
             { class: "record-list key-records" },
-            keys.value.map((key) =>
-              h("li", [
-                `${key.name} · ${key.revoked_at ? "Revoked" : key.expires_at === null ? "Replace required" : key.expires_at <= Date.now() ? "Expired" : "Active"} `,
-                h(
-                  "p",
-                  `Prefix: ${key.display_prefix} · Permissions: ${(JSON.parse(key.scopes) as string[]).join(", ")}`,
-                ),
-                h(
-                  "p",
-                  `Expires: ${key.expires_at === null ? "Unavailable" : new Date(key.expires_at).toLocaleDateString()} · Last used: ${key.last_used_at === null ? "Never" : new Date(key.last_used_at).toLocaleDateString()}`,
-                ),
-                !key.revoked_at &&
+            keys.value.map((key) => {
+              const revoked = key.revoked_at !== null;
+              const status = revoked
+                ? "Revoked"
+                : key.expires_at === null
+                  ? "Replace required"
+                  : key.expires_at <= Date.now()
+                    ? "Expired"
+                    : "Active";
+              return h("li", { key: key.id }, [
+                h("div", { class: "key-record-heading" }, [
+                  h("h3", key.name),
+                  h(
+                    "span",
+                    {
+                      class: [
+                        "feature-badge",
+                        revoked
+                          ? "is-revoked"
+                          : status === "Active"
+                            ? "is-active"
+                            : "is-attention",
+                      ],
+                    },
+                    status,
+                  ),
+                ]),
+                h("div", { class: "record-metadata key-facts" }, [
+                  h("span", { class: "key-fact" }, [
+                    "Prefix: ",
+                    metadata(key.display_prefix),
+                  ]),
+                  h("span", { class: "key-fact" }, [
+                    "Permissions: ",
+                    metadata((JSON.parse(key.scopes) as string[]).join(", ")),
+                  ]),
+                  keyDate("Created", key.created_at, "Unavailable"),
+                  keyDate("Last used", key.last_used_at, "Never"),
+                  keyDate("Expires", key.expires_at, "Unavailable"),
+                ]),
+                !revoked &&
                   btn(
                     "Revoke API key",
                     () =>
@@ -1355,9 +1523,10 @@ export function mountSellerApp(
                         "Automation that uses this key stops working immediately.",
                       ),
                     busy.value,
+                    { class: "button-danger" },
                   ),
-              ]),
-            ),
+              ]);
+            }),
           );
         const renderRecovery = () =>
           section("Workspace recovery", [
@@ -1395,6 +1564,22 @@ export function mountSellerApp(
               hidden: activePage.value !== id,
             },
             [section(title, children)],
+          );
+        const sellerNavItem = (page: (typeof sellerPages)[number]) =>
+          h(
+            "button",
+            {
+              id: `seller-nav-${page.id}`,
+              type: "button",
+              class: "seller-nav-link",
+              "aria-controls": `seller-panel-${page.id}`,
+              "aria-current": activePage.value === page.id ? "page" : undefined,
+              disabled: busy.value,
+              onClick: () => {
+                activePage.value = page.id;
+              },
+            },
+            [icon(page.icon), page.label],
           );
         const setupCurrentProduct = () =>
           overview.value?.products.find(
@@ -1632,7 +1817,7 @@ export function mountSellerApp(
                 "ol",
                 { class: "setup-steps", "aria-label": "Setup steps" },
                 steps.map((step, stepIndex) =>
-                  h("li", [
+                  h("li", { key: step.id }, [
                     h(
                       "button",
                       {
@@ -1649,13 +1834,21 @@ export function mountSellerApp(
                         h(
                           "span",
                           { class: "setup-step-number", "aria-hidden": "true" },
-                          step.complete ? "✓" : String(stepIndex + 1),
+                          step.complete
+                            ? icon(icons.check)
+                            : String(stepIndex + 1),
                         ),
                         h("span", [
                           h("strong", step.title),
                           h(
                             "span",
-                            { class: "setup-step-status" },
+                            {
+                              class: [
+                                "setup-step-status",
+                                "feature-badge",
+                                step.complete && "is-active",
+                              ],
+                            },
                             setupStepStatus(step),
                           ),
                         ]),
@@ -1673,7 +1866,14 @@ export function mountSellerApp(
                     { class: "eyebrow" },
                     `Step ${index + 1} of ${steps.length}`,
                   ),
-                  h("h3", { id: "setup-task-title" }, current.title),
+                  h(
+                    "h3",
+                    { id: "setup-task-title", class: "panel-icon-heading" },
+                    [
+                      icon(sellerPages.find((page) => page.id === current.id)!.icon),
+                      current.title,
+                    ],
+                  ),
                   h("p", current.description),
                   product &&
                     h(
@@ -1695,6 +1895,7 @@ export function mountSellerApp(
                         : current.action,
                       () => openSetupTask(current),
                       busy.value || (!product && current.id !== "products"),
+                      { icon: icons.arrow },
                     ),
                     index > 0 &&
                       btn(
@@ -1712,6 +1913,7 @@ export function mountSellerApp(
                           setupStep.value = steps[index + 1]!.id;
                         },
                         busy.value,
+                        { icon: icons.arrow },
                       ),
                   ]),
                   h("p", { class: "setup-location" }, [
@@ -1736,6 +1938,7 @@ export function mountSellerApp(
                   activePage.value = "billing";
                 },
                 busy.value,
+                { icon: icons.card },
               ),
             ]),
           ]);
@@ -1791,6 +1994,20 @@ export function mountSellerApp(
         const renderDashboard = () => {
           const data = overview.value!,
             m = data.metrics;
+          const stripeStatus = data.tenant.stripe_status;
+          const billingStatus = data.tenant.billing_status;
+          const billingNeedsAttention =
+            data.tenant.suspended ||
+            ["past_due", "unpaid", "incomplete", "incomplete_expired", "paused"].includes(
+              billingStatus,
+            );
+          const allDownloadsInWindow =
+            m.downloads.successfulResponses === m.downloads.last30Days;
+          const releasedProducts = new Set(
+            data.releases
+              .filter((release) => !release.withdrawn)
+              .map((release) => release.product_id),
+          ).size;
           type License = Overview["licenses"][number];
           const expiry = (license: License) =>
             license.provenance === "complimentary"
@@ -1829,6 +2046,14 @@ export function mountSellerApp(
           const editing = data.products.find(
             (product) => product.id === editProduct.value,
           );
+          const activeFilterCount = [
+            licenseProduct.value,
+            licenseType.value,
+            licenseAccess.value,
+          ].filter(Boolean).length;
+          const hasLicenseFilters = Boolean(
+            licenseQuery.value.trim() || activeFilterCount,
+          );
           const licenses = data.licenses
             .filter((license) => {
               const query = licenseQuery.value.trim().toLowerCase();
@@ -1840,6 +2065,7 @@ export function mountSellerApp(
                     license.plan_name,
                     license.id,
                     license.billing_status,
+                    licenseBillingLabel(license),
                     license.provenance === "complimentary"
                       ? "complimentary"
                       : "paid",
@@ -1904,12 +2130,23 @@ export function mountSellerApp(
               h("div", { class: "billing-layout" }, [
                 h("section", { class: "feature-card" }, [
                   h("div", { class: "feature-section-heading" }, [
-                    h("h3", "Customer payments"),
+                    h("h3", { class: "panel-icon-heading" }, [
+                      icon(icons.card),
+                      "Customer payments",
+                    ]),
                     hosted.value &&
                       h(
                         "span",
-                        { class: "feature-badge" },
-                        stripeStatusLabel(data.tenant.stripe_status),
+                        {
+                          class: [
+                            "feature-badge",
+                            ["connected", "platform"].includes(stripeStatus) &&
+                              "is-active",
+                            ["restricted", "disconnected"].includes(stripeStatus) &&
+                              "is-attention",
+                          ],
+                        },
+                        stripeStatusLabel(stripeStatus),
                       ),
                   ]),
                   h(
@@ -1919,10 +2156,14 @@ export function mountSellerApp(
                       : "Stripe is optional for product setup and complimentary licenses. Receive customer payments through your Stripe account when you are ready to sell paid plans.",
                   ),
                   hosted.value &&
-                    h(
-                      "p",
-                      `${applicationFeePercent.value}% application fee on new customer subscriptions and their renewals. Stripe fees are separate.`,
-                    ),
+                    h("p", [
+                      h(
+                        "strong",
+                        { class: "tabular-numbers" },
+                        `${applicationFeePercent.value}%`,
+                      ),
+                      " application fee on new customer subscriptions and their renewals. Stripe fees are separate.",
+                    ]),
                   hosted.value
                     ? btn(
                         "Connect Stripe",
@@ -1931,6 +2172,7 @@ export function mountSellerApp(
                             redirect(tenantApi(), "/stripe/connect"),
                           ),
                         busy.value || data.billingAvailable === false,
+                        { icon: icons.external },
                       )
                     : h(
                         "p",
@@ -1939,17 +2181,25 @@ export function mountSellerApp(
                 ]),
                 h("section", { class: "feature-card" }, [
                   h("div", { class: "feature-section-heading" }, [
-                    h(
-                      "h3",
+                    h("h3", { class: "panel-icon-heading" }, [
+                      icon(icons.receipt),
                       hosted.value
                         ? "Workspace subscription"
                         : "Your installation",
-                    ),
+                    ]),
                     hosted.value &&
                       h(
                         "span",
-                        { class: "feature-badge" },
-                        `${billingStatusLabel(data.tenant.billing_status)}${data.tenant.suspended ? " · Suspended" : ""}`,
+                        {
+                          class: [
+                            "feature-badge",
+                            billingNeedsAttention
+                              ? "is-attention"
+                              : ["active", "trial", "trialing"].includes(billingStatus) &&
+                                "is-active",
+                          ],
+                        },
+                        `${billingStatusLabel(billingStatus)}${data.tenant.suspended ? " · Suspended" : ""}`,
                       ),
                   ]),
                   h("dl", { class: "billing-allowances" }, [
@@ -1976,6 +2226,7 @@ export function mountSellerApp(
                               redirect(tenantApi(), "/platform/checkout"),
                             ),
                           busy.value || data.billingAvailable === false,
+                          { icon: icons.external },
                         ),
                       btn(
                         "Platform billing",
@@ -1984,11 +2235,15 @@ export function mountSellerApp(
                             redirect(tenantApi(), "/platform/portal"),
                           ),
                         busy.value || data.billingAvailable === false,
+                        { icon: icons.external },
                       ),
                     ]),
                   hosted.value &&
                     h("details", { class: "billing-plan-details" }, [
-                      h("summary", "Plan and billing details"),
+                      h(
+                        "summary",
+                        disclosureLabel("Plan and billing details", icons.card),
+                      ),
                       h(
                         "p",
                         `Platform trial ends: ${data.tenant.trial_ends_at ? new Date(data.tenant.trial_ends_at).toLocaleDateString() : "Not applicable"}.`,
@@ -2004,7 +2259,7 @@ export function mountSellerApp(
                           target: "_blank",
                           rel: "noopener",
                         },
-                        "View plans and billing guide",
+                        ["View plans and billing guide", icon(icons.external)],
                       ),
                     ]),
                 ]),
@@ -2019,11 +2274,17 @@ export function mountSellerApp(
               h(
                 "section",
                 {
-                  class: "panel setup-overview",
+                  class: [
+                    "panel setup-overview",
+                    data.products.length
+                      ? "setup-overview-compact"
+                      : "setup-overview-empty",
+                  ],
                   "aria-labelledby": "setup-overview-title",
                 },
                 [
-                  h("div", [
+                  icon(icons.compass, "ui-icon setup-overview-icon"),
+                  h("div", { class: "setup-overview-copy" }, [
                     h("p", { class: "eyebrow" }, "Getting started"),
                     h(
                       "h2",
@@ -2037,18 +2298,80 @@ export function mountSellerApp(
                       "A guided checklist for your first product, release, integration and license. Stripe is optional.",
                     ),
                   ]),
-                  btn(
-                    setupSteps().every((step) => step.complete)
-                      ? "Review setup"
-                      : setupSteps().some((step) => step.complete)
-                        ? "Continue setup"
-                        : "Start setup",
-                    openSetup,
-                    busy.value,
-                  ),
+                  data.products.length === 0 &&
+                    h(
+                      "ol",
+                      {
+                        class: "setup-overview-steps",
+                        "aria-label": "Setup steps",
+                      },
+                      setupSteps().map((step, index) =>
+                        h(
+                          "li",
+                          {
+                            key: step.id,
+                            class: step.complete && "setup-overview-done",
+                          },
+                          [
+                            h(
+                              "span",
+                              {
+                                class: "setup-overview-step-number",
+                                "aria-hidden": "true",
+                              },
+                              step.complete ? icon(icons.check) : String(index + 1),
+                            ),
+                            h("span", step.title),
+                          ],
+                        ),
+                      ),
+                    ),
+                  data.products.length === 0
+                    ? h("div", { class: "setup-overview-actions" }, [
+                        btn("Start setup", openSetup, busy.value, {
+                          class: "setup-overview-primary",
+                        }),
+                        btn(
+                          "Create your first product",
+                          () => openSetupTask(setupSteps()[0]),
+                          busy.value,
+                          {
+                            icon: icons.plus,
+                            class: "button-secondary setup-overview-secondary",
+                          },
+                        ),
+                      ])
+                    : btn(
+                        setupSteps().every((step) => step.complete)
+                          ? "Review setup"
+                          : setupSteps().some((step) => step.complete)
+                            ? "Continue setup"
+                            : "Start setup",
+                        openSetup,
+                        busy.value,
+                        { class: "setup-overview-primary" },
+                      ),
                 ],
               ),
             panel("overview", "Your workspace in numbers", [
+              h(
+                "dl",
+                {
+                  class: [
+                    "overview-summary",
+                    data.products.length === 0 && "overview-summary-empty",
+                  ],
+                },
+                [
+                  metric("Entitled licenses", m.licenses.entitled!),
+                  metric(
+                    "Seats in use",
+                    `${m.seats.used} / ${m.seats.allowance}`,
+                  ),
+                  metric("Downloads last 30 days", m.downloads.last30Days!),
+                  metric("Published releases", m.releases.published!),
+                ],
+              ),
               h(
                 "section",
                 {
@@ -2097,20 +2420,6 @@ export function mountSellerApp(
                 ],
               ),
               h(
-                "p",
-                { class: "muted" },
-                "Licenses, downloads and releases across all products in this workspace.",
-              ),
-              h("dl", { class: "overview-summary" }, [
-                metric("Entitled licenses", m.licenses.entitled!),
-                metric(
-                  "Seats in use",
-                  `${m.seats.used} / ${m.seats.allowance}`,
-                ),
-                metric("Downloads last 30 days", m.downloads.last30Days!),
-                metric("Published releases", m.releases.published!),
-              ]),
-              h(
                 "section",
                 {
                   id: "metrics-details",
@@ -2130,12 +2439,14 @@ export function mountSellerApp(
                       h("h4", "Licenses"),
                       h(
                         "dl",
-                        Object.entries(m.licenses).map(([label, value]) =>
-                          metric(
-                            label.charAt(0).toUpperCase() + label.slice(1),
-                            value.toLocaleString(),
+                        Object.entries(m.licenses)
+                          .filter(([label]) => label !== "entitled")
+                          .map(([label, value]) =>
+                            metric(
+                              label.charAt(0).toUpperCase() + label.slice(1),
+                              value.toLocaleString(),
+                            ),
                           ),
-                        ),
                       ),
                     ]),
                     h("section", { class: "analytics-card" }, [
@@ -2146,10 +2457,6 @@ export function mountSellerApp(
                         metric(
                           "Development",
                           m.installations.developmentActive!,
-                        ),
-                        metric(
-                          "Seats used",
-                          `${m.seats.used} / ${m.seats.allowance}`,
                         ),
                         metric("Seats available", m.seats.available!),
                       ]),
@@ -2163,21 +2470,33 @@ export function mountSellerApp(
                     h("section", { class: "analytics-card" }, [
                       h("h4", "Downloads & releases"),
                       h("dl", [
-                        metric(
-                          "Successful downloads",
-                          m.downloads.successfulResponses!,
-                        ),
-                        metric(
-                          "Downloads · last 30 days",
-                          m.downloads.last30Days!,
-                        ),
-                        ...Object.entries(m.releases).map(([label, value]) =>
+                        !allDownloadsInWindow &&
                           metric(
-                            `${label.charAt(0).toUpperCase()}${label.slice(1)} releases`,
-                            value,
+                            "Successful downloads · all time",
+                            m.downloads.successfulResponses!,
                           ),
+                        metric(
+                          "Products with a live release",
+                          `${releasedProducts} / ${data.products.length}`,
                         ),
+                        metric("Withdrawn releases", m.releases.withdrawn!),
+                        m.licenses.entitled! > 1 &&
+                          metric(
+                            "Downloads per entitled license · 30 days",
+                            (
+                              m.downloads.last30Days! / m.licenses.entitled!
+                            ).toLocaleString(undefined, {
+                              maximumFractionDigits: 1,
+                            }),
+                          ),
                       ]),
+                      allDownloadsInWindow &&
+                        m.downloads.successfulResponses! > 0 &&
+                        h(
+                          "p",
+                          { class: "analytics-footnote" },
+                          "The 30-day count includes all successful downloads.",
+                        ),
                       btn("View daily reports", () => {
                         activePage.value = "operations";
                       }),
@@ -2433,9 +2752,14 @@ export function mountSellerApp(
                 "ul",
                 { class: "record-list product-records" },
                 data.products.map((product) =>
-                  h("li", [
-                    h("strong", product.name),
-                    ` · ${product.slug} · ${frameworkInfo[frameworkOf(product)].name}${frameworkOf(product) === "wordpress" ? ` · ${product.plugin_basename}` : ""}`,
+                  h("li", { key: product.id }, [
+                    h("h3", product.name),
+                    h("div", { class: "record-metadata" }, [
+                      h("span", frameworkInfo[frameworkOf(product)].name),
+                      metadata(product.slug),
+                      frameworkOf(product) === "wordpress" &&
+                        metadata(product.plugin_basename),
+                    ]),
                     h(
                       "ul",
                       product.plans.map((plan) =>
@@ -2771,69 +3095,84 @@ export function mountSellerApp(
               h(
                 "ul",
                 { class: "record-list release-records" },
-                data.releases.map((release) =>
-                  h("li", [
-                    `Version ${release.version} · ${release.withdrawn ? "Withdrawn" : "Published"} `,
-                    h(
-                      "ul",
-                      release.assets?.map((asset) =>
+                data.releases
+                  .toSorted((a, b) =>
+                    releaseVersions.compare(b.version, a.version),
+                  )
+                  .map((release) =>
+                    h("li", { key: release.id }, [
+                      h("div", { class: "release-record-heading" }, [
                         h(
-                          "li",
-                          `${asset.target} · ${asset.filename} · ${readableBytes(asset.size)} · SHA-256 ${asset.checksum}`,
+                          "h3",
+                          data.products.find(
+                            (product) => product.id === release.product_id,
+                          )?.name ?? "Product unavailable",
                         ),
-                      ),
-                    ),
-                    !release.withdrawn &&
-                      btn(
-                        "Withdraw release",
-                        () =>
-                          confirm(
-                            `Withdraw version ${release.version}?`,
-                            "Confirm withdrawal",
-                            async () => {
-                              await tenantApi().post(
-                                `/releases/${encodeURIComponent(release.id)}/withdraw`,
-                                {},
-                              );
-                            },
-                            "Customers can no longer download this version.",
-                          ),
-                        busy.value,
-                      ),
-                  ]),
-                ),
+                        h(
+                          "span",
+                          {
+                            class: [
+                              "license-access-badge",
+                              release.withdrawn
+                                ? "license-access-revoked"
+                                : "license-access-active",
+                            ],
+                          },
+                          release.withdrawn ? "Withdrawn" : "Published",
+                        ),
+                      ]),
+                      h("div", { class: "record-metadata" }, [
+                        "Version ",
+                        h(
+                          "code",
+                          { class: "metadata-chip release-version" },
+                          release.version,
+                        ),
+                      ]),
+                      release.assets && release.assets.length > 0
+                        ? h(
+                            "ul",
+                            { class: "release-assets" },
+                            release.assets.map((asset) =>
+                              h(
+                                "li",
+                                { class: "record-metadata", key: asset.target },
+                                [
+                                  metadata(asset.target),
+                                  metadata(asset.filename),
+                                  metadata(readableBytes(asset.size)),
+                                  h("details", { class: "release-checksum" }, [
+                                    h("summary", disclosureLabel("SHA-256")),
+                                    metadata(asset.checksum),
+                                  ]),
+                                ],
+                              ),
+                            ),
+                          )
+                        : null,
+                      !release.withdrawn &&
+                        btn(
+                          "Withdraw release",
+                          () =>
+                            confirm(
+                              `Withdraw version ${release.version}?`,
+                              "Confirm withdrawal",
+                              async () => {
+                                await tenantApi().post(
+                                  `/releases/${encodeURIComponent(release.id)}/withdraw`,
+                                  {},
+                                );
+                              },
+                              "Customers can no longer download this version.",
+                            ),
+                          busy.value,
+                          { class: "button-danger" },
+                        ),
+                    ]),
+                  ),
               ),
             ]),
-            panel("setup", "Client setup", [
-              select(
-                "config-product",
-                "Configuration product",
-                data.products.map((product) => ({
-                  value: product.slug,
-                  label: product.name,
-                })),
-              ),
-              h(
-                "label",
-                { for: "php-config" },
-                frameworkOf(configProduct()) === "wordpress"
-                  ? "Tenant-specific PHP configuration"
-                  : "Tenant-specific setup configuration",
-              ),
-              h("textarea", {
-                id: "php-config",
-                readonly: true,
-                rows: 5,
-                value: config(),
-              }),
-              btn(
-                frameworkOf(configProduct()) === "wordpress"
-                  ? "Copy PHP configuration"
-                  : "Copy setup configuration",
-                () => void run(() => copy(config(), "php-config")),
-                busy.value,
-              ),
-            ]),
+            panel("setup", "Client setup", [renderClientSetup()]),
             panel("licenses", "Licenses", [
               form(
                 "complimentary-issue",
@@ -2942,35 +3281,106 @@ export function mountSellerApp(
                       },
                     }),
                   ]),
-                  filterSelect("license-product", "Product", licenseProduct, [
-                    ["", "All products"],
-                    ...Array.from(
-                      new Map(
-                        data.licenses.map((license) => [
-                          license.product_id,
-                          license.product_name,
-                        ]),
-                      ).entries(),
+                  h("div", { class: "license-mobile-sort" }, [
+                    h("div", { class: "form-field license-sort-field" }, [
+                      h("label", { for: "license-sort" }, "Sort by"),
+                      h(
+                        "select",
+                        {
+                          id: "license-sort",
+                          value: licenseSort.value,
+                          onChange: (event: Event) => {
+                            licenseSort.value = (
+                              event.target as HTMLSelectElement
+                            ).value as (typeof licenseColumns)[number];
+                            licenseDescending.value = false;
+                          },
+                        },
+                        licenseColumns.map((column) =>
+                          h("option", { value: column }, column),
+                        ),
+                      ),
+                    ]),
+                    h(
+                      "button",
+                      {
+                        type: "button",
+                        class: "license-sort-direction",
+                        "aria-label": licenseDescending.value
+                          ? "Sort order: Descending. Switch to ascending"
+                          : "Sort order: Ascending. Switch to descending",
+                        title: licenseDescending.value
+                          ? "Descending"
+                          : "Ascending",
+                        onClick: () => sortLicenses(licenseSort.value),
+                      },
+                      [icon(licenseDescending.value ? icons.down : icons.up)],
                     ),
                   ]),
-                  filterSelect("license-type", "License type", licenseType, [
-                    ["", "All types"],
-                    ["paid", "Paid"],
-                    ["complimentary", "Complimentary"],
-                  ]),
-                  filterSelect("license-access", "Access", licenseAccess, [
-                    ["", "All access states"],
-                    ...[
-                      "Active",
-                      "Expired",
-                      "Revoked",
-                      "Suspended",
-                      "Pending",
-                    ].map(
-                      (label) =>
-                        [label.toLowerCase(), label] as [string, string],
-                    ),
-                  ]),
+                  h(
+                    "details",
+                    { class: "license-filters", key: selected.value },
+                    [
+                      h(
+                        "summary",
+                        disclosureLabel(
+                          activeFilterCount
+                            ? `Filters (${activeFilterCount})`
+                            : "Filters",
+                          icons.filters,
+                        ),
+                      ),
+                      h("div", { class: "license-filter-fields" }, [
+                        filterSelect(
+                          "license-product",
+                          "Product",
+                          licenseProduct,
+                          [
+                            ["", "All products"],
+                            ...Array.from(
+                              new Map(
+                                data.licenses.map((license) => [
+                                  license.product_id,
+                                  license.product_name,
+                                ]),
+                              ).entries(),
+                            ),
+                          ],
+                        ),
+                        filterSelect(
+                          "license-type",
+                          "License type",
+                          licenseType,
+                          [
+                            ["", "All types"],
+                            ["paid", "Paid"],
+                            ["complimentary", "Complimentary"],
+                          ],
+                        ),
+                        filterSelect(
+                          "license-access",
+                          "Access",
+                          licenseAccess,
+                          [
+                            ["", "All access states"],
+                            ...[
+                              "Active",
+                              "Expired",
+                              "Revoked",
+                              "Suspended",
+                              "Pending",
+                            ].map(
+                              (label) =>
+                                [label.toLowerCase(), label] as [
+                                  string,
+                                  string,
+                                ],
+                            ),
+                          ],
+                        ),
+                      ]),
+                    ],
+                  ),
                 ],
               ),
               h("div", { class: "license-results" }, [
@@ -2979,27 +3389,32 @@ export function mountSellerApp(
                   { role: "status", "aria-live": "polite" },
                   `${licenses.length} of ${data.licenses.length} licenses`,
                 ),
-                btn("Clear filters", resetLicenseFilters),
+                h(
+                  "button",
+                  {
+                    type: "button",
+                    class: "license-clear-filters",
+                    hidden: !hasLicenseFilters,
+                    disabled: !hasLicenseFilters,
+                    onClick: resetLicenseFilters,
+                  },
+                  "Clear filters",
+                ),
               ]),
-              h("div", { class: "table-scroll" }, [
-                h("table", { id: "licenses-table" }, [
+              h("div", { class: "table-scroll license-list" }, [
+                h("table", { id: "licenses-table", role: "table" }, [
                   h("caption", "Customer entitlements for this workspace"),
-                  h("thead", [
+                  h("thead", { role: "rowgroup" }, [
                     h(
                       "tr",
-                      [
-                        "Customer",
-                        "Product and plan",
-                        "Seats",
-                        "Billing",
-                        "Paid through / Expires",
-                        "Access",
-                        "Action",
-                      ].map((label) =>
+                      { role: "row" },
+                      [...licenseColumns, "Action" as const].map((label) =>
                         h(
                           "th",
                           {
+                            role: "columnheader",
                             scope: "col",
+                            "aria-label": label,
                             "aria-sort":
                               label === "Action"
                                 ? undefined
@@ -3016,17 +3431,18 @@ export function mountSellerApp(
                                 {
                                   type: "button",
                                   class: "table-sort",
-                                  onClick: () => {
-                                    if (licenseSort.value === label)
-                                      licenseDescending.value =
-                                        !licenseDescending.value;
-                                    else {
-                                      licenseSort.value = label;
-                                      licenseDescending.value = false;
-                                    }
-                                  },
+                                  onClick: () => sortLicenses(label),
                                 },
-                                label,
+                                [
+                                  label,
+                                  icon(
+                                    licenseSort.value !== label
+                                      ? icons.sort
+                                      : licenseDescending.value
+                                        ? icons.down
+                                        : icons.up,
+                                  ),
+                                ],
                               ),
                         ),
                       ),
@@ -3034,40 +3450,85 @@ export function mountSellerApp(
                   ]),
                   h(
                     "tbody",
+                    { role: "rowgroup" },
                     licenses.length
                       ? licenses.map((license) =>
                           h(
                             "tr",
-                            { key: license.id, "data-license-id": license.id },
+                            {
+                              key: license.id,
+                              "data-license-id": license.id,
+                              role: "row",
+                            },
                             [
-                              h("td", license.customer_email),
                               h(
                                 "td",
+                                { role: "cell", class: "license-customer" },
+                                license.customer_email
+                                  .split(/(?<=@)/)
+                                  .flatMap((part, index) =>
+                                    index ? [h("wbr"), part] : [part],
+                                  ),
+                              ),
+                              h(
+                                "td",
+                                { role: "cell", class: "license-product" },
                                 `${license.product_name} · ${license.provenance === "complimentary" ? "Complimentary" : license.plan_name}`,
                               ),
-                              h("td", String(license.site_allowance)),
                               h(
                                 "td",
-                                license.provenance === "complimentary"
-                                  ? "Complimentary · no subscription"
-                                  : license.billing_status,
+                                { role: "cell", class: "license-seats" },
+                                [
+                                  h(
+                                    "span",
+                                    {
+                                      class: "license-card-label",
+                                      "aria-hidden": "true",
+                                    },
+                                    "Seats",
+                                  ),
+                                  String(license.site_allowance),
+                                ],
                               ),
                               h(
                                 "td",
-                                (
-                                  license.provenance === "complimentary"
-                                    ? license.expires_at
-                                    : license.paid_through
-                                )
-                                  ? new Date(
-                                      (license.provenance === "complimentary"
-                                        ? license.expires_at
-                                        : license.paid_through)!,
-                                    ).toLocaleDateString()
-                                  : "Not yet available",
+                                { role: "cell", class: "license-billing" },
+                                [
+                                  h(
+                                    "span",
+                                    {
+                                      class: "license-card-label",
+                                      "aria-hidden": "true",
+                                    },
+                                    "Billing",
+                                  ),
+                                  licenseBillingLabel(license),
+                                ],
                               ),
                               h(
                                 "td",
+                                { role: "cell", class: "license-expiry" },
+                                [
+                                  h(
+                                    "span",
+                                    {
+                                      class: "license-card-label",
+                                      "aria-hidden": "true",
+                                    },
+                                    license.provenance === "complimentary"
+                                      ? "Expires"
+                                      : "Paid through",
+                                  ),
+                                  expiry(license)
+                                    ? new Date(
+                                        expiry(license)!,
+                                      ).toLocaleDateString()
+                                    : "Not yet available",
+                                ],
+                              ),
+                              h(
+                                "td",
+                                { role: "cell", class: "license-access" },
                                 h(
                                   "span",
                                   {
@@ -3079,57 +3540,72 @@ export function mountSellerApp(
                                   access(license),
                                 ),
                               ),
-                              h("td", { class: "license-actions" }, [
-                                h(
-                                  "button",
-                                  {
-                                    type: "button",
-                                    disabled: busy.value,
-                                    "aria-label": `View installations for ${license.customer_email}`,
-                                    onClick: () =>
-                                      void run(async () => {
-                                        await loadInstallations(license);
-                                        await nextTick();
-                                        document
-                                          .getElementById(
-                                            "license-installations-title",
-                                          )
-                                          ?.focus();
-                                      }),
-                                  },
-                                  "Installations",
-                                ),
-                                btn(
-                                  license.revoked
-                                    ? "Restore license"
-                                    : "Revoke license",
-                                  () =>
-                                    confirm(
-                                      `${license.revoked ? "Restore" : "Revoke"} ${license.product_name} for ${license.customer_email}?`,
-                                      license.revoked
-                                        ? "Confirm restore license"
-                                        : "Confirm revoke license",
-                                      async () => {
-                                        await tenantApi().post(
-                                          `/licenses/${encodeURIComponent(license.id)}/revoke`,
-                                          { revoked: !license.revoked },
-                                        );
+                              h(
+                                "td",
+                                { class: "license-actions", role: "cell" },
+                                [
+                                  h("div", [
+                                    h(
+                                      "button",
+                                      {
+                                        type: "button",
+                                        disabled: busy.value,
+                                        "aria-label": `View installations for ${license.customer_email}`,
+                                        onClick: () =>
+                                          void run(async () => {
+                                            await loadInstallations(license);
+                                            await nextTick();
+                                            document
+                                              .getElementById(
+                                                "license-installations-title",
+                                              )
+                                              ?.focus();
+                                          }),
                                       },
-                                      license.revoked
-                                        ? "The customer regains downloads and updates for this license."
-                                        : "The customer loses downloads and updates immediately. Installed software stays available.",
+                                      "Installations",
                                     ),
-                                  busy.value,
-                                ),
-                              ]),
+                                    btn(
+                                      license.revoked
+                                        ? "Restore license"
+                                        : "Revoke license",
+                                      () =>
+                                        confirm(
+                                          `${license.revoked ? "Restore" : "Revoke"} ${license.product_name} for ${license.customer_email}?`,
+                                          license.revoked
+                                            ? "Confirm restore license"
+                                            : "Confirm revoke license",
+                                          async () => {
+                                            await tenantApi().post(
+                                              `/licenses/${encodeURIComponent(license.id)}/revoke`,
+                                              { revoked: !license.revoked },
+                                            );
+                                          },
+                                          license.revoked
+                                            ? "The customer regains downloads and updates for this license."
+                                            : "The customer loses downloads and updates immediately. Installed software stays available.",
+                                        ),
+                                      busy.value,
+                                      {
+                                        class: license.revoked
+                                          ? undefined
+                                          : "button-danger",
+                                      },
+                                    ),
+                                  ]),
+                                ],
+                              ),
                             ],
                           ),
                         )
                       : [
-                          h("tr", [
+                          h("tr", { role: "row" }, [
                             h(
                               "td",
-                              { colspan: 7, class: "table-empty" },
+                              {
+                                colspan: 7,
+                                class: "table-empty",
+                                role: "cell",
+                              },
                               data.licenses.length
                                 ? "No licenses match your filters."
                                 : "No licenses have been issued yet.",
@@ -3292,6 +3768,7 @@ export function mountSellerApp(
                       "Copy API key",
                       () => void run(() => copy(secret.value, "new-api-key")),
                       busy.value,
+                      { icon: copyIcon },
                     ),
                     btn("I saved my API key", () => {
                       secret.value = "";
@@ -3309,7 +3786,7 @@ export function mountSellerApp(
         return () =>
           h("div", { class: "app seller-app" }, [
             h("a", { href: "#main", class: "skip-link" }, "Skip to content"),
-            appHeader(),
+            appHeader(false, seller.value ? "dashboard" : "sign-in"),
             h("main", { id: "main", class: "page-main seller-main" }, [
               h(
                 "header",
@@ -3357,9 +3834,15 @@ export function mountSellerApp(
                         { class: "seller-account-email" },
                         seller.value.user.email,
                       ),
-                      btn("Sign out", signOut, busy.value),
+                      btn("Sign out", signOut, busy.value, {
+                        icon: icons.logout,
+                      }),
                     ]),
-                  seller.value?.tenants.length && hosted.value && mobileTools(),
+                  seller.value &&
+                  seller.value.tenants.length > 0 &&
+                  hosted.value
+                    ? mobileTools()
+                    : null,
                 ],
               ),
               seller.value?.tenants.some(
@@ -3386,7 +3869,7 @@ export function mountSellerApp(
                   { class: "sandbox-badge", "aria-label": "Test workspace" },
                   [
                     h("div", { class: "sandbox-badge-copy" }, [
-                      h("strong", "TEST WORKSPACE"),
+                      h("strong", [icon(icons.flask), "TEST WORKSPACE"]),
                       h(
                         "p",
                         `${overview.value.sandbox.mode} sandbox for ${overview.value.sandbox.parentSlug}. Test data is separate from the publisher's live workspace.`,
@@ -3403,7 +3886,7 @@ export function mountSellerApp(
                       "Open test buyer page",
                     ),
                     h("details", { class: "sandbox-api-details" }, [
-                      h("summary", "API endpoint"),
+                      h("summary", disclosureLabel("API endpoint", icons.code)),
                       h(
                         "code",
                         `${window.location.origin}/api/v1/tenants/${encodeURIComponent(selected.value)}`,
@@ -3423,12 +3906,12 @@ export function mountSellerApp(
                   },
                   [
                     h("div", { class: "seller-alert-copy" }, [
-                      h(
-                        "h2",
+                      h("h2", [
+                        icon(icons.warning),
                         stripeConnectionNeeded.value
                           ? "Stripe connection needed"
                           : "We couldn’t complete that request",
-                      ),
+                      ]),
                       h("p", error.value),
                       stripeConnectionNeeded.value &&
                         h(
@@ -3437,7 +3920,7 @@ export function mountSellerApp(
                         ),
                       errorReference.value &&
                         h("details", { class: "seller-alert-details" }, [
-                          h("summary", "Support details"),
+                          h("summary", disclosureLabel("Support details")),
                           h("p", `Reference: ${errorReference.value}`),
                         ]),
                     ]),
@@ -3514,20 +3997,44 @@ export function mountSellerApp(
                             await session();
                           }, false),
                         busy.value,
+                        { icon: icons.key, class: "passkey-signin" },
                       ),
-                      form(
-                        "seller-login",
-                        async () => {
-                          await platform.post(
-                            "/auth/request",
-                            { email: fields.value["seller-email"]!.trim() },
-                            false,
-                          );
-                          notice.value = "Check your email for a sign-in link.";
-                        },
-                        [field("seller-email", "Email address", "email")],
-                        "Email seller sign-in link",
-                      ),
+                      h("div", { class: "seller-email-signin" }, [
+                        signInRecipient.value &&
+                          h(
+                            "div",
+                            { class: "seller-signin-sent", role: "status" },
+                            [
+                              icon(icons.mailCheck),
+                              h("div", [
+                                h("h3", "Check your email"),
+                                h("p", [
+                                  "If the address can sign in, a link will arrive at ",
+                                  h("strong", signInRecipient.value),
+                                  ". Open it in this browser.",
+                                ]),
+                                h(
+                                  "p",
+                                  "Check your spam folder or use the form below to send another link.",
+                                ),
+                              ]),
+                            ],
+                          ),
+                        form(
+                          "seller-login",
+                          async () => {
+                            const email = fields.value["seller-email"]!.trim();
+                            await platform.post(
+                              "/auth/request",
+                              { email },
+                              false,
+                            );
+                            signInRecipient.value = email;
+                          },
+                          [field("seller-email", "Email address", "email")],
+                          "Email seller sign-in link",
+                        ),
+                      ]),
                       h(
                         "details",
                         {
@@ -3540,7 +4047,13 @@ export function mountSellerApp(
                           },
                         },
                         [
-                          h("summary", "Use a recovery code"),
+                          h(
+                            "summary",
+                            disclosureLabel(
+                              "Use a recovery code",
+                              icons.shield,
+                            ),
+                          ),
                           recoveryOpen.value &&
                             h(SellerFeaturePanel, {
                               page: "recovery",
@@ -3620,26 +4133,7 @@ export function mountSellerApp(
                                           page.id,
                                         ),
                                       )
-                                      .map((page) =>
-                                        h(
-                                          "button",
-                                          {
-                                            id: `seller-nav-${page.id}`,
-                                            type: "button",
-                                            class: "seller-nav-link",
-                                            "aria-controls": `seller-panel-${page.id}`,
-                                            "aria-current":
-                                              activePage.value === page.id
-                                                ? "page"
-                                                : undefined,
-                                            disabled: busy.value,
-                                            onClick: () => {
-                                              activePage.value = page.id;
-                                            },
-                                          },
-                                          page.label,
-                                        ),
-                                      ),
+                                      .map(sellerNavItem),
                                     ...sellerPageGroups.map((group) =>
                                       h("div", { class: "seller-nav-group" }, [
                                         h("p", group.label),
@@ -3650,39 +4144,11 @@ export function mountSellerApp(
                                               (hosted.value ||
                                                 page.id !== "workspaces"),
                                           )
-                                          .map((page) =>
-                                            h(
-                                              "button",
-                                              {
-                                                id: `seller-nav-${page.id}`,
-                                                type: "button",
-                                                class: "seller-nav-link",
-                                                "aria-controls": `seller-panel-${page.id}`,
-                                                "aria-current":
-                                                  activePage.value === page.id
-                                                    ? "page"
-                                                    : undefined,
-                                                disabled: busy.value,
-                                                onClick: () => {
-                                                  activePage.value = page.id;
-                                                },
-                                              },
-                                              page.label,
-                                            ),
-                                          ),
+                                          .map(sellerNavItem),
                                       ]),
                                     ),
                                   ]),
-                                  h(
-                                    "a",
-                                    {
-                                      class: "seller-help-link",
-                                      href: applicationHref("/docs#concepts"),
-                                      target: "_blank",
-                                      rel: "noopener",
-                                    },
-                                    "Help & guides ↗",
-                                  ),
+                                  sellerHelpLink("mobile"),
                                 ],
                               ),
                           ],

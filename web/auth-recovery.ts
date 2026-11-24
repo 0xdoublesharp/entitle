@@ -7,6 +7,7 @@ import {
   type PropType,
 } from "vue";
 import { ApiClient, errorMessage, ApiError } from "./api.ts";
+import { disclosureLabel, icon, icons } from "./icons.ts";
 import { passkeyCeremony, hardwareVerification } from "./oidc.ts";
 
 export const RecoveryPanel = defineComponent({
@@ -26,7 +27,7 @@ export const RecoveryPanel = defineComponent({
       operator = ref(""),
       name = ref("Replacement key"),
       pending = ref(false),
-      message = ref("");
+      message = ref<{ text: string; glyph: string } | null>(null);
     let alive = true;
     const current = () => {
       if (!alive)
@@ -59,11 +60,12 @@ export const RecoveryPanel = defineComponent({
     const run = async (action: () => Promise<void>) => {
       if (pending.value || !alive) return;
       pending.value = true;
-      message.value = "";
+      message.value = null;
       try {
         await action();
       } catch (e) {
-        if (alive) message.value = errorMessage(e);
+        if (alive)
+          message.value = { text: errorMessage(e), glyph: icons.warning };
       } finally {
         pending.value = false;
       }
@@ -74,7 +76,7 @@ export const RecoveryPanel = defineComponent({
           alive &&
           (!(e instanceof ApiError) || ![401, 403].includes(e.status))
         )
-          message.value = errorMessage(e);
+          message.value = { text: errorMessage(e), glyph: icons.warning };
       });
     });
     const startOrdinary = async () => {
@@ -102,26 +104,45 @@ export const RecoveryPanel = defineComponent({
           },
         }),
       ]);
-    const button = (label: string, action: () => Promise<void>) =>
+    const button = (
+      label: string,
+      action: () => Promise<void>,
+      glyph: string,
+      className?: string,
+    ) =>
       h(
         "button",
         {
           type: "button",
+          class: className,
           disabled: pending.value,
           onClick: () => void run(action),
         },
-        label,
+        [icon(glyph), h("span", label)],
       );
     return () =>
       h("section", { class: "recovery-panel", "aria-busy": pending.value }, [
-        h("h3", "Recover account access"),
-        message.value && h("p", { role: "status" }, message.value),
+        h("h3", [icon(icons.shield), " Recover account access"]),
+        message.value &&
+          h(
+            "div",
+            {
+              role: "status",
+              class:
+                message.value.glyph === icons.warning
+                  ? "feature-attention"
+                  : "seller-signin-sent",
+            },
+            [icon(message.value.glyph), h("span", message.value.text)],
+          ),
         !flow.value
           ? [
               h(
                 "form",
                 {
                   id: "account-recovery",
+                  class: "seller-form feature-form",
+                  novalidate: true,
                   onSubmit: (e: Event) => {
                     e.preventDefault();
                     void run(startOrdinary);
@@ -134,22 +155,35 @@ export const RecoveryPanel = defineComponent({
                   ),
                   field("Account email", email, "email"),
                   field("Saved recovery code", code, "password"),
-                  button("Start ordinary recovery", startOrdinary),
+                  h("button", { type: "submit", disabled: pending.value }, [
+                    icon(icons.key),
+                    h("span", "Start ordinary recovery"),
+                  ]),
                 ],
               ),
-              h("details", [
-                h("summary", "Operator recovery"),
-                field("Operator authorization", operator, "password"),
-                button("Use operator authorization", async () => {
-                  const token = operator.value;
-                  operator.value = "";
-                  await props.platform.post(
-                    "/account/recovery/operator",
-                    { token },
-                    false,
-                  );
-                  await load();
-                }),
+              h("details", { class: "feature-disclosure" }, [
+                h(
+                  "summary",
+                  disclosureLabel("Operator recovery", icons.shield),
+                ),
+                h("div", { class: "feature-disclosure-content" }, [
+                  field("Operator authorization", operator, "password"),
+                  button(
+                    "Use operator authorization",
+                    async () => {
+                      const token = operator.value;
+                      operator.value = "";
+                      await props.platform.post(
+                        "/account/recovery/operator",
+                        { token },
+                        false,
+                      );
+                      await load();
+                    },
+                    icons.key,
+                    "button-secondary",
+                  ),
+                ]),
               ]),
             ]
           : [
@@ -159,47 +193,65 @@ export const RecoveryPanel = defineComponent({
               ),
               flow.value.mode === "ordinary" && !flow.value.channelVerified
                 ? [
-                    button("Send recovery confirmation email", async () => {
-                      await props.platform.post(
-                        "/account/recovery/channel/request",
-                        {},
-                      );
-                      message.value =
-                        "Check your existing email for the recovery confirmation.";
-                    }),
+                    button(
+                      "Send recovery confirmation email",
+                      async () => {
+                        await props.platform.post(
+                          "/account/recovery/channel/request",
+                          {},
+                        );
+                        message.value = {
+                          text: "Check your existing email for the recovery confirmation.",
+                          glyph: icons.mailCheck,
+                        };
+                      },
+                      icons.mailCheck,
+                      "button-secondary",
+                    ),
                     field("Recovery email confirmation", channel, "password"),
-                    button("Confirm recovery email", async () => {
-                      const token = channel.value;
-                      channel.value = "";
-                      await props.platform.post(
-                        "/account/recovery/channel/consume",
-                        { token },
-                      );
-                      await load();
-                    }),
+                    button(
+                      "Confirm recovery email",
+                      async () => {
+                        const token = channel.value;
+                        channel.value = "";
+                        await props.platform.post(
+                          "/account/recovery/channel/consume",
+                          { token },
+                        );
+                        await load();
+                      },
+                      icons.check,
+                    ),
                   ]
                 : [
                     field("Replacement key name", name),
-                    button("Enroll replacement key", async () => {
-                      const start = await props.platform.post<{
-                        challengeId: string;
-                        options: unknown;
-                      }>("/account/security/passkey/enroll", {
-                        name: name.value,
-                        kind: "security_key",
-                      });
-                      current();
-                      const response = await passkeyCeremony(
-                        "create",
-                        start.options,
-                      );
-                      current();
-                      await props.platform.post(
-                        "/account/security/passkey/confirm",
-                        { challengeId: start.challengeId, response },
-                      );
-                      message.value = "Replacement key enrolled.";
-                    }),
+                    button(
+                      "Enroll replacement key",
+                      async () => {
+                        const start = await props.platform.post<{
+                          challengeId: string;
+                          options: unknown;
+                        }>("/account/security/passkey/enroll", {
+                          name: name.value,
+                          kind: "security_key",
+                        });
+                        current();
+                        const response = await passkeyCeremony(
+                          "create",
+                          start.options,
+                        );
+                        current();
+                        await props.platform.post(
+                          "/account/security/passkey/confirm",
+                          { challengeId: start.challengeId, response },
+                        );
+                        message.value = {
+                          text: "Replacement key enrolled.",
+                          glyph: icons.key,
+                        };
+                      },
+                      icons.key,
+                    ),
                     flow.value.mode === "ordinary"
                       ? button(
                           "Verify new key and finish recovery",
@@ -225,25 +277,35 @@ export const RecoveryPanel = defineComponent({
                               },
                             );
                             flow.value = null;
-                            message.value =
-                              "Recovery complete. Sign in with your new key and save new recovery codes.";
+                            message.value = {
+                              text: "Recovery complete. Sign in with your new key and save new recovery codes.",
+                              glyph: icons.shield,
+                            };
                             emit("complete");
                           },
+                          icons.shield,
                         )
                       : h(
                           "p",
                           `Enroll two independent hardware keys, then ask your operator to inventory them and complete recovery after ${new Date(flow.value.notBefore).toLocaleString()}.`,
                         ),
                   ],
-              button("Cancel this recovery", async () => {
-                await props.platform.post("/account/recovery/cancel", {
-                  flowId: flow.value!.id,
-                });
-                flow.value = null;
-                message.value =
-                  "Recovery canceled. Your original credentials remain available.";
-                emit("complete");
-              }),
+              button(
+                "Cancel this recovery",
+                async () => {
+                  await props.platform.post("/account/recovery/cancel", {
+                    flowId: flow.value!.id,
+                  });
+                  flow.value = null;
+                  message.value = {
+                    text: "Recovery canceled. Your original credentials remain available.",
+                    glyph: icons.shield,
+                  };
+                  emit("complete");
+                },
+                icons.arrow,
+                "button-secondary",
+              ),
             ],
       ]);
   },

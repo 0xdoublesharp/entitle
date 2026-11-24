@@ -7,6 +7,7 @@ import {
   type PropType,
 } from "vue";
 import { ApiClient, ApiError, errorMessage } from "./api.ts";
+import { disclosureLabel, icon, icons } from "./icons.ts";
 
 interface Factor {
   id: string;
@@ -18,7 +19,9 @@ interface Publisher {
   name: string;
   product_id: string;
   provider: string;
+  issuer?: string;
   subject: string;
+  claims?: Record<string, string | boolean | number>;
   revoked_at: number | null;
 }
 interface PublisherList {
@@ -382,16 +385,24 @@ export const PublisherSecurity = defineComponent({
           },
         }),
       ]);
-    const button = (text: string, action: () => Promise<void>) =>
+    const button = (
+      text: string,
+      action: () => Promise<void>,
+      className?: string,
+      glyph?: string,
+    ) =>
       h(
         "button",
         {
           type: "button",
+          class: className,
           disabled: pending.value,
           onClick: () => void run(action),
         },
-        text,
+        glyph ? [icon(glyph), h("span", text)] : text,
       );
+    const metadata = (value: string) =>
+      h("code", { class: "metadata-chip" }, value);
     const tenant = () => props.api.basePath.split("/").at(-2)!;
     const create = async () => {
       const github =
@@ -428,11 +439,11 @@ export const PublisherSecurity = defineComponent({
         {
           id: "security-passkeys",
           tabindex: -1,
-          class: "feature-card publisher-security",
+          class: "feature-card publisher-security oidc-panel",
           "aria-busy": pending.value,
         },
         [
-          h("h3", "Passkeys and sign-in"),
+          h("h3", [icon(icons.shield), " Passkeys and sign-in"]),
           h("p", publisherPolicyCopy[policy.value]),
           loaded.value &&
             !privilegedReady.value &&
@@ -442,48 +453,72 @@ export const PublisherSecurity = defineComponent({
           !loaded.value
             ? button("Load publishing settings", load)
             : h("div", [
-                h("h4", "Passkeys and security keys"),
+                h("h4", [icon(icons.key), " Passkeys and security keys"]),
                 h(
                   "ul",
+                  { class: "record-list" },
                   factors.value.map((f) =>
                     h("li", { key: f.id }, [
-                      `${f.name} (${f.kind === "security_key" ? "security key" : "passkey"})`,
-                      button("Remove key", async () => {
-                        const proof = await verify({
-                          action: "security.remove",
-                          factorId: f.id,
-                        });
-                        await approved(
-                          props.platform,
-                          `/account/security/factors/${f.id}/remove`,
-                          {},
-                          proof,
-                        );
-                        await load();
-                      }),
+                      h("div", { class: "record-metadata" }, [
+                        `${f.name} (${f.kind === "security_key" ? "security key" : "passkey"})`,
+                        metadata(f.id),
+                      ]),
+                      button(
+                        "Remove key",
+                        async () => {
+                          const proof = await verify({
+                            action: "security.remove",
+                            factorId: f.id,
+                          });
+                          await approved(
+                            props.platform,
+                            `/account/security/factors/${f.id}/remove`,
+                            {},
+                            proof,
+                          );
+                          await load();
+                        },
+                        "button-danger",
+                      ),
                     ]),
                   ),
                 ),
-                !factors.value.length &&
-                  h("div", [
-                    h(
-                      "p",
-                      "Verify your email to enroll your first security factor.",
-                    ),
-                    button("Send setup verification", async () => {
-                      await props.platform.post(
-                        "/account/verification/request",
-                        { purpose: "security_enroll" },
-                      );
-                      notice.value =
-                        "Open the verification email in this browser.";
-                    }),
-                    field("Email verification token", emailToken, "password"),
-                  ]),
+                factors.value.length === 0
+                  ? h("div", [
+                      h(
+                        "p",
+                        "Verify your email to enroll your first security factor.",
+                      ),
+                      button(
+                        "Send setup verification",
+                        async () => {
+                          await props.platform.post(
+                            "/account/verification/request",
+                            { purpose: "security_enroll" },
+                          );
+                          notice.value =
+                            "Open the verification email in this browser.";
+                        },
+                        "button-secondary",
+                        icons.mailCheck,
+                      ),
+                      field("Email verification token", emailToken, "password"),
+                    ])
+                  : null,
                 field("Device name", label),
                 h("div", { class: "feature-actions" }, [
-                  button("Enroll passkey", () => enroll("passkey")),
-                  button("Enroll security key", () => enroll("security_key")),
+                  button(
+                    "Enroll passkey",
+                    () => enroll("passkey"),
+                    undefined,
+                    icons.key,
+                  ),
+                  button(
+                    "Enroll security key",
+                    () => enroll("security_key"),
+                    undefined,
+                    icons.key,
+                  ),
                 ]),
                 ...pendingRecoveries.value.map((flow) =>
                   h("div", { class: "recovery-notice", role: "status" }, [
@@ -510,7 +545,7 @@ export const PublisherSecurity = defineComponent({
                     ),
                   ]),
                 ),
-                h("h4", "Email-link sign-in"),
+                h("h4", [icon(icons.mailCheck), " Email-link sign-in"]),
                 h(
                   "p",
                   emailLoginEnabled.value
@@ -521,157 +556,217 @@ export const PublisherSecurity = defineComponent({
                   "p",
                   "Enroll a backup key before disabling email sign-in. Your last key cannot be removed while email sign-in is disabled.",
                 ),
-                factors.value.length > 0 &&
-                  button(
-                    emailLoginEnabled.value
-                      ? "Disable email-link sign-in"
-                      : "Enable email-link sign-in",
-                    async () => {
-                      const enabled = !emailLoginEnabled.value;
-                      const proof = await verify({
-                        action: "security.email_login",
-                        enabled,
-                      });
-                      await approved(
-                        props.platform,
-                        "/account/security/email-login",
-                        { enabled },
-                        proof,
-                      );
-                      await load();
-                      notice.value = enabled
-                        ? "Email-link sign-in enabled."
-                        : "Email-link sign-in disabled.";
-                    },
-                  ),
+                factors.value.length > 0
+                  ? button(
+                      emailLoginEnabled.value
+                        ? "Disable email-link sign-in"
+                        : "Enable email-link sign-in",
+                      async () => {
+                        const enabled = !emailLoginEnabled.value;
+                        const proof = await verify({
+                          action: "security.email_login",
+                          enabled,
+                        });
+                        await approved(
+                          props.platform,
+                          "/account/security/email-login",
+                          { enabled },
+                          proof,
+                        );
+                        await load();
+                        notice.value = enabled
+                          ? "Email-link sign-in enabled."
+                          : "Email-link sign-in disabled.";
+                      },
+                      emailLoginEnabled.value
+                        ? "button-danger"
+                        : "button-secondary",
+                    )
+                  : null,
                 tenantScoped && !publishers.value
                   ? h("div", [
-                      h("h4", "Trusted publishers"),
+                      h("h4", [icon(icons.code), " Trusted publishers"]),
                       h("p", { role: "alert" }, publisherError.value),
                       button("Retry loading publishers", load),
                     ])
                   : tenantScoped
-                  ? h("div", [
-                      h("h4", "Trusted publishers"),
-                      h("p", [
-                        "Audience: ",
-                        h("code", publishers.value!.audience),
-                      ]),
-                      ...publishers.value!.publishers.map((p) =>
-                        h("div", { class: "feature-session", key: p.id }, [
-                          h("strong", p.name),
-                          h("code", p.id),
-                          h("p", `${p.provider}: ${p.subject}`),
-                          p.revoked_at !== null
-                            ? h("span", "Revoked")
-                            : button("Revoke publisher", async () => {
-                                const proof = await verify({
-                                  action: "oidc.revoke",
-                                  tenant: tenant(),
-                                  publisherId: p.id,
-                                });
-                                await approved(
-                                  props.api,
-                                  `/oidc/publishers/${p.id}/revoke`,
-                                  {},
-                                  proof,
-                                );
-                                await load();
-                                notice.value = "Publisher revoked.";
-                              }),
+                    ? h("div", [
+                        h("h4", [icon(icons.code), " Trusted publishers"]),
+                        h("p", { class: "record-metadata" }, [
+                          "Audience: ",
+                          metadata(publishers.value!.audience),
                         ]),
-                      ),
-                      h(
-                        "form",
-                        {
-                          class: "seller-form feature-form",
-                          onSubmit: (event: Event) => {
-                            event.preventDefault();
-                            void run(create);
+                        ...publishers.value!.publishers.map((p) =>
+                          h("div", { class: "feature-session", key: p.id }, [
+                            h("strong", p.name),
+                            h("div", { class: "record-metadata" }, [
+                              metadata(p.id),
+                            ]),
+                            h("p", { class: "record-metadata" }, [
+                              `${p.provider}: `,
+                              metadata(p.subject),
+                              p.issuer ? metadata(p.issuer) : null,
+                            ]),
+                            p.claims && Object.keys(p.claims).length > 0
+                              ? h(
+                                  "div",
+                                  { class: "record-metadata" },
+                                  Object.entries(p.claims).map(
+                                    ([claim, value]) =>
+                                      metadata(`${claim}: ${value}`),
+                                  ),
+                                )
+                              : null,
+                            p.revoked_at !== null
+                              ? h(
+                                  "span",
+                                  {
+                                    class:
+                                      "license-access-badge license-access-revoked",
+                                  },
+                                  "Revoked",
+                                )
+                              : button(
+                                  "Revoke publisher",
+                                  async () => {
+                                    const proof = await verify({
+                                      action: "oidc.revoke",
+                                      tenant: tenant(),
+                                      publisherId: p.id,
+                                    });
+                                    await approved(
+                                      props.api,
+                                      `/oidc/publishers/${p.id}/revoke`,
+                                      {},
+                                      proof,
+                                    );
+                                    await load();
+                                    notice.value = "Publisher revoked.";
+                                  },
+                                  "button-danger",
+                                ),
+                          ]),
+                        ),
+                        h(
+                          "details",
+                          {
+                            class: "seller-create",
+                            open: !publishers.value!.publishers.some(
+                              (p) => p.revoked_at === null,
+                            ),
                           },
-                        },
-                        [
-                          h("h4", "Add a trusted publisher"),
-                          field("Publisher name", publisherName),
-                          h("label", [
-                            "Product",
+                          [
                             h(
-                              "select",
+                              "summary",
+                              disclosureLabel(
+                                "Add a trusted publisher",
+                                icons.plus,
+                              ),
+                            ),
+                            h(
+                              "form",
                               {
-                                value: product.value,
-                                required: true,
-                                disabled: pending.value,
-                                onChange: (e: Event) => {
-                                  product.value = (
-                                    e.target as HTMLSelectElement
-                                  ).value;
+                                class: "seller-form",
+                                onSubmit: (event: Event) => {
+                                  event.preventDefault();
+                                  void run(create);
                                 },
                               },
                               [
-                                h("option", { value: "" }, "Choose a product"),
-                                ...props.products
-                                  .filter((p) => p.slug)
-                                  .map((p) =>
-                                    h("option", { value: p.slug }, p.name),
+                                field("Publisher name", publisherName),
+                                h("label", [
+                                  "Product",
+                                  h(
+                                    "select",
+                                    {
+                                      value: product.value,
+                                      required: true,
+                                      disabled: pending.value,
+                                      onChange: (e: Event) => {
+                                        product.value = (
+                                          e.target as HTMLSelectElement
+                                        ).value;
+                                      },
+                                    },
+                                    [
+                                      h(
+                                        "option",
+                                        { value: "" },
+                                        "Choose a product",
+                                      ),
+                                      ...props.products
+                                        .filter((p) => p.slug)
+                                        .map((p) =>
+                                          h(
+                                            "option",
+                                            { value: p.slug },
+                                            p.name,
+                                          ),
+                                        ),
+                                    ],
                                   ),
+                                ]),
+                                h("label", [
+                                  "CI provider",
+                                  h(
+                                    "select",
+                                    {
+                                      value: provider.value,
+                                      disabled: pending.value,
+                                      onChange: (e: Event) => {
+                                        provider.value = (
+                                          e.target as HTMLSelectElement
+                                        ).value;
+                                      },
+                                    },
+                                    publishers.value!.providers.map((p) =>
+                                      h("option", { value: p.id }, p.id),
+                                    ),
+                                  ),
+                                ]),
+                                publishers.value!.providers.find(
+                                  (p) => p.id === provider.value,
+                                )?.issuer ===
+                                "https://token.actions.githubusercontent.com"
+                                  ? h("div", [
+                                      field(
+                                        "GitHub repository (owner/repo)",
+                                        repository,
+                                      ),
+                                      field("Repository ID", repositoryId),
+                                      field("Repository owner ID", ownerId),
+                                      field("Git ref", gitRef),
+                                      field("Workflow path", workflow),
+                                    ])
+                                  : h("div", [
+                                      field("Exact OIDC subject", subject),
+                                      field(
+                                        "Required claims (JSON)",
+                                        customClaims,
+                                      ),
+                                    ]),
+                                h(
+                                  "button",
+                                  {
+                                    type: "submit",
+                                    disabled:
+                                      pending.value || !factors.value.length,
+                                  },
+                                  "Verify and trust publisher",
+                                ),
                               ],
                             ),
-                          ]),
-                          h("label", [
-                            "CI provider",
-                            h(
-                              "select",
-                              {
-                                value: provider.value,
-                                disabled: pending.value,
-                                onChange: (e: Event) => {
-                                  provider.value = (
-                                    e.target as HTMLSelectElement
-                                  ).value;
-                                },
-                              },
-                              publishers.value!.providers.map((p) =>
-                                h("option", { value: p.id }, p.id),
-                              ),
-                            ),
-                          ]),
-                          publishers.value!.providers.find(
-                            (p) => p.id === provider.value,
-                          )?.issuer ===
-                          "https://token.actions.githubusercontent.com"
-                            ? h("div", [
-                                field(
-                                  "GitHub repository (owner/repo)",
-                                  repository,
-                                ),
-                                field("Repository ID", repositoryId),
-                                field("Repository owner ID", ownerId),
-                                field("Git ref", gitRef),
-                                field("Workflow path", workflow),
-                              ])
-                            : h("div", [
-                                field("Exact OIDC subject", subject),
-                                field("Required claims (JSON)", customClaims),
-                              ]),
-                          h(
-                            "button",
-                            {
-                              type: "submit",
-                              disabled: pending.value || !factors.value.length,
-                            },
-                            "Verify and trust publisher",
-                          ),
-                        ],
-                      ),
-                      h(
+                          ],
+                        ),
+                        h(
+                          "p",
+                          "In CI, set ENTITLE_OIDC_PUBLISHER_ID to the publisher ID and use the publish or publish-asset command. GitHub jobs need id-token: write. Other providers supply ENTITLE_OIDC_TOKEN.",
+                        ),
+                      ])
+                    : h(
                         "p",
-                        "In CI, set ENTITLE_OIDC_PUBLISHER_ID to the publisher ID and use the publish or publish-asset command. GitHub jobs need id-token: write. Other providers supply ENTITLE_OIDC_TOKEN.",
+                        "Create or select a workspace to configure CI publishing.",
                       ),
-                    ])
-                  : h(
-                      "p",
-                      "Create or select a workspace to configure CI publishing.",
-                    ),
               ]),
         ],
       );

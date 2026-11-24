@@ -2,6 +2,7 @@ import { createApp, defineComponent, h } from "vue";
 import { site } from "../packages/shared/site.ts";
 import { publicDocs } from "./docs.ts";
 import { applicationHref } from "./navigation.ts";
+import { icon as publicIcon, icons } from "./icons.ts";
 
 const header = (docs = false) =>
   h("header", { class: "site-header" }, [
@@ -35,34 +36,43 @@ const header = (docs = false) =>
       ),
     ]),
   ]);
-// Public illustrations are native SVG/HTML, never fetched customer records.
-const publicIcon = (path: string) =>
-  h(
-    "svg",
-    {
-      viewBox: "0 0 24 24",
-      fill: "none",
-      stroke: "currentColor",
-      "stroke-width": 1.6,
-      "stroke-linecap": "round",
-      "stroke-linejoin": "round",
-      "aria-hidden": "true",
-      focusable: "false",
-    },
-    [h("path", { d: path })],
-  );
-const icons = {
-  key: "M14 5a5 5 0 1 1-2 8L5 20H2v-3l7-7a5 5 0 0 1 5-5Z M16 7h.01",
-  box: "m3 7 9-5 9 5v10l-9 5-9-5Z m0 0 9 5 9-5 M12 12v10 M7.5 4.5l9 5",
-  card: "M3 4h18v16H3Z M3 9h18 M7 15h4",
-  invite:
-    "M15 20a6 6 0 0 0-12 0 M9 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z M19 8v6 M16 11h6",
-  chart: "M4 3v17h17 M8 15v-4 M13 15V7 M18 15V4",
-  layers: "m2 7 10-5 10 5-10 5Z M2 12l10 5 10-5 M2 17l10 5 10-5",
-  code: "m8 5-6 7 6 7 m8-14 6 7-6 7 M14 3l-4 18",
-  arrow: "M4 12h16 m-6-6 6 6-6 6",
-  check: "m5 12 4 4 10-10",
+const frameworkMarks = {
+  WordPress:
+    "M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z M5 9h4m-2 0 3 8 2-6 2 6 3-8m-6 0h3",
+  Joomla:
+    "M8 5a2 2 0 1 0-4 0 2 2 0 0 0 4 0Z M20 6a2 2 0 1 0-4 0 2 2 0 0 0 4 0Z M20 18a2 2 0 1 0-4 0 2 2 0 0 0 4 0Z M8 19a2 2 0 1 0-4 0 2 2 0 0 0 4 0Z M6 7v3l4 4 M16 6h-3l-3 3 M18 16v-3l-4-4 M8 19h3l3-4",
+  Electron:
+    "M12 12h.01 M14 8c12 6 8 12-4 8S1 4 10 6m2 1C18-1 24 6 17 13S3 24 5 15m2-4C3 1 10 1 15 10s5 16-2 10",
+  Tauri:
+    "M15 8a5 5 0 1 0-7 5m1 3a5 5 0 1 0 7-5 M9 8h.01 M15 16h.01 M21 5h.01 M3 19h.01",
+  Sparkle:
+    "M12 2c0 6 4 10 10 10-6 0-10 4-10 10 0-6-4-10-10-10 6 0 10-4 10-10Z M19 3v4m-2-2h4",
+  JetBrains: "M3 3h18v18H3Z M7 16h7 M7 8l3 2-3 2 M13 12h4",
+  Generic: icons.box,
 };
+const documentationPreview = () =>
+  h("div", { class: "home-resource-art" }, [
+    h("div", { class: "resource-preview-heading" }, [
+      publicIcon(icons.book),
+      h("span", "Publisher documentation"),
+    ]),
+    h("div", { class: "resource-preview-content" }, [
+      h("h3", "Integrate your software"),
+      h("div", { class: "resource-preview-route" }, [
+        publicIcon(icons.code),
+        h("code", "POST /activate"),
+      ]),
+      h("ul", [
+        h("li", [publicIcon(icons.check), "Verify a license"]),
+        h("li", [publicIcon(icons.check), "Register an installation"]),
+        h("li", [publicIcon(icons.check), "Deliver private updates"]),
+      ]),
+      h("a", { href: "/docs#client-integration", class: "home-secondary" }, [
+        "Read the integration guide",
+        publicIcon(icons.arrow),
+      ]),
+    ]),
+  ]);
 const publicHome = () => [
   h("section", { class: "saas-hero", "aria-labelledby": "home-title" }, [
     h("div", { class: "hero-copy" }, [
@@ -161,21 +171,9 @@ const publicHome = () => [
       h("p", "For the software you ship"),
       h(
         "ul",
-        [
-          "WordPress",
-          "Joomla",
-          "Electron",
-          "Tauri",
-          "Sparkle",
-          "JetBrains",
-          "Generic",
-        ].map((name) =>
+        Object.entries(frameworkMarks).map(([name, mark]) =>
           h("li", [
-            h(
-              "span",
-              { class: "framework-glyph", "aria-hidden": "true" },
-              name.slice(0, 1),
-            ),
+            h("span", { class: "framework-glyph" }, publicIcon(mark)),
             name,
           ]),
         ),
@@ -235,13 +233,16 @@ const publicHome = () => [
           ),
         ]),
       ]),
-      h("div", { class: "button-row" }, [
+      h("div", { class: "home-agent-actions" }, [
         h(
           "a",
-          { href: "/docs#mcp", class: "button-secondary" },
+          { href: "/docs#mcp", class: "button button-secondary" },
           "Connect your AI agent",
         ),
-        h("a", { href: "/docs#dashboard-reports" }, "Explore the stats →"),
+        h("a", { href: "/docs#dashboard-reports", class: "home-secondary" }, [
+          "Explore the stats",
+          publicIcon(icons.arrow),
+        ]),
       ]),
     ],
   ),
@@ -464,15 +465,7 @@ const publicHome = () => [
           ),
         ),
       ]),
-      h("img", {
-        class: "home-resource-art",
-        src: "/social/docs.png",
-        alt: "",
-        width: 1200,
-        height: 630,
-        loading: "lazy",
-        decoding: "async",
-      }),
+      documentationPreview(),
     ],
   ),
   h(
@@ -514,16 +507,18 @@ const publicHome = () => [
             { class: "hosting-cost" },
             "You pay a platform subscription and the configured application fee on customer payments, plus Stripe’s processing fees. Subscription amounts are shown at checkout, and the dashboard shows the fee rate.",
           ),
-          h(
-            "a",
-            { href: applicationHref("/seller"), class: "button" },
-            "Open seller dashboard",
-          ),
-          h(
-            "a",
-            { href: "/docs#hosted-tiers" },
-            "Compare hosted capabilities →",
-          ),
+          h("div", { class: "hosting-actions" }, [
+            h(
+              "a",
+              { href: applicationHref("/seller"), class: "button" },
+              "Open seller dashboard",
+            ),
+            h(
+              "a",
+              { href: "/docs#hosted-tiers" },
+              "Compare hosted capabilities →",
+            ),
+          ]),
         ]),
         h("article", { class: "hosting-option" }, [
           h("p", { class: "eyebrow" }, "Run your own infrastructure"),
@@ -547,16 +542,18 @@ const publicHome = () => [
             { class: "hosting-cost" },
             "No platform subscription or application fee. You supply hosting, storage, email, and backups, and pay your own infrastructure and payment processing costs.",
           ),
-          h(
-            "a",
-            { href: "/docs#self-hosting", class: "button-secondary" },
-            "Read the deployment guide",
-          ),
-          h(
-            "a",
-            { href: "/docs#licensing" },
-            "View source and publisher license →",
-          ),
+          h("div", { class: "hosting-actions" }, [
+            h(
+              "a",
+              { href: "/docs#self-hosting", class: "button button-secondary" },
+              "Read the deployment guide",
+            ),
+            h(
+              "a",
+              { href: "/docs#licensing" },
+              "View source and publisher license →",
+            ),
+          ]),
         ]),
       ]),
     ],
@@ -610,7 +607,10 @@ const publicHome = () => [
         ],
       ].map(([question, answer, href, label]) =>
         h("details", { class: "home-question" }, [
-          h("summary", question),
+          h("summary", [
+            publicIcon(icons.chevron, "ui-icon disclosure-chevron"),
+            question,
+          ]),
           h("p", answer),
           h("a", { href }, label),
         ]),
@@ -632,8 +632,14 @@ const publicHome = () => [
         { href: applicationHref("/seller"), class: "button" },
         "Create your workspace",
       ),
-      h("a", { href: "/docs#getting-started" }, "Read the setup guide →"),
-      h("a", { href: "/docs#licensing" }, "Public source and license terms →"),
+      h("a", { href: "/docs#getting-started", class: "home-secondary" }, [
+        "Read the setup guide",
+        publicIcon(icons.arrow),
+      ]),
+      h("a", { href: "/docs#licensing", class: "home-secondary" }, [
+        "Public source and license terms",
+        publicIcon(icons.arrow),
+      ]),
     ]),
   ]),
 ];
@@ -654,9 +660,11 @@ export function mountPublicSite(target: string | Element = "#app") {
             ),
             h("footer", { class: "site-footer" }, [
               h("span", site.name),
-              h("a", { href: "/docs" }, "Documentation"),
-              h("a", { href: "/docs#troubleshooting" }, "Support guide"),
-              h("a", { href: "/docs#licensing" }, "Source & licenses"),
+              h("nav", { class: "site-footer-links", "aria-label": "Footer" }, [
+                h("a", { href: "/docs" }, "Documentation"),
+                h("a", { href: "/docs#troubleshooting" }, "Support guide"),
+                h("a", { href: "/docs#licensing" }, "Source & licenses"),
+              ]),
             ]),
           ]);
       },
