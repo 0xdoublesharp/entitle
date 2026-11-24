@@ -1424,6 +1424,38 @@ for (const file of JSON.parse(process.argv[2])) {
         }
       });
       await t.test(
+        `analytics CSP applies only to production marketing pages at ${base}`,
+        () => {
+          const production = "entitle.doublesharp.com";
+          const collector = "https://umami.apps.doublesharp.com";
+          for (const uri of ["/", "/docs", "/docs/?source=sample"]) {
+            const response = request(uri, [], production);
+            assert.equal(response.status, 200, uri);
+            const connect = response.headers["content-security-policy"]
+              .split("; ")
+              .find((directive) => directive.startsWith("connect-src "));
+            assert.ok(connect?.split(" ").includes(collector), uri);
+            assert.doesNotMatch(
+              request(uri).headers["content-security-policy"],
+              /umami/,
+              uri,
+            );
+          }
+          for (const uri of [
+            `${base}/seller`,
+            `${base}/docs`,
+            `${base}/t/alpha`,
+            "/missing",
+          ]) {
+            assert.doesNotMatch(
+              request(uri, [], production).headers["content-security-policy"],
+              /umami/,
+              uri,
+            );
+          }
+        },
+      );
+      await t.test(
         `hosted redirects preserve queries and use relative Location at ${base}`,
         () => {
           const cases = [

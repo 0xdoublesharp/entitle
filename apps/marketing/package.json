@@ -6,8 +6,8 @@
   "scripts": {
     "build": "cd ../.. && node scripts/build-marketing.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "lint": "cd ../.. && apps/marketing/node_modules/.bin/eslint --config apps/marketing/eslint.config.js web/marketing.ts web/marketing-entry.ts web/docs.ts web/navigation.ts web/metadata.ts packages/shared",
-    "test": "node --test --test-concurrency=1 ../../web/metadata.test.ts"
+    "lint": "cd ../.. && apps/marketing/node_modules/.bin/eslint --config apps/marketing/eslint.config.js web/marketing*.ts web/docs.ts web/navigation.ts web/metadata.ts packages/shared",
+    "test": "node --test --test-concurrency=1 ../../web/marketing-analytics.test.ts ../../web/metadata.test.ts"
   },
   "dependencies": {
     "vue": "3.5.44",
