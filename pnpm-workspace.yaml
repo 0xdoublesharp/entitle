@@ -22,4 +22,5 @@ minimumReleaseAgeExclude:
   - '@aws-sdk/token-providers@3.1155.0'
   - '@aws-sdk/types@3.975.0'
   - '@smithy/core@3.36.1'
-  - '@0xdoublesharp/adaptive-cache@0.2.1'
+  - '@0xdoublesharp/adaptive-cache@0.5.0'
+  - '@0xdoublesharp/lru-cache-clustered@2.1.5'
