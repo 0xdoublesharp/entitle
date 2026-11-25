@@ -293,16 +293,16 @@ export function publicDocs(
         h("h1", "Documentation"),
         h(
           "p",
-          "Set up your first product, integrate its updater, automate releases and support your buyers. These guides cover hosted publishing and operating your own standalone installation.",
+          "Set up your first product, integrate its updater, automate releases, and support your buyers.",
         ),
       ]),
       h(DocsJump),
       h("aside", { class: "docs-start" }, [
         h("span", { class: "docs-start-icon", "aria-hidden": "true" }, "↗"),
         h("div", [
-          h("h2", `New to ${site.name}?`),
+          h("h2", "Choose how to run Entitle"),
           paragraph(
-            "Choose who runs the service, bring a product build and start with a complimentary pilot or a paid plan. Stripe is needed only for paid billing.",
+            "Use the hosted service or run Entitle on your own server. You can issue complimentary licenses before setting up Stripe.",
           ),
           h(
             "a",
@@ -324,17 +324,17 @@ export function publicDocs(
             [
               "#client-integration",
               "Integrate your software",
-              "Choose an adapter, activate an installation and verify a package.",
+              "Choose an adapter, activate an installation, and verify a package.",
             ],
             [
               "#customer-accounts",
               "Support a customer",
-              "Recover access, move an installation and explain billing or renewals.",
+              "Recover access, move an installation, and explain billing or renewals.",
             ],
             [
               "#self-hosting",
               "Operate Entitle",
-              "Configure your server, protect data and plan backup and recovery.",
+              "Configure your server, protect customer data, and plan backups and recovery.",
             ],
           ].map(([href, title, copy]) =>
             h("a", { href }, [
@@ -346,7 +346,7 @@ export function publicDocs(
       ),
       section("hosting-options", "Before you start", "Hosted or self-hosted", [
         paragraph(
-          `Both versions use the same ${site.name} application, licensing engine and framework adapters. Choose the hosted service to have the platform operated for you, or self-host standalone for your own software business.`,
+          `Both versions use the same ${site.name} application, licensing engine, and framework adapters.`,
         ),
         table(
           "Hosted and self-hosted comparison",
@@ -354,12 +354,12 @@ export function publicDocs(
           [
             [
               "Infrastructure",
-              "The service operator runs the app, database, private storage, email, backups and application upgrades.",
-              "You run one app behind HTTPS, a persistent database, private S3-compatible storage, SMTP, backups and application upgrades. Redis is optional.",
+              "The service operator runs the app, database, private storage, email, backups, and upgrades.",
+              "Run the app behind HTTPS with a persistent database, private S3-compatible storage, and SMTP. You handle backups and upgrades. Redis is optional.",
             ],
             [
               "Publisher workspace",
-              "Create your workspace for complimentary licensing; connect your own Stripe account for paid sales. Each publisher's customers and releases are isolated.",
+              "Create your workspace to issue complimentary licenses. Connect your own Stripe account to sell. Each publisher's customers and releases are isolated.",
               "One publisher, multiple products and the existing primary workspace. Only the configured owner email can sign in as seller.",
             ],
             [
@@ -380,7 +380,7 @@ export function publicDocs(
           ],
         ),
         h("p", [
-          "Planned hosted address: ",
+          "Hosted address ",
           h("a", { href: site.hostedOrigin }, new URL(site.hostedOrigin).host),
           ".",
         ]),
@@ -400,14 +400,14 @@ export function publicDocs(
         [
           h("h3", { id: "hosted-setup" }, "Hosted setup"),
           paragraph(
-            "Create your publisher workspace for your business or brand. Sign in through the seller dashboard and open the email link in the same browser that requested it. Choose your workspace's permanent slug, then add each plugin or app as a product inside it. You can issue complimentary licenses without connecting Stripe; product and storage allowances still apply. Review platform charges and limits before subscribing to a hosted plan.",
+            "Sign in at /app/seller and open the email link in the browser that requested it. Create your publisher workspace, choose its permanent slug, and add a product for each plugin or app. You can issue complimentary licenses before connecting Stripe. Workspace limits still apply.",
           ),
           paragraph(
-            "For paid sales, connect Stripe from Billing, create monthly or annual recurring prices, and configure the Customer Portal. On the hosted service, buyers use /app/t/YOUR_WORKSPACE_SLUG and the seller dashboard is /app/seller. Your API base is /api/v1/tenants/YOUR_WORKSPACE_SLUG. Custom app mounts may use a different page prefix.",
+            "For paid sales, connect Stripe from Billing, create monthly or annual recurring prices, and configure the Customer Portal. Review platform charges and limits before subscribing to a hosted plan. Buyers use /app/t/YOUR_WORKSPACE_SLUG, and the API base is /api/v1/tenants/YOUR_WORKSPACE_SLUG. Custom app mounts may use a different page prefix.",
           ),
           h("h3", { id: "self-hosted-setup" }, "Self-hosted standalone setup"),
           paragraph(
-            "Run one application behind HTTPS with a persistent database, a private S3-compatible bucket, and SMTP. SQLite is the default; PostgreSQL and MySQL are supported. You operate backups, monitoring, and server upgrades. Redis is optional.",
+            "Run Entitle behind HTTPS with a persistent database, a private S3-compatible bucket, and SMTP. SQLite is the default. PostgreSQL and MySQL are supported, and Redis is optional. You operate backups, monitoring, and server upgrades.",
           ),
           paragraph(
             "The quickest path is deploy/compose.standalone.yaml. It builds deploy/standalone.Dockerfile into one app container that serves the API and dashboard at the root of PUBLIC_ORIGIN, and adds a Caddy container that obtains HTTPS certificates. No separate frontend release step is needed. Set ENTITLE_DATA_DIR in .env to an absolute persistent directory, and create its app subdirectory owned by UID and GID 1000 before the first start.",
@@ -436,16 +436,16 @@ export function publicDocs(
             { class: "docs-steps" },
             [
               [
-                "Add your product; a paid plan is optional.",
-                "In Products, choose the framework that matches your software. Leave Include a paid plan unchecked for complimentary licensing. To sell, select a monthly or annual recurring Stripe price and its installation allowance. WordPress needs the plugin's directory/main-file.php identity. Joomla and JetBrains need their extension or plugin identity too.",
+                "Add your product.",
+                "Open Products & sales → Products and choose the framework. WordPress needs the plugin's directory/main-file.php identity. Joomla and JetBrains need their extension or plugin identity. Leave Include a paid plan unchecked for complimentary licensing. To sell, select a monthly or annual recurring Stripe price and its installation allowance.",
               ],
               [
                 "Publish your first release and configure the client.",
-                "In Releases, choose your product, enter a version such as 1.0.0, add release notes and upload the package. Desktop apps need an asset for each supported target. In Client setup, select the product and copy its workspace-specific configuration into your client integration.",
+                "In Products & sales → Releases, choose your product, enter a version such as 1.0.0, and add release notes. Approve the upload with your passkey or security key. Desktop apps need an asset for each supported target. In Integrations → Client setup, choose your product and copy its workspace-specific settings into your client.",
               ],
               [
                 "Issue a license, then test activation and an update.",
-                "Issue a complimentary license from Licenses, or complete a paid checkout after configuring Stripe. The customer receives a normal license key by email. Activate a site or device, publish a newer version and check the native updater. Keep local purchase fixtures confined to disposable development or an isolated sandbox. Create scoped API keys for CI publication; keep them out of client software.",
+                "Issue a complimentary license from Licenses or complete a paid checkout after configuring Stripe. Use the emailed license key to activate a site or device. Publish a newer version and install it through the client's updater. Use local purchase fixtures only for disposable development or in an isolated sandbox. Use scoped API keys for CI publication and keep those keys out of client software.",
               ],
             ].map(([title, description]) =>
               h("li", [h("h4", title), paragraph(description!)]),

@@ -164,6 +164,15 @@ are never supplied as production defaults.
 Supply the complete separate test set or omit it. A partially configured set
 fails validation. Fixture sandboxes need no Stripe test keys.
 
+## Public complimentary signup
+
+`FREE_LICENSE_OFFERS` defaults to `[]`. Set it to a JSON array to enable
+public email signup for selected WordPress products. Each offer specifies its
+workspace, product, campaign, allowed HTTPS origins, installation allowance,
+and expiry or duration. The optional daily issuance limit defaults to 50. See
+[public free-license signup](api.md#public-free-license-signup) for the schema
+and request examples.
+
 ## Private S3 storage
 
 | Variable               | Default         | Constraint / purpose                                                                   |

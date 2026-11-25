@@ -31,9 +31,11 @@ Typical catalog and support tasks map to these tools:
 | Add a monthly or annual plan to a product, including a complimentary pilot product | `entitle_op_product_save` with the existing `slug`, `name`, and new `plans`; existing plans stay. Use `entitle_prices` to find price IDs and their `interval`. |
 | Archive or restore a plan | `entitle_op_plan_archive` with `{"id":"PLAN_ID","archived":true}` or `false`. Existing licenses are unchanged. |
 | Free a customer's seat | `entitle_op_license_detail` with `{"id":"LICENSE_ID"}`, then `entitle_op_license_installation_deactivate` with `{"id":"LICENSE_ID","installationId":"INSTALLATION_ID"}` |
- Native feed and protected-download tools
-use the configured installation bearer token and preserve server entitlement
-checks. File downloads require a new private output path.
+
+Native feed and protected-download tools use the configured installation bearer
+token. The server checks entitlement for each request. File downloads require a
+new private output path.
+
 For example, call `entitle_seller_request` with:
 
 ```json

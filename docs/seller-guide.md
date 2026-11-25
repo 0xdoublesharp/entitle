@@ -1,14 +1,15 @@
 # Seller guide
 
-Open `/seller` on your deployment. A **publisher workspace** represents your
-business or brand and can contain multiple **products**, one for each plugin or
-app. Each product has its own plans, licenses, releases and client configuration.
-Products share the workspace's Stripe connection, billing, access, API keys and
-storage allowance. Use another workspace when you need those settings and data
-kept separate; a separate workspace for every product is optional.
+Open the seller dashboard at `/app/seller` on hosted or `/seller` on standalone.
+A **publisher workspace** represents a business or brand. Add a **product** for
+each plugin or app. Each product has its own plans, licenses, releases, and
+client settings. Products share the workspace's Stripe connection, billing,
+access, API keys, and storage allowance.
 
-Buyers use `/t/YOUR_SLUG`. Build pipelines and installed
-clients use `/api/v1/tenants/YOUR_SLUG` with different credentials.
+Buyers use `/app/t/YOUR_SLUG` on hosted or `/t/YOUR_SLUG` on standalone. Adjust
+those page URLs if your operator uses a [custom app mount](deployment.md#independent-marketing-and-application-sites).
+Build pipelines and installed clients both use `/api/v1/tenants/YOUR_SLUG`. See the
+[API reference](api.md#credential-selection-and-scopes) for their credentials.
 
 ## Archive, restore or remove a workspace
 
@@ -21,24 +22,22 @@ continue. Archived workspaces retain their data and count toward your account
 limit. Cancel subscriptions separately in Billing when appropriate.
 
 Use **Check removal** for an empty workspace. Removal is permanent and requires
-its exact address plus a fresh passkey or security-key approval in the
-requesting browser. It
-deletes the empty workspace, settings, membership and unused API keys, frees an
-account slot and makes the address available again. Security audit records are
-retained. Customers, products, licenses, releases, payments, used keys, exports,
-linked services and other business history block removal; archive instead. An
-empty sandbox can be removed first, but removing a publisher never deletes a
-linked sandbox. The primary workspace cannot be archived or removed.
+its exact address and a fresh passkey or security-key approval in the requesting
+browser. Removal deletes the workspace, settings, membership, and unused API
+keys. It frees an account slot and makes the address available again. Entitle
+retains security audit records. Archive a workspace if it has customers,
+products, licenses, releases, payments, used keys, exports, linked services, or
+other business history. Remove an empty linked sandbox before removing its
+publisher workspace. The primary workspace cannot be archived or removed.
 
-These actions manage publisher workspaces. They do not erase personal data.
-Customer account closure and retained financial/security records follow the
-separate privacy and retention process.
+For personal data requests, follow the
+[customer account closure procedure](operator-maintenance.md#inspect-customer-closure-requests).
 
 ## Products and plans
 
-Choose the framework before creating a license or publishing a release. The
-framework selects site/device activation, package validation and the native feed.
-Its identity and configuration lock after first use.
+Open **Products & sales → Products**. The framework determines the activation
+type, package validation, and update feed. Its identity and configuration lock
+after the first license or release.
 
 | Framework                | Required identity                                                                                                         |
 | ------------------------ | ------------------------------------------------------------------------------------------------------------------------- |
@@ -48,25 +47,22 @@ Its identity and configuration lock after first use.
 | Generic                  | Optional `activationKind`, `device` by default or explicitly `site`.                                                      |
 | Electron, Tauri, Sparkle | Empty framework configuration; targets and signing metadata belong to release assets.                                     |
 
-Products can be created without a paid plan for complimentary licensing, even
-when the server has Stripe configured. Leave **Include a paid plan** unchecked;
-no connected Stripe account or price is required. When no prices are available,
-this option is unchecked automatically and product creation remains available.
+For complimentary licensing, leave **Include a paid plan (monthly or annual)**
+unchecked. The form clears this option when no prices are available.
 
 To offer a paid plan, create a monthly or annual recurring Stripe price on your
-merchant account, enable **Include a paid plan**, and select the price. The
-price picker lists both intervals. A plan pairs the price with an installation
-allowance. Hosted publishers use their connected account; standalone uses its
-configured direct account. Test/live mode must match. A local fixture price is
-not a real Stripe price.
+merchant account. Enable **Include a paid plan (monthly or annual)** and select
+the price. A plan pairs the price with an installation
+allowance. Use your connected account on hosted or the account configured on
+your standalone server. The price and server credentials must both use the same
+Stripe mode.
 
 ### Edit a product and its plans
 
 Choose **Edit product** beside a product to rename it or add plans. Turn on
 **Add a paid plan (monthly or annual)**, enter the plan name and allowance, and
-select a price. This is how a complimentary pilot product starts selling: its
-pilot licenses stay complimentary, and new buyers choose the paid plans. Saving
-keeps existing plans; the product's framework identity does not change.
+select a price. You can add a paid plan to a pilot product at any time. Existing
+complimentary licenses and previously saved plans stay in place.
 
 The editor lists each plan with its allowance, price ID, and formatted price,
 such as `$9 / month`. **Archive** a plan to remove it from the customer catalog
@@ -86,12 +82,13 @@ the larger paid allowance. An unpaid upgrade grants no extra seats.
 
 ## Publish a release
 
-1. Build the package and verify its identity/version before upload.
-2. Select the product and strict semantic version, such as `1.2.0`, in Releases.
+1. Build the package and verify its identity and version.
+2. Open **Products & sales → Releases**, select the product, and enter a strict
+   semantic version such as `1.2.0`.
 3. Add release notes and required compatibility/signature metadata.
 4. Approve the upload with your passkey or security key when prompted.
 5. Upload, then confirm the release and target inventory in the dashboard.
-6. Exercise a paid installation's update check and authenticated download.
+6. Verify the update check and authenticated download from a licensed installation.
 
 WordPress uses one plugin ZIP per version. Other frameworks use one asset per
 target; you can add another target to an existing version when the release notes
@@ -121,16 +118,16 @@ version; withdrawal does not remove installed software.
 
 ### Issue a complimentary license
 
-Open **Licenses → Issue complimentary license**. Enter the customer's email,
-select the product, choose its installation allowance and a future expiration
-date and time, and optionally add an internal note. The time shown in the form
-uses your browser's local time zone. Review the confirmation before issuing.
+Open **Products & sales → Licenses** and select **Issue complimentary license**.
+Enter the customer's email, product, installation allowance, and a future
+expiration date and time. The form uses your browser's local time zone. You can
+add a private note. Review the confirmation before issuing.
 
-Entitle creates or reuses the customer in this workspace, issues a normal license
-key, and queues the existing encrypted license email. The success notice confirms
-queuing; SMTP delivery is handled by the normal email worker. A failed request
-can be retried with the same form values; its request ID is retained to prevent
-duplicate issuance and email jobs. Changing the form values starts a new request.
+Entitle creates or reuses the customer in this workspace, issues a license key,
+and queues the encrypted license email. Check email history for delivery
+attempts. If you are unsure whether issuance succeeded, retry with the same form
+values to reuse its request ID and avoid duplicate licenses or emails. Changing
+the form values starts a new request.
 
 Complimentary licenses are labelled in the seller and customer views. They have
 their own expiration and allowance and create no invoice, payment, revenue or

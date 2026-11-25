@@ -1,8 +1,7 @@
 # API v1
 
-Use the deployment's common `PUBLIC_ORIGIN` as the base for every route below.
-See [deployment](deployment.md) for the planned hosted address and
-[platform support](platform-support.md) for supported framework adapters and integration limits.
+Use your deployment's `PUBLIC_ORIGIN` as the base for every route below. For
+client package and feed requirements, see [platform support](platform-support.md).
 
 Errors use `{error:{code,message,requestId}}`. Credentials belong in Authorization headers or request JSON, never package URLs. Responses containing identity, client secrets or customer data are `Cache-Control: no-store`. Requests have IDs and rate limits. No legacy unscoped licensing routes exist.
 

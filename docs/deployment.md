@@ -1,26 +1,26 @@
 # Deployment
 
-The independent frontend builds embed Open Graph and Twitter preview metadata.
-Marketing includes home and documentation pages; the application includes
-seller, customer and local documentation pages. Preview images are public PNG assets.
-For a self-hosted domain, set `WEB_PUBLIC_ORIGIN=https://licenses.example.com`
-when running `pnpm build:web`; it defaults to `https://entitle.doublesharp.com`.
-This build setting controls metadata URLs only. Keep `PUBLIC_ORIGIN` configured
-on the API for authentication and checkout. Customer previews are generic,
-exclude account data and request no indexing.
+For the hosted service, follow [seller setup](#using-the-hosted-service). To run
+Entitle yourself, use the [standalone Compose stack](#quick-start-two-container-stack)
+or the [split layout](#independent-marketing-and-application-sites) to publish
+frontend assets separately. Both layouts use HTTPS, a persistent database, and
+a private S3-compatible bucket. SQLite is the default. PostgreSQL and MySQL are
+supported, and Redis is optional.
 
-Run Entitle behind HTTPS in one of two layouts. The [two-container standalone stack](#quick-start-two-container-stack) builds the app and API into one image behind a Caddy proxy. The split layout runs the server and a static web runtime: the server runs the API and database-backed jobs, and the web runtime serves independently published Vue assets and forwards API requests on the same origin. SQLite needs persistent local storage; PostgreSQL/MySQL are alternatives. Artifacts live in a private S3-compatible bucket. Redis is an optional cache. Use the [configuration reference](configuration.md) for environment defaults and validation, [CLI reference](cli.md) for automation, and [troubleshooting](troubleshooting.md) for failed setup or delivery.
+See the [configuration reference](configuration.md) for environment settings,
+the [CLI reference](cli.md) for automation, and
+[troubleshooting](troubleshooting.md) for setup and delivery failures.
 
 ## Using the hosted service
 
-As a hosted seller, you do not deploy this application or provide database,
-storage, SMTP or server credentials. Sign in at `/app/seller`, open the emailed
-link in the same browser and create a workspace. For an invited pilot, add a
-product without a paid plan, publish its release and issue complimentary licenses
-from Licenses. Connect your Stripe account from Billing when you are ready to
-sell; create monthly or annual recurring prices and configure its Customer
-Portal before adding paid plans. Copy the generated client setup for your product.
-Buyers use `/app/t/YOUR_SLUG`; integrations use `/api/v1/tenants/YOUR_SLUG`.
+Sign in at `/app/seller` and open the emailed link in the browser that requested
+it. Create a workspace. For an invited pilot, add a product without a paid plan,
+publish a release, and issue complimentary licenses. To sell, connect your
+Stripe account from Billing, create monthly or annual recurring prices, and
+configure its Customer Portal before adding paid plans. Get the configuration for
+your client from **Integrations → Client setup**.
+
+Buyers use `/app/t/YOUR_SLUG`, and integrations use `/api/v1/tenants/YOUR_SLUG`.
 Create scoped API keys for your own automation, never for distributed clients.
 
 Review the platform subscription amount, application fee and workspace limits
@@ -149,8 +149,10 @@ by those terms. Enabling hosted mode does not grant additional license rights.
 ## Independent marketing and application sites
 
 The standalone Compose stack builds the app into its image. The split layout
-needs only `pnpm build:server` and `pnpm build:web`. The app-only web
-artifact opens the seller dashboard at `/`, provides customer routes under `/t/`,
+uses `pnpm build:server` and `pnpm build:web`. The server runs the API and
+database-backed jobs. The web runtime serves the Vue assets and forwards API
+requests on the same origin. The app-only web artifact opens the seller
+dashboard at `/`, provides customer routes under `/t/`,
 and includes local documentation. It contains no marketing entry point. The
 marketing site is optional and has its own `pnpm build:marketing` target and
 `@entitle/marketing` dependency closure.
@@ -160,9 +162,17 @@ occupy `/` and `/docs`; the app occupies `/app/`. It independently builds the ap
 and marketing bundles, then assembles an atomic hosted archive. Existing `/seller`
 and `/t/...` links redirect to the app while preserving query and browser fragment
 context. API, update-feed, webhook and package endpoints remain under `/api/`.
-Marketing documentation is static; deployment-specific limits are in app docs.
-The API defaults to `/app` in hosted mode and `/` in standalone mode. An explicit
-empty `APP_BASE_PATH` keeps hosted installations at the root.
+The marketing documentation is static. See the app's documentation for
+deployment-specific limits. `APP_BASE_PATH` defaults to `/app` in hosted mode and
+an empty path in standalone mode. Set it explicitly to an empty value to mount a
+hosted app at the root. API routes stay under `/api/` in either mode.
+
+Both frontend builds include Open Graph and Twitter preview metadata with public
+PNG images. For a self-hosted domain, set
+`WEB_PUBLIC_ORIGIN=https://licenses.example.com` when running `pnpm build:web`.
+It defaults to `https://entitle.doublesharp.com` and controls metadata URLs only.
+Set `PUBLIC_ORIGIN` on the API for authentication and checkout. Customer previews
+are generic, exclude account data, and request no indexing.
 
 | Setting                 | Standalone default              | Hosted value                      | Purpose                                                |
 | ----------------------- | ------------------------------- | --------------------------------- | ------------------------------------------------------ |
@@ -185,7 +195,10 @@ the hosted artifact and retains explicit compatibility with older single-site re
 
 ## Shared production infrastructure
 
-Set `PUBLIC_ORIGIN` to your actual HTTPS service origin. Use your own domain for standalone; `https://entitle.doublesharp.com` is the planned hosted deployment. This is the common runtime origin for the application, HTTPS proxy, emailed links, Stripe callbacks and package URLs. There is no separate proxy hostname setting. Public brand text and the planned hosted link are shared in [packages/shared/site.ts](../packages/shared/site.ts). Keep local development at `http://localhost:3211`. Recording this hostname does not provision DNS, certificates or a production deployment.
+Set `PUBLIC_ORIGIN` to the HTTPS origin that serves your application and API.
+The proxy, email links, Stripe callbacks, and package URLs use this origin.
+Use `http://localhost:3211` for the local fixture. The [shared branding settings](../packages/shared/site.ts)
+define the public hosted link.
 
 Create a private persistent directory for `ENTITLE_DATA_DIR` and an `app` subdirectory inside it owned by UID/GID 1000; both Compose layouts mount only `${ENTITLE_DATA_DIR}/app`. Copy `.env.example` to `.env` and protect it with mode 0600. For the split layout, set `ENTITLE_DATA_DIR`, `PUBLIC_ORIGIN`, `NODE_ENV=production`, `LOCAL_BILLING=false`, `DATA_DIR=/data`, `WORK_DIR=/data/work` and `WEB_DIR=/app/web`. Set `ENTITLE_PUBLIC_HOST` to the hostname in `PUBLIC_ORIGIN` and `ENTITLE_WEB_RELEASE_DIR` to the absolute frontend publication directory. The split layout's Compose network uses a fixed subnet; ensure it is unused. The API trusts only the web runtime at `TRUST_PROXY=172.30.81.4`; the web runtime trusts Caddy at `172.30.81.2/32` for client IPs. Production requires an explicit deliverable `MAIL_FROM` and matching Stripe secret/publishable key modes. SMTP requires TLS in production, including STARTTLS when `SMTP_SECURE=false`.
 

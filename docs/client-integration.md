@@ -2,14 +2,15 @@
 
 Use the deployment's tenant API base, for example
 `https://licenses.example.com/api/v1/tenants/primary`. Get the actual workspace
-slug and framework configuration from Client setup. A transferred standalone
-workspace can retain a different public slug.
+slug and framework configuration from **Integrations → Client setup** in the
+seller dashboard. A transferred standalone workspace can retain a different
+public slug.
 
 ## Credential lifecycle
 
 | Credential       | How it is obtained                           | Where it belongs                                                                     |
 | ---------------- | -------------------------------------------- | ------------------------------------------------------------------------------------ |
-| License key      | Paid purchase email or buyer key replacement | Customer activation input. Send it only to `POST /activate`.                         |
+| License key      | License issuance or replacement email        | In an installed client, send it to `POST /activate`.                                |
 | Activation token | Successful activation                        | Protected storage for one installation; Bearer header on status, feeds and packages. |
 | Seller API key   | Seller dashboard                             | Private publication/support automation. Never distribute it with your client.        |
 | Buyer session    | Buyer email sign-in                          | Browser account/download flow with tenant-specific cookies and CSRF.                 |
@@ -21,8 +22,8 @@ names, 1-120 characters without control characters.
 
 ## Activate
 
-The example below is an HTTP request, not a shell command. Values in uppercase
-are customer-provided secrets or persisted client values.
+Replace the placeholders with the customer's key and the client's persisted
+installation ID.
 
 ```http
 POST /api/v1/tenants/primary/activate
@@ -36,10 +37,10 @@ Content-Type: application/json
 }
 ```
 
-The response contains `token`, `licenseId`, `installationId`, `siteAllowance`
-and `paidThrough`. `paidThrough` is a Unix timestamp in milliseconds. Store the
-token in protected platform storage. Treat the returned allowance and dates as
-a current observation; download authorization still runs on every request.
+The response contains `token`, `licenseId`, `installationId`, `siteAllowance`,
+and `paidThrough`. The `paidThrough` field gives the end of the paid period or
+complimentary term as a Unix timestamp in milliseconds. Store the token in
+protected platform storage. Each download request checks the current license state.
 
 Retrying the same installation ID while it remains active returns the existing
 token without consuming another seat. Keep that ID on disk across application

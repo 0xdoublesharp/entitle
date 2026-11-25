@@ -1,6 +1,8 @@
 # Move a publisher to self hosting
 
-Portability is a core feature. Hosted Pro and seller platform billing status do not control exports. Standalone local features do not contact the hosted platform.
+Export your workspace and import it into a fresh standalone installation.
+You need a verified Stripe merchant account, including for a complimentary-only
+workspace. Any hosted tier can export, regardless of platform billing status.
 
 The transfer preserves the public workspace slug and product slugs, products and plans, customers, license key hashes, paid grants, installation token hashes and encrypted retry tokens, immutable release artifacts including withdrawn releases and every target, download and invoice metrics, and billing receipt IDs and processing timestamps. Internal ownership changes to the standalone `primary` tenant. It never generates replacement licenses or activation tokens.
 
@@ -36,14 +38,12 @@ Each export expires one hour after creation completes. Call `cleanupExpired()` p
 
 For a standalone export, construct `Portability` with the explicitly verified `sourceStripeAccountId`; hosted exports read the tenant's connected account. Standalone commerce keeps `stripe_account_id` null, as required by its direct-account Stripe adapter. Import records a hash of the expected merchant in an internal lock marker, and returns the source account ID for the operator's reconciliation record.
 
-Transfers preserve complimentary provenance, expiration, allowance and encrypted
-seller notes, and never reconcile those licenses as subscriptions or paid grants.
-Older paid bundles remain importable. This merchant-verified transfer workflow
-still requires a verified Stripe account even for a complimentary-only workspace.
-Before configuring Stripe, use the normal database/artifact backup and restore
-procedure for server recovery. Customer account data exports remain available
-without Stripe and exclude internal seller notes; approved customer closure
-scrubs those notes.
+Transfers preserve complimentary provenance, expiration, allowance, and
+encrypted seller notes. Reconciliation leaves these licenses complimentary.
+Older paid bundles remain importable. Before configuring Stripe, use
+[database and artifact backup and restore](backup.md) for server recovery.
+Customer account data exports remain available without Stripe and exclude
+internal seller notes. Approved customer closure scrubs those notes.
 
 ## Import and reconcile
 
