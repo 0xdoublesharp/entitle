@@ -892,7 +892,7 @@ export const SellerFeaturePanel = defineComponent({
           flags.value.hostedProConfigured &&
           h(
             "p",
-            "Cancel renewal in billing. After the paid subscription ends, return here to choose a new tier.",
+            "To switch tiers, cancel renewal in Platform billing. After your paid period ends, return here to choose a new tier.",
           ),
         flags.value.hostedProConfigured
           ? button(
@@ -1329,7 +1329,7 @@ export const SellerFeaturePanel = defineComponent({
                 pending.value,
               )
             : h("div", [
-                h("p", "Explore daily download reports with monthly Pro."),
+              h("p", "Hosted Pro includes daily download and bandwidth reports."),
                 button(
                   "View Pro options",
                   () =>
@@ -1828,7 +1828,10 @@ export const SellerFeaturePanel = defineComponent({
     const exportDeletion =
       "The encrypted files are deleted and cannot be downloaded again.";
     const portability = () => [
-      h("p", "Download a private backup of your workspace and release files."),
+      h(
+        "p",
+        "Create an encrypted export to move this workspace and its releases to a fresh standalone installation. Export requires a verified Stripe merchant account.",
+      ),
       button("Refresh exports", () => void run(loadExports), pending.value),
       h(
         "div",
@@ -1951,7 +1954,7 @@ export const SellerFeaturePanel = defineComponent({
               proofField("tenant_transfer"),
               field(
                 "passphrase",
-                "Export passphrase, at least 12 characters",
+              "Export passphrase (12 to 1,024 characters)",
                 "password",
               ),
             ],
@@ -2027,7 +2030,7 @@ export const SellerFeaturePanel = defineComponent({
       ),
       h(
         "p",
-        "Request a review to close your account. Your subscriptions and licenses stay active while the request is reviewed.",
+        "Ask the service operator to review your account closure. To stop a subscription from renewing, cancel it separately in billing.",
       ),
       closure.value?.request &&
         h("div", { class: "feature-request-status" }, [

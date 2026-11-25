@@ -241,12 +241,6 @@
   gap: 5px;
   min-width: 0;
 }
-.home-page .workflow-overline {
-  font-size: 0.75rem;
-  font-weight: 750;
-  letter-spacing: 0.1em;
-  color: #57715d;
-}
 .home-page .workflow-node strong {
   font-size: 0.91rem;
   letter-spacing: -0.02em;
@@ -298,7 +292,6 @@
   background: #f7e3b4;
   color: #264d3b;
 }
-.home-page .workflow-license .workflow-overline,
 .home-page .workflow-license > div > span:last-child,
 .home-page .workflow-license .workflow-check {
   color: #3d5037;
@@ -382,19 +375,6 @@
 .home-page .journey-grid li {
   border-top: 1px solid #c9d6c4;
   padding-top: 22px;
-}
-.home-page .journey-number {
-  display: inline-grid;
-  place-items: center;
-  width: 36px;
-  height: 36px;
-  border: 1px solid #285c43;
-  border-radius: 50%;
-  color: #fff8e8;
-  font-size: 0.7rem;
-  font-weight: 700;
-  background: #285c43;
-  margin-bottom: 20px;
 }
 .home-page .journey-grid h3 {
   font-size: 1.08rem;
@@ -965,18 +945,6 @@
   }
   .home-page .journey-grid {
     gap: 25px;
-  }
-  .home-page .journey-grid li {
-    position: relative;
-    padding-left: 51px;
-    padding-top: 23px;
-  }
-  .home-page .journey-number {
-    position: absolute;
-    left: 0;
-    top: 22px;
-    width: 31px;
-    height: 31px;
   }
   .home-page .journey-grid h3 {
     margin-bottom: 9px;

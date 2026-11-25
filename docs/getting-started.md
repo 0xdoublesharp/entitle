@@ -24,8 +24,9 @@ You can issue complimentary licenses before configuring Stripe. Workspace
 capacity limits still apply. For paid sales, connect Stripe from Billing on a
 hosted deployment or configure your merchant account on the standalone server.
 
-Open a sign-in email link in the browser that requested it. Each link works once.
-Seller and buyer sign-ins are separate.
+Open a seller sign-in link in the browser that requested it. Buyers can open
+their sign-in links in any browser. Each link works once and expires after
+15 minutes.
 
 ## Self-host with Docker Compose
 

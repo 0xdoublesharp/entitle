@@ -72,7 +72,7 @@ test("production entry points mount the standalone app and independent static ma
   assert.match(dom.document.body.textContent, /Publisher workspace/);
   assert.doesNotMatch(
     dom.document.body.textContent,
-    /First-class WordPress support/,
+    /Private updates in WordPress/,
   );
   assert.ok(requests.includes("/api/v1/platform/me"));
   activeApp().unmount();
@@ -81,7 +81,7 @@ test("production entry points mount the standalone app and independent static ma
   dom.document.body.innerHTML = '<div id="app"></div>';
   await import("../web/marketing-entry.ts");
   await flush();
-  assert.match(dom.document.body.textContent, /First-class WordPress support/);
+  assert.match(dom.document.body.textContent, /Private updates in WordPress/);
   assert.equal(requests.length, 0);
   activeApp().unmount();
 });

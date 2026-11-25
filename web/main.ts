@@ -154,7 +154,7 @@ export function mountCustomerApp(
         notice.value =
           checkoutReturn === "canceled"
             ? "Checkout was canceled. You can choose a plan and try again."
-            : "Payment submitted. Confirmation is pending. Check your email for confirmation, or sign in to view your licenses after our server confirms payment.";
+            : "Payment submitted. Confirmation is pending. After payment is confirmed, check your email for the license key or sign in to view your licenses.";
         returnUrl.searchParams.delete("checkout");
         window.history.replaceState(
           null,
@@ -471,7 +471,9 @@ export function mountCustomerApp(
                   ]),
                   h(
                     "p",
-                    "Your license will appear after our server confirms payment. Check your email or refresh your licenses.",
+                    account.value
+                      ? "Your license appears after payment is confirmed. Check your email for the key or refresh your licenses."
+                      : "Check your email for the license key after payment is confirmed.",
                   ),
                   account.value &&
                     button(
@@ -985,7 +987,6 @@ export function mountCustomerApp(
                 [
                   h("div", { class: "panel-icon" }, [icon(icons.shield)]),
                   h("div", [
-                    h("p", { class: "eyebrow" }, "Secure sign in"),
                     h(
                       "h1",
                       { id: "login-confirm-title" },
@@ -1128,7 +1129,7 @@ export function mountCustomerApp(
                                   confirmation.value = {
                                     title,
                                     description:
-                                      "Review retained data and paid rights before requesting closure.",
+                                      "The service operator will review your request. Manage subscription renewals separately in billing.",
                                     label,
                                     run,
                                   };
@@ -1148,10 +1149,10 @@ export function mountCustomerApp(
                               account.value.licenses.map(renderLicense),
                             )
                           : h("div", { class: "panel empty-account" }, [
-                              h("h2", "Your licenses will appear here"),
+                              h("h2", "No licenses in this account"),
                               h(
                                 "p",
-                                "Choose a plan below to get started. If you just completed checkout, allow a moment for your payment to be confirmed.",
+                                "If you just paid, wait for the license email, then refresh. If you expected a license, sign in with the address that received it.",
                               ),
                               button(
                                 "Refresh licenses",
@@ -1170,22 +1171,11 @@ export function mountCustomerApp(
                       { class: "welcome", "aria-labelledby": "welcome-title" },
                       [
                         h("div", { class: "welcome-copy" }, [
-                          h(
-                            "p",
-                            { class: "eyebrow" },
-                            "Software licenses, accounted for",
-                          ),
-                          h("h1", { id: "welcome-title" }, [
-                            "Your software.",
-                            h("br"),
-                            "Your licenses.",
-                            h("br"),
-                            h("span", "All in one place."),
-                          ]),
+                          h("h1", { id: "welcome-title" }, "Your software licenses"),
                           h(
                             "p",
                             { class: "intro" },
-                            "Download releases, manage your installations, and keep track of your subscription.",
+                            "Sign in to download releases, replace a license key, or manage your installations.",
                           ),
                           h(
                             "p",
@@ -1211,7 +1201,7 @@ export function mountCustomerApp(
                             ),
                             h(
                               "p",
-                              "We will email you a secure sign-in link. No password needed.",
+                              "Enter the email address you used for your license.",
                             ),
                             h("form", { onSubmit: requestLogin }, [
                               h(
@@ -1258,7 +1248,7 @@ export function mountCustomerApp(
                                     h("p", [h("strong", loginSentTo.value)]),
                                     h(
                                       "p",
-                                      "If an account exists for this email, a sign-in link is on its way. Check your inbox and spam folder.",
+                                      "If an account exists for this address, check your inbox or spam folder for a sign-in link. The link works once and expires after 15 minutes.",
                                     ),
                                   ]),
                                 ],
@@ -1277,16 +1267,10 @@ export function mountCustomerApp(
               [
                 h("div", { class: "page-heading" }, [
                   h("div", [
-                    h("p", { class: "eyebrow" }, "Choose your allowance"),
                     h(
                       "h2",
                       { id: "plans-title" },
-                      "Make room for your next installation",
-                    ),
-                    h(
-                      "p",
-                      { class: "muted" },
-                      "Every plan includes downloads and updates for the licensed product. Confirm the total at secure checkout.",
+                      "Available plans",
                     ),
                   ]),
                 ]),
@@ -1307,7 +1291,7 @@ export function mountCustomerApp(
                       ? h(
                           "p",
                           { class: "empty-message" },
-                          "Paid checkout is unavailable until the publisher configures billing. Complimentary licenses remain available in your account.",
+                          "Paid checkout is unavailable. Contact the publisher about purchase options.",
                         )
                       : products.value.length === 0
                         ? h(

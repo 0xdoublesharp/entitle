@@ -1624,7 +1624,7 @@ export function publicDocs(
           "Seller identity lives at /api/v1/platform/me; buyer identity lives at this workspace's /me. Browser mutations require the exact deployment Origin and X-CSRF-Token from the matching identity response. Sessions are HttpOnly, SameSite=Lax and Secure in production. Export ciphertext GETs additionally require the seller CSRF header.",
         ),
         paragraph(
-          "Email sign-in is a request/consume flow bound to the browser that requested the link. Do not move cookies between buyers and sellers or treat a guest checkout cookie as an authenticated account. Cross-origin customer session CORS is disabled.",
+          "Seller email sign-in links must be opened in the browser that requested them. Buyer links can be opened in any browser. Both are single-use. Buyer and seller sessions use separate cookies. A guest checkout cookie allows a checkout retry for the guest customer. Customer session requests must be same-origin.",
         ),
         table(
           "HTTP results",
@@ -1660,7 +1660,7 @@ export function publicDocs(
         h("ol", { class: "docs-checklist" }, [
           h(
             "li",
-            "Request a fresh sign-in link and open it in the same browser that requested it.",
+            "Request a new sign-in link using the email address associated with your license.",
           ),
           h(
             "li",
@@ -1689,7 +1689,7 @@ export function publicDocs(
         ...[
           [
             "My sign-in link does not work",
-            "Open the email link in the browser that requested it. Links are expiring and single-use. Request another from the relevant seller or customer sign-in page. In local development, emails are delivered to the configured mail fixture.",
+            "Request a fresh link from the seller or customer sign-in page. Each link expires after 15 minutes and works once. Open seller links in the browser that requested them. Local fixture emails go to Mailpit.",
           ],
           [
             "A customer has run out of sites or devices",

@@ -1057,7 +1057,7 @@ export function mountSellerApp(
               h(
                 "p",
                 { class: "workspace-form-intro" },
-                "A publisher workspace is your business or brand. Add each plugin or app as a product inside it; you don’t need a workspace for every product.",
+                "Create one workspace for the business or brand that publishes your apps or plugins.",
               ),
               h("div", { class: "form-field" }, [
                 field("tenant-name", "Business or publisher name"),
@@ -1072,7 +1072,7 @@ export function mountSellerApp(
                 h(
                   "p",
                   { id: "tenant-slug-hint", class: "field-hint" },
-                  "Your workspace’s unique address. Use lowercase letters, numbers and hyphens, up to 63 characters. You can edit the suggested slug.",
+                  "This permanent slug appears in buyer and API URLs. Use up to 63 lowercase letters, numbers, and hyphens. You can edit it before creating the workspace.",
                 ),
               ]),
             ],
@@ -1610,7 +1610,7 @@ export function mountSellerApp(
               title: "Add a product",
               location: "Products & sales → Products",
               description:
-                "Add one plugin or app as a product in your publisher workspace, then choose its framework. You can add more products later.",
+                "Add a plugin or app and choose its framework. The framework locks after the first license or release.",
               action: "Add your first product",
               complete: !!product,
               form: "product-create",
@@ -1635,7 +1635,7 @@ export function mountSellerApp(
               title: "Connect your software",
               location: "Integrations → Client setup",
               description:
-                "Copy your product’s configuration into your plugin or app, then confirm you’ve added it. Keep tenant API keys out of software distributed to customers. This checklist does not verify an installation.",
+                "Copy the configuration into your plugin or app and mark this step complete. Test activation and an update in your software before inviting customers. Keep workspace API keys out of distributed builds.",
               action: "Open client setup",
               complete: integrationConfirmed(),
               form: "",
@@ -1645,7 +1645,7 @@ export function mountSellerApp(
               title: "Issue a license",
               location: "Products & sales → Licenses",
               description:
-                "Issue a complimentary license to yourself or an invited pilot. Choose an expiry and installation allowance, then use the emailed key in your software. No payment or subscription is created.",
+                "Choose the installation allowance and expiration, then issue a complimentary license to yourself or an invited customer. Use the emailed key to activate the software.",
               action: "Issue a complimentary license",
               complete:
                 !!product &&
@@ -1765,7 +1765,9 @@ export function mountSellerApp(
                 h("h3", "Your setup checklist is complete"),
               h(
                 "p",
-                "Set up your first product, publish a release, and invite a customer. You can return to these steps anytime.",
+                completed === steps.length
+                  ? "Test activation, downloads, and updates through your client before sharing the release."
+                  : "Set up a product, publish a release, connect your client, and issue a license.",
               ),
               h(
                 "p",
@@ -1917,7 +1919,7 @@ export function mountSellerApp(
                       ),
                   ]),
                   h("p", { class: "setup-location" }, [
-                    h("span", "Find it anytime"),
+                    h("span", "Dashboard location"),
                     h("strong", current.location),
                   ]),
                 ],
@@ -1925,14 +1927,16 @@ export function mountSellerApp(
             ]),
             h("aside", { class: "setup-optional" }, [
               h("div", [
-                h("h3", "Optional: offer paid plans"),
+                h("h3", "Offer paid plans"),
                 h(
                   "p",
-                  "Stripe is not required for this checklist or complimentary licenses. When you’re ready to charge customers, connect Stripe and configure paid plans in Billing.",
+                  hosted.value
+                    ? "To sell, connect your Stripe account in Billing, then add a plan in Products. You can issue complimentary licenses before connecting Stripe."
+                    : "To sell, configure Stripe on your server, then add a plan in Products. You can issue complimentary licenses before configuring Stripe.",
                 ),
               ]),
               btn(
-                "Explore Billing",
+                "Open Billing",
                 () => {
                   guidedSetup.value = false;
                   activePage.value = "billing";
@@ -2152,8 +2156,12 @@ export function mountSellerApp(
                   h(
                     "p",
                     data.billingAvailable === false
-                      ? "Paid checkout and billing are unavailable until Stripe is configured. You can issue complimentary licenses now."
-                      : "Stripe is optional for product setup and complimentary licenses. Receive customer payments through your Stripe account when you are ready to sell paid plans.",
+                      ? hosted.value
+                        ? "Paid checkout is unavailable on this deployment. You can still issue complimentary licenses."
+                        : "Configure Stripe on your server to enable paid checkout. You can issue complimentary licenses now."
+                      : hosted.value && stripeStatus !== "connected"
+                        ? "Connect Stripe to accept payments. You can issue complimentary licenses before connecting."
+                        : "Paid purchases go through your Stripe account. Add a monthly or annual plan in Products to offer it to buyers.",
                   ),
                   hosted.value &&
                     h("p", [
@@ -2290,12 +2298,14 @@ export function mountSellerApp(
                       "h2",
                       { id: "setup-overview-title" },
                       setupSteps().every((step) => step.complete)
-                        ? "Your workspace is set up"
-                        : "Let’s get your software ready",
+                        ? "Setup checklist complete"
+                        : "Set up your first product",
                     ),
                     h(
                       "p",
-                      "A guided checklist for your first product, release, integration and license. Stripe is optional.",
+                      setupSteps().every((step) => step.complete)
+                        ? "Test activation and updates in your software before sharing your release."
+                        : "Publish a release, configure your client, and issue a license. You can start with a complimentary license.",
                     ),
                   ]),
                   data.products.length === 0 &&
@@ -2382,7 +2392,6 @@ export function mountSellerApp(
                   h("div", { class: "workspace-structure-publisher" }, [
                     h("p", { class: "eyebrow" }, "Publisher workspace"),
                     h("h3", data.tenant.name),
-                    h("p", "Your business or brand"),
                   ]),
                   h("div", { class: "workspace-structure-products" }, [
                     h("p", { class: "eyebrow" }, "Products · plugins & apps"),
@@ -2415,7 +2424,7 @@ export function mountSellerApp(
                   h(
                     "p",
                     { class: "workspace-shared-settings" },
-                    "All products share this workspace’s Stripe connection, billing, access, API keys and storage allowance.",
+                    "Products share the workspace’s Stripe connection, access, API keys, and storage allowance.",
                   ),
                 ],
               ),
@@ -2431,7 +2440,7 @@ export function mountSellerApp(
                     h("h3", "Activity & capacity"),
                     h(
                       "p",
-                      "Current workspace · Live and sandbox data stay separate",
+                      "Reports cover the selected workspace. Open its sandbox to see test activity.",
                     ),
                   ]),
                   h("div", { class: "analytics-grid" }, [
@@ -2534,7 +2543,7 @@ export function mountSellerApp(
                   h(
                     "p",
                     { class: "analytics-footnote" },
-                    "Downloads count successful server responses. Collected payments include taxes and exclude Stripe fees.",
+                    "Downloads count successful server responses. Payment totals include tax and show amounts before Stripe fees.",
                   ),
                 ],
               ),
@@ -2551,7 +2560,7 @@ export function mountSellerApp(
                       money(payment.currency, payment.refundedMinor),
                     ),
                     metric(
-                      "Net collected",
+                      "Collected after refunds",
                       money(payment.currency, payment.netMinor),
                     ),
                   ]),
@@ -3223,8 +3232,7 @@ export function mountSellerApp(
                       complimentaryDraft = null;
                       fields.value["complimentary-email"] = "";
                       fields.value["complimentary-note"] = "";
-                      notice.value =
-                        "License issued; license key email queued.";
+                      notice.value = "License issued. License key email queued.";
                     },
                     "The customer receives the license key by email.",
                   );
@@ -3232,7 +3240,7 @@ export function mountSellerApp(
                 [
                   h(
                     "p",
-                    "Issue a normal license without a payment or subscription. Expiration stops new activations, downloads and updates; installed software keeps working.",
+                    "Issue a license without payment. Expiration stops new activations, downloads, and updates. Installed software keeps working.",
                   ),
                   field("complimentary-email", "Customer email", "email"),
                   select(
@@ -3252,7 +3260,7 @@ export function mountSellerApp(
                   ),
                   field(
                     "complimentary-note",
-                    "Internal note (optional)",
+                    "Private seller note (optional)",
                     "text",
                     false,
                   ),
@@ -3820,7 +3828,7 @@ export function mountSellerApp(
                             )!.label
                           : recovery.value
                             ? "Workspace recovery"
-                            : "Your software business",
+                            : "Seller dashboard",
                       ),
                     ],
                   ),
@@ -3975,7 +3983,9 @@ export function mountSellerApp(
                   ? section("Sign in to sell", [
                       h(
                         "p",
-                        "Sign in with a passkey or security key, or use an email link to create an account or sign in.",
+                        hosted.value
+                          ? "Use a passkey or security key to sign in. You can also request an email link to sign in or create an account."
+                          : "Sign in with an enrolled passkey or security key, or request a link at the configured owner email.",
                       ),
                       btn(
                         "Sign in with a passkey or security key",
@@ -4156,13 +4166,20 @@ export function mountSellerApp(
                       h("div", { class: "seller-content" }, [
                         renderSetupContext(),
                         seller.value.tenants.length === 0 &&
-                          section("Create your publisher workspace", [
-                            h(
-                              "p",
-                              "Start with your business or brand. This workspace can hold multiple products—one for each plugin or app. Then publish releases and issue licenses for each product. Connect Stripe when you’re ready to offer paid plans.",
-                            ),
-                            hosted.value && workspaceForm(),
-                          ]),
+                          section(
+                            hosted.value
+                              ? "Create your publisher workspace"
+                              : "Workspace access",
+                            [
+                              h(
+                                "p",
+                                hosted.value
+                                  ? "Add each app or plugin as a product in this workspace. Set up Stripe later if you want to sell paid plans."
+                                  : "Sign in with the owner email configured for this deployment. Ask your operator to check the owner setting if you expected access.",
+                              ),
+                              hosted.value && workspaceForm(),
+                            ],
+                          ),
                         recovery.value && renderRecovery(),
                         (recovery.value || seller.value.tenants.length === 0) &&
                           h(

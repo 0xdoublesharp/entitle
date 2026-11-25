@@ -405,7 +405,7 @@ test("workspace manager archives, restores and removes an empty workspace with f
   });
   assert.equal(el<HTMLSelectElement>("#tenant-select").options.length, 1);
   await click("Workspaces");
-  assert.match(text(), /Archiving keeps licenses, updates and billing running/);
+  assert.match(text(), /licenses, updates, and billing continue/);
   await click("Archive workspace");
   await click("Confirm archive");
   await input("#workspace-view", "archived", "change");
@@ -609,7 +609,7 @@ test("Stripe-free workspaces can create products and clearly mark complimentary 
   await click("Licenses");
   assert.match(el("#seller-panel-licenses").textContent || "", /Complimentary/);
   assert.match(el("#seller-panel-licenses").textContent || "", /Expires/);
-  assert.match(text(), /Paid checkout and billing are unavailable/);
+  assert.match(text(), /Paid checkout is unavailable on this deployment/);
 });
 test("a configured platform does not require a connected seller account or price to create a pilot product", async () => {
   await mount("/seller", () => {
@@ -765,7 +765,7 @@ test("unconnected Stripe accounts load without an error and keep optional billin
   await click("Billing");
   assert.match(
     el("#seller-panel-billing").textContent || "",
-    /Stripe is optional/,
+    /issue complimentary licenses before connecting/,
   );
   await click("Connect Stripe");
   assert.deepEqual(redirects, ["https://stripe.example.test/connect"]);
@@ -825,10 +825,9 @@ test("public marketing home explains the workflow and links signup and docs with
   await mount("/");
   assert.equal(
     el(".saas-hero h1").textContent,
-    "Your software. Ready to sell.",
+    "License your software and ship private updates",
   );
-  assert.match(text(), /Software licensing and updates/);
-  assert.match(text(), /First-class WordPress support/);
+  assert.match(text(), /Private updates in WordPress/);
   assert.equal(
     el('a.button[href="/seller"]').textContent,
     "Create your workspace",
@@ -843,10 +842,9 @@ test("public marketing home explains the workflow and links signup and docs with
   );
   const workflow = figure.textContent || "";
   assert.match(workflow, /pilot/i);
-  assert.match(workflow, /No charge/);
-  assert.match(workflow, /Checkout\sfor\sbuyers/);
-  assert.match(workflow, /Complimentary or paid/);
-  assert.doesNotMatch(workflow, /Paid access|checks out/);
+  assert.match(workflow, /Complimentary licenses or paid checkout/);
+  assert.match(workflow, /activate a site or device/);
+  assert.match(workflow, /checks access on every download/);
   assert.equal(dom.document.querySelector("#server-limits"), null);
   assert.equal(calls.length, 0);
 });
@@ -1127,7 +1125,7 @@ test("publisher workspaces explain their products, sort business names and open 
     assert.match(hierarchy.textContent!, /Products · plugins & apps/);
     assert.match(
       hierarchy.textContent!,
-      /All products share.*Stripe connection/,
+      /Products share.*Stripe connection/,
     );
     if (count === 4)
       assert.match(
@@ -2701,7 +2699,7 @@ test("first-time sellers can create a workspace directly in the onboarding card"
   assert.ok(setup.querySelector("#tenant-create"));
   assert.equal(setup.querySelector("details"), null);
   assert.equal(dom.document.querySelector(".seller-sidebar"), null);
-  assert.equal(el("main h1").textContent, "Your software business");
+  assert.equal(el("main h1").textContent, "Seller dashboard");
   assert.match(
     el(".seller-content").textContent!,
     /Create your publisher workspace/,
@@ -2818,7 +2816,7 @@ test("refresh headings describe loading then return to the retained section", as
   );
   button("Refresh dashboard").click();
   await flush();
-  assert.equal(el("main h1").textContent, "Your software business");
+  assert.equal(el("main h1").textContent, "Seller dashboard");
   finish(Response.json(overview()));
   await flush();
   assert.equal(el("main h1").textContent, "Products");
@@ -4100,10 +4098,10 @@ test("Stripe remains optional in setup and Billing navigation never starts OAuth
   await click("Getting started");
   assert.match(
     el("#seller-panel-onboarding").textContent!,
-    /Optional.*paid plans/,
+    /connect your Stripe account in Billing, then add a plan in Products.*complimentary licenses/,
   );
   assert.equal(dom.document.querySelectorAll(".setup-steps > li").length, 4);
-  await click("Explore Billing");
+  await click("Open Billing");
   assert.equal(el("main h1").textContent, "Billing");
   assert.equal(
     calls.some((call) => call.init.method === "POST"),

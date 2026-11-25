@@ -36,9 +36,10 @@ are tenant-scoped, hashed and permission-limited. Buyer sessions, license keys
 and activation tokens have separate authority. Operator credentials use separate
 routes and are never distributed to clients.
 
-Email links are single-use and browser-bound. Sessions are server-side;
-protected mutations require same-origin/CSRF checks. Sensitive actions consume
-purpose-specific proofs. [Seller guide](seller-guide.md) covers these workflows.
+Email links are single-use. Seller links are bound to the browser that requested
+them. Sessions are server-side, and protected mutations require same-origin and
+CSRF checks. Sensitive actions consume purpose-specific proofs. The
+[seller guide](seller-guide.md) covers these workflows.
 
 ## Complimentary entitlement
 

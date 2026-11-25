@@ -44,7 +44,7 @@ test("self-hosted app build opens the dashboard and excludes marketing UI", asyn
   assert.match(html, /Seller dashboard/);
   assert.doesNotMatch(
     await bundle(join(dir, "web"), ".js"),
-    /First-class WordPress support|Turn your plugin or app into a software business/,
+    /Private updates in WordPress/,
   );
   assert.doesNotMatch(await bundle(join(dir, "web"), ".css"), /\.home-page/);
   await access(join(dir, "web/customer.html"));
@@ -57,7 +57,7 @@ test("marketing is independently built without dashboard or payment UI", async (
   const html = await readFile(join(dir, "marketing/index.html"), "utf8");
   assert.match(html, /Software licensing/);
   const js = await bundle(join(dir, "marketing"), ".js");
-  assert.match(js, /First-class WordPress support/);
+  assert.match(js, /Private updates in WordPress/);
   assert.doesNotMatch(
     js,
     /Confirm seller sign in|Use a recovery code|stripe-js/,
@@ -81,7 +81,7 @@ test("hosted output has separate shells and retains both sets of immutable asset
   await access(join(root, "assets", asset));
   assert.doesNotMatch(
     await readFile(join(root, "assets", asset), "utf8"),
-    /First-class WordPress support/,
+    /Private updates in WordPress/,
   );
   await access(join(root, "app/customer.html"));
 });
