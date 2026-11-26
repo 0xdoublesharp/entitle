@@ -8,6 +8,7 @@ test("public page metadata is crawler-readable, distinct, and uses the configure
   for (const page of ["home", "docs", "seller"] as const) {
     const html = renderPageMetadata(page, "https://licenses.example.com");
     const path = page === "home" ? "/" : `/${page}`;
+    const image = `https://licenses.example.com/social/${page}.png?v=2`;
     assert.ok(
       html.includes(
         `property="og:url" content="https://licenses.example.com${path}"`,
@@ -19,9 +20,10 @@ test("public page metadata is crawler-readable, distinct, and uses the configure
       ),
     );
     assert.ok(
-      html.includes(
-        `property="og:image" content="https://licenses.example.com/social/${page}.png"`,
-      ),
+      html.includes(`property="og:image" content="${image}"`),
+    );
+    assert.ok(
+      html.includes(`name="twitter:image" content="${image}"`),
     );
     assert.ok(
       html.includes('name="twitter:card" content="summary_large_image"'),
@@ -74,7 +76,7 @@ test("application metadata follows a configurable app mount", () => {
   assert.match(html, /href="https:\/\/licenses.example.com\/app\/seller"/);
   assert.match(
     html,
-    /content="https:\/\/licenses.example.com\/app\/social\/seller.png"/,
+    /content="https:\/\/licenses\.example\.com\/app\/social\/seller\.png\?v=2"/,
   );
   assert.throws(() =>
     renderPageMetadata(

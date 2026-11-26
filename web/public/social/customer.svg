@@ -1,18 +1,35 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
- <rect width="1200" height="630" fill="#f6f7f4"/>
- <path d="M0 0h1200v12H0z" fill="#205843"/>
- <circle cx="1120" cy="570" r="280" fill="#e4ebe3"/>
- <circle cx="1120" cy="570" r="205" fill="none" stroke="#cad9cd" stroke-width="2"/>
- <rect x="64" y="58" width="64" height="64" rx="15" fill="#205843"/>
- <g transform="translate(64 58)" fill="#f6f7f4"><path d="M12 12h14v14H12zM38 12h14v14H38zM12 38h14v14H12zM38 38h14v14H38z"/><path d="m17 23 6-6 24 24-6 6z"/><path d="m17 41 24-24 6 6-24 24z"/></g>
- <g font-family="Arial, Helvetica, sans-serif" fill="#173b2e">
- <text x="148" y="101" font-size="30" font-weight="700">Doublesharp Entitle</text>
- <text x="64" y="202" font-size="17" letter-spacing="3" font-weight="700" fill="#486c58">CUSTOMER ACCOUNT</text>
- <text x="60" y="294" font-size="68" font-weight="700" letter-spacing="-2">Your licenses.</text>
- <text x="60" y="374" font-size="68" font-weight="700" letter-spacing="-2">Your downloads.</text>
- <text x="64" y="444" font-size="27" fill="#435b4d">Manage your software in one secure account.</text>
- <text x="64" y="487" font-size="22" fill="#435b4d">Subscriptions, installations and private updates.</text>
- <path d="M64 536h1072" stroke="#b8c9bc"/>
- <text x="64" y="582" font-size="20" fill="#486c58">entitle.doublesharp.com</text>
- <text x="1136" y="582" text-anchor="end" font-size="17" font-weight="700" fill="#486c58">CUSTOMER ACCOUNT</text>
- </g></svg>
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" role="img" aria-labelledby="title desc">
+  <title>Your software licenses and downloads</title>
+  <desc>Manage license keys and installations.</desc>
+  <defs>
+    <linearGradient id="background" x2="100%" y2="100%">
+      <stop stop-color="#173b32"/>
+      <stop offset="1" stop-color="#102b24"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="630" fill="url(#background)"/>
+  <path d="M72 530h1056" stroke="#6b9480" stroke-opacity=".55"/>
+  <path d="M72 530h64" stroke="#ebca83" stroke-width="3"/>
+
+  <g transform="translate(72 70) scale(.875)">
+    <rect width="64" height="64" rx="15" fill="#205843"/>
+    <g fill="#f6f7f4">
+      <path d="M12 12h14v14H12zM38 12h14v14H38zM12 38h14v14H12zM38 38h14v14H38z"/>
+      <path d="m17 23 6-6 24 24-6 6zM17 41l24-24 6 6-24 24z"/>
+    </g>
+  </g>
+  <g font-family="Arial, Helvetica, sans-serif">
+    <text x="146" y="108" font-size="32" font-weight="700" fill="#f6f7f4">Doublesharp Entitle</text>
+    <text x="72" y="223" font-size="21" font-weight="700" letter-spacing="2.4" fill="#ebca83">CUSTOMER ACCOUNT</text>
+    <text x="68" y="317" font-size="67" font-weight="700" letter-spacing="-1.6" fill="#f6f7f4">Your software licenses</text>
+    <text x="68" y="393" font-size="67" font-weight="700" letter-spacing="-1.6" fill="#ebca83">and downloads</text>
+    <text x="72" y="471" font-size="30" fill="#d2e0d7">Manage license keys and installations.</text>
+  </g>
+
+  <g fill="none" aria-hidden="true">
+    <circle cx="1003" cy="318" r="178" stroke="#507964" stroke-opacity=".45"/>
+    <circle cx="1003" cy="318" r="151" stroke="#507964" stroke-opacity=".65"/>
+    <rect x="896" y="211" width="214" height="214" rx="38" fill="#205843" stroke="#6b9480" stroke-width="2"/>
+    <path d="M12 3v13 m-5-5 5 5 5-5 M4 16v5h16v-5" transform="translate(939 254) scale(5.3333)" stroke="#ebca83" stroke-width="1.45" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+</svg>
