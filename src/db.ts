@@ -55,6 +55,7 @@ const migrationNames = [
   "020_strong_reauthentication",
   "021_auth_capabilities",
   "022_plan_catalog_fields",
+  "023_licensing_commerce_growth",
 ] as const;
 
 // Knex's migration listing can create its metadata tables. Serving roles only
@@ -125,7 +126,9 @@ export async function migrate(db: DB) {
                                                 ? import("./migrations/020_strong_reauthentication.ts")
                                                 : m === "021_auth_capabilities"
                                                   ? import("./migrations/021_auth_capabilities.ts")
-                                                  : import("./migrations/022_plan_catalog_fields.ts"),
+                                                  : m === "022_plan_catalog_fields"
+                                                    ? import("./migrations/022_plan_catalog_fields.ts")
+                                                    : import("./migrations/023_licensing_commerce_growth.ts"),
     },
   });
 }
@@ -195,6 +198,7 @@ export async function reset(db: DB) {
       automatic_tax: 0,
       collect_tax_id: 0,
       collect_billing_address: 0,
+      allow_promotion_codes: 0,
       archived_at: null,
       slug: "primary",
       name: "Primary",
@@ -263,6 +267,7 @@ export interface License {
   paid_through: number;
   billing_status: string;
   subscription_id: string | null;
+  one_time_payment_id?: string | null;
   provenance?: "paid" | "complimentary";
   expires_at?: number | null;
   complimentary_request_id?: string | null;

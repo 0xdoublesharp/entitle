@@ -137,6 +137,7 @@ test("SQLite migration preserves constraints and reruns without deleting records
       "020_strong_reauthentication",
       "021_auth_capabilities",
       "022_plan_catalog_fields",
+      "023_licensing_commerce_growth",
     ]);
     await assert.rejects(
       db("plans").insert({
@@ -371,6 +372,7 @@ test("migration002 upgrades existing products without changing original migratio
       "020_strong_reauthentication",
       "021_auth_capabilities",
       "022_plan_catalog_fields",
+      "023_licensing_commerce_growth",
     ]);
     assert.equal(
       (await db("products").where({ id: "legacy" }).first()).plugin_basename,

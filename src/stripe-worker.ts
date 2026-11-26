@@ -1,9 +1,10 @@
 import type Stripe from "stripe";
 import type { StripeBilling } from "./stripe.ts";
-import { appliedInvoiceCredit, creditInvoiceTotal, merchantInvoiceLine, settleMerchantGrants, type MerchantGrantCredit } from "./stripe.ts";
+import { appliedInvoiceCredit, creditInvoiceTotal, merchantInvoiceLine, oneTimeTarget, settleMerchantGrants, type MerchantGrantCredit } from "./stripe.ts";
 import { reconciliationLockId, type BillingEvent, type BillingSnapshot, type PaidGrant } from "./billing.ts";
 import { hash } from "./crypto.ts";
 import { check } from "./errors.ts";
+import { LIFETIME_PAID_THROUGH } from "./licensing.ts";
 import { workerTurn, type WorkerFact } from "./worker-continuation.ts";
 
 const providerId = (value: string | { id: string } | null | undefined) =>
@@ -26,6 +27,7 @@ type SnapshotPhase = "subscription" | "customer" | "invoices" | "invoice" |
 interface SnapshotState {
   version: 3; subscriptionId: string; revision: number; identity: string; phase: SnapshotPhase;
   customerId: string; email: string; billingStatus: string;
+  renewLicenseId?: string | undefined;
   invoicePage: Invoice[]; invoiceIndex: number; invoiceCursor: string | null;
   invoiceNext: string | null; invoiceMore: boolean;
   paymentPage: Payment[]; paymentIndex: number; paymentCursor: string | null;
@@ -45,7 +47,122 @@ function nextPage<T extends { id: string }>(page: Stripe.ApiList<T>) {
   return page.data.at(-1)?.id ?? null;
 }
 
+interface OneTimeState {
+  version: 1; target: string; revision: number; identity: string;
+  phase: "session" | "customer" | "charges" | "disputes" | "done";
+  customerId: string; email: string; intentId?: string | undefined; priceId?: string | undefined;
+  renewLicenseId?: string | undefined; currency: string;
+  paid: number; refunded: number; paidAt: number; suspended: boolean;
+  chargeCursor: string | null; chargeMore: boolean;
+  disputedCharges: string[]; disputeCursor: string | null;
+}
+
+export async function oneTimeSnapshot(source: Source, target: string): Promise<BillingSnapshot> {
+  const turn = workerTurn();
+  const sessionId = target.slice("one_time:".length);
+  const slot = "merchant.one-time";
+  const revision = turn ? Number((await source.db("locks")
+    .where({ id: reconciliationLockId(source.tenant.id, target) }).first())?.version ?? 0) : 0;
+  const initial: OneTimeState = {
+    version: 1, target, revision, identity: turn ? providerIdentity(source) : "", phase: "session",
+    customerId: "", email: "", currency: "", paid: 0, refunded: 0, paidAt: 0,
+    suspended: false, chargeCursor: null, chargeMore: false, disputedCharges: [], disputeCursor: null,
+  };
+  let state = turn ? await turn.state(slot, initial) : initial;
+  if (turn && (state.version !== initial.version || state.target !== target ||
+    state.revision !== revision || state.identity !== initial.identity)) {
+    await turn.reset(slot);
+    state = initial;
+  }
+  const read = <T>(call: (options: Stripe.RequestOptions) => Promise<T>) =>
+    turn ? turn.read((options) => call({ ...source.options(), ...options })) : call(source.options());
+  while (true) {
+    switch (state.phase) {
+      case "session": {
+        const session = await read((options) => source.stripe.checkout.sessions.retrieve(
+          sessionId, { expand: ["line_items"] }, options,
+        ));
+        check(session.id === sessionId && session.mode === "payment", 502, "billing_mismatch", "Billing snapshot mismatch.");
+        state.customerId = providerId(session.customer) ?? "";
+        state.renewLicenseId = session.metadata?.renew_license_id || undefined;
+        if (session.payment_status === "paid" && (session.amount_total ?? 0) > 0) {
+          state.intentId = providerId(session.payment_intent);
+          state.currency = session.currency ?? "";
+          const lines = session.line_items;
+          if (lines && !lines.has_more && lines.data.length === 1)
+            state.priceId = lines.data[0]?.price?.id;
+        }
+        state.phase = state.customerId ? "customer" : "done";
+        break;
+      }
+      case "customer": {
+        const customer = await read((options) => source.stripe.customers.retrieve(state.customerId, {}, options));
+        state.email = customer.deleted ? "" : customer.email ?? "";
+        state.phase = state.intentId && state.priceId ? "charges" : "done";
+        break;
+      }
+      case "charges": {
+        const page = await read((options) => source.stripe.charges.list({
+          payment_intent: state.intentId!, limit: 100, ...cursor(state.chargeCursor),
+        }, options));
+        state.chargeCursor = nextPage(page);
+        state.chargeMore = page.has_more;
+        turn?.work(page.data.length);
+        for (const charge of page.data) {
+          if (!charge.paid || charge.amount_captured <= 0) continue;
+          state.paid += charge.amount_captured;
+          state.refunded += Math.min(charge.amount_captured, charge.amount_refunded);
+          const paidAt = charge.created * 1000;
+          state.paidAt = state.paidAt ? Math.min(state.paidAt, paidAt) : paidAt;
+          if (charge.disputed && !state.suspended) state.disputedCharges.push(charge.id);
+        }
+        state.phase = state.disputedCharges.length ? "disputes" : state.chargeMore ? "charges" : "done";
+        break;
+      }
+      case "disputes": {
+        const page = await read((options) => source.stripe.disputes.list({
+          charge: state.disputedCharges[0]!, limit: 100, ...cursor(state.disputeCursor),
+        }, options));
+        const next = nextPage(page);
+        turn?.work(page.data.length);
+        if ((!page.data.length && !state.disputeCursor) ||
+          page.data.some((item) => !["won", "warning_closed"].includes(item.status))) {
+          state.suspended = true;
+          state.disputedCharges = [];
+        } else if (page.has_more) {
+          state.disputeCursor = next;
+          break;
+        } else {
+          state.disputedCharges.shift();
+        }
+        state.disputeCursor = null;
+        if (!state.disputedCharges.length) state.phase = state.chargeMore ? "charges" : "done";
+        break;
+      }
+      case "done": {
+        turn?.beginApply();
+        const settled = state.paid > 0;
+        const invoiceId = state.intentId ?? sessionId;
+        return {
+          subscriptionId: target, oneTimePaymentId: sessionId, renewLicenseId: state.renewLicenseId,
+          customerId: state.customerId, email: state.email, billingStatus: "lifetime",
+          suspended: state.suspended, fullyRefunded: settled && state.refunded >= state.paid,
+          grants: settled ? [{
+            id: sessionId, invoiceId, priceId: state.priceId!, periodStart: state.paidAt,
+            periodEnd: LIFETIME_PAID_THROUGH, paidAt: state.paidAt, settled,
+          }] : [],
+          invoices: settled ? [{
+            invoiceId, currency: state.currency, paidMinor: state.paid, refundedMinor: state.refunded,
+          }] : [],
+        };
+      }
+    }
+    await turn?.save(slot, state, [], state.phase === "done");
+  }
+}
+
 export async function workerSnapshot(source: Source, subscriptionId: string): Promise<BillingSnapshot> {
+  if (subscriptionId.startsWith("one_time:")) return oneTimeSnapshot(source, subscriptionId);
   const turn = workerTurn()!;
   const slot = "merchant.snapshot";
   const revision = Number((await source.db("locks")
@@ -76,6 +193,7 @@ export async function workerSnapshot(source: Source, subscriptionId: string): Pr
         const sub = await read((options) => source.stripe.subscriptions.retrieve(subscriptionId, {}, options));
         state.customerId = providerId(sub.customer)!;
         state.billingStatus = sub.status;
+        state.renewLicenseId = sub.metadata?.renew_license_id || undefined;
         state.phase = state.phase === "subscription" ? "customer" : "refresh-customer";
         break;
       }
@@ -246,7 +364,8 @@ export async function workerSnapshot(source: Source, subscriptionId: string): Pr
       case "done":
         turn.beginApply();
         return { subscriptionId, customerId: state.customerId, email: state.email,
-          billingStatus: state.billingStatus, suspended: state.suspended, fullyRefunded: state.fullyRefunded,
+          billingStatus: state.billingStatus, renewLicenseId: state.renewLicenseId,
+          suspended: state.suspended, fullyRefunded: state.fullyRefunded,
           ...settleMerchantGrants(
             await turn.facts<PaidGrant>(slot, "grants"),
             await turn.facts<MerchantGrantCredit>(slot, "grant-credit"),
@@ -258,10 +377,10 @@ export async function workerSnapshot(source: Source, subscriptionId: string): Pr
   }
 }
 
-type ResolvePhase = "event" | "charge" | "intent-payments" | "intent-invoice" |
+type ResolvePhase = "event" | "charge" | "intent-payments" | "intent-invoice" | "intent-checkout" |
   "customer-invoices" | "customer-invoice" | "legacy-payments" | "done";
 interface ResolveState {
-  version: 2; eventId: string; identity: string; phase: ResolvePhase; chargeId: string | null;
+  version: 3; eventId: string; identity: string; phase: ResolvePhase; chargeId: string | null;
   customerId: string | null; intentId: string | null; result: string | null;
   cursor: string | null; next: string | null; more: boolean;
   invoices: { id: string; subscription: string | null }[]; index: number;
@@ -272,7 +391,7 @@ export async function workerResolveSubscription(source: Source, event: BillingEv
   const turn = workerTurn()!;
   const slot = "merchant.resolve";
   const initial: ResolveState = {
-    version: 2, eventId: event.id, identity: providerIdentity(source), phase: "event", chargeId: null,
+    version: 3, eventId: event.id, identity: providerIdentity(source), phase: "event", chargeId: null,
     customerId: null, intentId: null, result: null, cursor: null, next: null, more: false,
     invoices: [], index: 0, payments: [], paymentIndex: 0, paymentCursor: null,
   };
@@ -295,10 +414,12 @@ export async function workerResolveSubscription(source: Source, event: BillingEv
           state.phase = "done";
         } else if (event.type.startsWith("checkout.session.")) {
           const session = await read((options) => source.stripe.checkout.sessions.retrieve(objectId, {}, options));
-          state.result = providerId(session.subscription) ?? null; state.phase = "done";
+          state.result = oneTimeTarget(session) ?? providerId(session.subscription) ?? null; state.phase = "done";
         } else if (event.type.startsWith("charge.dispute.")) {
           const dispute = await read((options) => source.stripe.disputes.retrieve(objectId, {}, options));
-          state.chargeId = providerId(dispute.charge) ?? null; state.phase = state.chargeId ? "charge" : "done";
+          state.chargeId = providerId(dispute.charge) ?? null;
+          state.intentId = providerId(dispute.payment_intent) ?? null;
+          state.phase = state.chargeId ? "charge" : state.intentId ? "intent-payments" : "done";
         } else if (event.type.startsWith("refund.") || event.type.startsWith("charge.refund.")) {
           const refund = await read((options) => source.stripe.refunds.retrieve(objectId, {}, options));
           state.chargeId = providerId(refund.charge) ?? null;
@@ -310,7 +431,7 @@ export async function workerResolveSubscription(source: Source, event: BillingEv
         break;
       case "charge": {
         const charge = await read((options) => source.stripe.charges.retrieve(state.chargeId!, {}, options));
-        state.intentId = providerId(charge.payment_intent) ?? null;
+        state.intentId = providerId(charge.payment_intent) ?? state.intentId;
         state.customerId = providerId(charge.customer) ?? null;
         state.phase = state.intentId ? "intent-payments" : state.customerId ? "customer-invoices" : "done";
         break;
@@ -328,7 +449,7 @@ export async function workerResolveSubscription(source: Source, event: BillingEv
       case "intent-invoice": {
         const selected = state.payments[state.paymentIndex];
         if (!selected) {
-          state.cursor = state.next; state.phase = state.more ? "intent-payments" : "done";
+          state.cursor = state.next; state.phase = state.more ? "intent-payments" : "intent-checkout";
         } else if (!selected.invoice) state.paymentIndex++;
         else {
           const invoice = await read((options) => source.stripe.invoices.retrieve(selected.invoice!, {}, options));
@@ -336,6 +457,14 @@ export async function workerResolveSubscription(source: Source, event: BillingEv
           if (state.result) state.phase = "done";
           else state.paymentIndex++;
         }
+        break;
+      }
+      case "intent-checkout": {
+        const page = await read((options) => source.stripe.checkout.sessions.list({
+          payment_intent: state.intentId!, limit: 1,
+        }, options));
+        state.result = page.data[0] ? oneTimeTarget(page.data[0]) : null;
+        state.phase = "done";
         break;
       }
       case "customer-invoices": {

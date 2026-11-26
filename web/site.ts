@@ -21,14 +21,14 @@ import type { Framework, FrameworkProduct, ReleaseAsset } from "./api.ts";
 import { type Tenant, workspaceArchived } from "../packages/shared/tenant.ts";
 import { WorkspaceManager } from "./workspaces.ts";
 import { site } from "../packages/shared/site.ts";
-import { SellerFeaturePanel, verifiedRequest } from "./features.ts";
+import { saveBlob, SellerFeaturePanel, verifiedRequest } from "./features.ts";
 import {
   hardwareVerification,
   passkeyCeremony,
   privilegedPolicyOf,
 } from "./oidc.ts";
 import type { PrivilegedPolicy } from "./oidc.ts";
-import { planPrice, stripeExponent } from "./checkout.ts";
+import { formatMinorAmount as money, planPrice } from "./checkout.ts";
 import type { EmailChangeDraft } from "./features.ts";
 import { appHeader, sellerHelpLink } from "./chrome.ts";
 import { applicationHref } from "./navigation.ts";
@@ -90,6 +90,7 @@ interface Overview {
     paid_through: number | null;
     provenance?: "paid" | "complimentary";
     expires_at?: number | null;
+    internal_note?: string | null;
     billing_status: string;
     revoked: boolean;
     suspended: boolean;
@@ -116,6 +117,7 @@ interface Overview {
     }[];
   };
 }
+type SellerLicense = Overview["licenses"][number];
 interface Price {
   id: string;
   productName: string;
@@ -238,6 +240,50 @@ const licenseBillingLabel = (license: Overview["licenses"][number]) => {
     )[license.billing_status] || license.billing_status.replaceAll("_", " ");
   return label ? label.charAt(0).toUpperCase() + label.slice(1) : "";
 };
+const licenseExpiry = (license: SellerLicense) =>
+  license.provenance === "complimentary"
+    ? license.expires_at
+    : license.paid_through;
+const licenseAccessLabel = (license: SellerLicense, now: number) => {
+  if (license.revoked) return "Revoked";
+  if (license.suspended) return "Suspended";
+  if (license.billing_status === "lifetime") return "Active";
+  const expires = licenseExpiry(license);
+  if (!expires) return "Pending";
+  return expires <= now ? "Expired" : "Active";
+};
+const matchesLicenseStatus = (
+  license: SellerLicense,
+  status: string,
+  now: number,
+) => {
+  switch (status) {
+    case "":
+      return true;
+    case "expiring": {
+      const expires = licenseExpiry(license);
+      return (
+        license.billing_status !== "lifetime" &&
+        licenseAccessLabel(license, now) === "Active" &&
+        expires != null &&
+        expires <= now + 30 * 86400000
+      );
+    }
+    case "canceled":
+      return license.billing_status === "canceled";
+    case "lifetime":
+      return license.billing_status === "lifetime";
+    default:
+      return licenseAccessLabel(license, now).toLowerCase() === status;
+  }
+};
+const localDateTime = (timestamp: number | null | undefined) => {
+  if (timestamp == null) return "";
+  const value = new Date(timestamp);
+  return new Date(timestamp - value.getTimezoneOffset() * 60000)
+    .toISOString()
+    .slice(0, 16);
+};
 const readableBytes = (bytes: number) => {
   const [size, unit] =
     bytes >= 1073741824
@@ -290,27 +336,6 @@ const section = (title: string, children: unknown[]) =>
     h("h2", title),
     ...children,
   ] as Parameters<typeof h>[2]);
-const money = (currency: string, minor: string) => {
-  const formatter = new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: currency.toUpperCase(),
-  });
-  const digits = formatter.resolvedOptions().maximumFractionDigits!;
-  const value = BigInt(minor),
-    scale = 10n ** BigInt(stripeExponent(currency)),
-    negative = value < 0n,
-    absolute = negative ? -value : value;
-  const whole = absolute / scale,
-    fraction = (absolute % scale).toString().padStart(digits, "0");
-  return (
-    (negative ? "-" : "") +
-    formatter
-      .formatToParts(whole)
-      .map((part) => (part.type === "fraction" ? fraction : part.value))
-      .join("")
-  );
-};
-
 const policyCopy: Record<
   PrivilegedPolicy,
   { keys: string; release: string; browser: string }
@@ -420,6 +445,7 @@ export function mountSellerApp(
         const licenseProduct = ref("");
         const licenseType = ref("");
         const licenseAccess = ref("");
+        const editLicenseId = ref("");
         const licenseSort = ref<(typeof licenseColumns)[number]>("Customer");
         const licenseDescending = ref(false);
         const sortLicenses = (column: (typeof licenseColumns)[number]) => {
@@ -620,6 +646,7 @@ export function mountSellerApp(
           editProduct.value = "";
           addPlan.value = false;
           inspected.value = null;
+          editLicenseId.value = "";
         };
         const run = async (action: () => Promise<void>, expire = true) => {
           if (busy.value) return;
@@ -651,6 +678,7 @@ export function mountSellerApp(
             editProduct.value = "";
             addPlan.value = false;
             inspected.value = null;
+            editLicenseId.value = "";
             complimentaryWorkspace = selected.value;
           }
           panelProof.value = null;
@@ -884,13 +912,18 @@ export function mountSellerApp(
               required,
               value: fields.value[id],
               min: type === "number" ? 1 : undefined,
-              max: id === "complimentary-allowance" ? 100000 : undefined,
+              max: [
+                "complimentary-allowance",
+                "edit-license-allowance",
+              ].includes(id)
+                ? 100000
+                : undefined,
               maxlength:
                 id === "tenant-slug"
                   ? 63
                   : id === "tenant-name"
                     ? 200
-                    : id === "complimentary-note"
+                    : ["complimentary-note", "edit-license-note"].includes(id)
                       ? 2000
                       : id === "complimentary-email"
                         ? 254
@@ -1281,6 +1314,138 @@ export function mountSellerApp(
             document.getElementById("edit-product-name")?.focus(),
           );
         };
+        const exportLicenses = async () => {
+          const api = tenantApi();
+          const query = new URLSearchParams({ format: "csv" });
+          for (const [key, value] of Object.entries({
+            productId: licenseProduct.value,
+            provenance: licenseType.value,
+            status: licenseAccess.value,
+            q: licenseQuery.value.trim(),
+          })) {
+            if (value) query.set(key, value);
+          }
+          const csv = await api.request<Blob>(
+            `/licenses/export?${query}`,
+            { headers: { Accept: "text/csv" } },
+            "blob",
+          );
+          saveBlob(csv, `${selected.value}-licenses.csv`);
+        };
+        const startLicenseEdit = (license: SellerLicense) => {
+          editLicenseId.value = license.id;
+          fields.value["edit-license-note"] = license.internal_note ?? "";
+          fields.value["edit-license-expiry"] =
+            license.provenance === "complimentary"
+              ? localDateTime(license.expires_at)
+              : "";
+          fields.value["edit-license-allowance"] = String(
+            license.site_allowance,
+          );
+          void nextTick(() =>
+            document.getElementById("edit-license-note")?.focus(),
+          );
+        };
+        const licenseEditor = (license: SellerLicense) => {
+          const complimentary = license.provenance === "complimentary";
+          return h(
+            "tr",
+            {
+              key: `editor-${license.id}`,
+              class: "license-edit-row",
+              role: "row",
+            },
+            [
+              h("td", { colspan: 7, role: "cell" }, [
+                form(
+                  "license-edit",
+                  async () => {
+                    const patch: {
+                      internalNote: string;
+                      expiresAt?: number;
+                      siteAllowance?: number;
+                    } = {
+                      internalNote: fields.value["edit-license-note"]!.trim(),
+                    };
+                    if (complimentary) {
+                      const expiration = fields.value["edit-license-expiry"]!;
+                      const expirationChanged =
+                        expiration !== localDateTime(license.expires_at);
+                      const siteAllowance = Number(
+                        fields.value["edit-license-allowance"],
+                      );
+                      const expiresAt = new Date(expiration).getTime();
+                      if (
+                        !Number.isSafeInteger(siteAllowance) ||
+                        siteAllowance < 1 ||
+                        siteAllowance > 100000 ||
+                        (expirationChanged &&
+                          (!Number.isFinite(expiresAt) ||
+                            expiresAt <= Date.now()))
+                      ) {
+                        error.value =
+                          "Choose a future expiration date and an installation allowance from 1 to 100000.";
+                        return;
+                      }
+                      if (expirationChanged) patch.expiresAt = expiresAt;
+                      if (siteAllowance !== license.site_allowance)
+                        patch.siteAllowance = siteAllowance;
+                    }
+                    const api = tenantApi();
+                    await api.request(
+                      `/licenses/${encodeURIComponent(license.id)}`,
+                      {
+                        method: "PATCH",
+                        headers: {
+                          "Content-Type": "application/json",
+                          "X-CSRF-Token": api.csrfToken,
+                        },
+                        body: JSON.stringify(patch),
+                      },
+                    );
+                    editLicenseId.value = "";
+                    await dashboard();
+                    notice.value = "License updated.";
+                  },
+                  [
+                    h("h3", `Edit license for ${license.customer_email}`),
+                    field("edit-license-note", "Internal note", "text", false),
+                    ...(complimentary
+                      ? [
+                          field(
+                            "edit-license-expiry",
+                            "Expiration date and time (your local time)",
+                            "datetime-local",
+                            Boolean(license.expires_at),
+                          ),
+                          field(
+                            "edit-license-allowance",
+                            "Installation allowance",
+                            "number",
+                          ),
+                        ]
+                      : [
+                          h(
+                            "p",
+                            { class: "small muted" },
+                            "Stripe manages expiration and installation allowance for paid licenses.",
+                          ),
+                        ]),
+                    btn(
+                      "Cancel edit",
+                      () => {
+                        editLicenseId.value = "";
+                      },
+                      busy.value,
+                      { class: "button-secondary" },
+                    ),
+                  ],
+                  "Save license",
+                ),
+              ]),
+            ],
+          );
+        };
         const archivePlan = (plan: SellerProduct["plans"][number]) =>
           confirm(
             `${plan.archived_at ? "Restore" : "Archive"} the ${plan.name} plan?`,
@@ -1342,7 +1507,13 @@ export function mountSellerApp(
         const priceOptions = (list: Price[]) =>
           list.map((price) => ({
             value: price.id,
-            label: `${price.productName} · ${price.nickname || price.id} · ${price.unit_amount === null ? "Custom price" : money(price.currency, String(price.unit_amount))}/${price.interval}`,
+            label: `${price.productName} · ${price.nickname || price.id} · ${
+              price.unit_amount === null
+                ? "Custom price"
+                : price.interval === "lifetime"
+                  ? planPrice({ ...price, billing_interval: "lifetime" })
+                  : `${money(price.currency, price.unit_amount)}/${price.interval}`
+            }`,
           }));
         const releaseProduct = () =>
           overview.value!.products.find(
@@ -2012,23 +2183,11 @@ export function mountSellerApp(
               .filter((release) => !release.withdrawn)
               .map((release) => release.product_id),
           ).size;
-          type License = Overview["licenses"][number];
-          const expiry = (license: License) =>
-            license.provenance === "complimentary"
-              ? license.expires_at
-              : license.paid_through;
-          const access = (license: License) =>
-            license.revoked
-              ? "Revoked"
-              : license.suspended
-                ? "Suspended"
-                : !expiry(license)
-                  ? "Pending"
-                  : expiry(license)! <= Date.now()
-                    ? "Expired"
-                    : "Active";
+          const now = Date.now();
+          const access = (license: SellerLicense) =>
+            licenseAccessLabel(license, now);
           const sortValue = (
-            license: License,
+            license: SellerLicense,
           ): string | number | null | undefined => {
             switch (licenseSort.value) {
               case "Product and plan":
@@ -2040,7 +2199,7 @@ export function mountSellerApp(
                   ? "Complimentary"
                   : license.billing_status;
               case "Paid through / Expires":
-                return expiry(license);
+                return licenseExpiry(license);
               case "Access":
                 return access(license);
               default:
@@ -2083,8 +2242,7 @@ export function mountSellerApp(
                   (license.provenance === "complimentary"
                     ? "complimentary"
                     : "paid") === licenseType.value) &&
-                (!licenseAccess.value ||
-                  access(license).toLowerCase() === licenseAccess.value)
+                matchesLicenseStatus(license, licenseAccess.value, now)
               );
             })
             .sort((a, b) => {
@@ -2161,7 +2319,7 @@ export function mountSellerApp(
                         : "Configure Stripe on your server to enable paid checkout. You can issue complimentary licenses now."
                       : hosted.value && stripeStatus !== "connected"
                         ? "Connect Stripe to accept payments. You can issue complimentary licenses before connecting."
-                        : "Paid purchases go through your Stripe account. Add a monthly or annual plan in Products to offer it to buyers.",
+                        : "Paid purchases go through your Stripe account. Add a monthly, annual, or lifetime plan in Products to offer it to buyers.",
                   ),
                   hosted.value &&
                     h("p", [
@@ -2604,8 +2762,8 @@ export function mountSellerApp(
                 h(
                   "p",
                   data.billingAvailable === false
-                    ? "Create a product for complimentary licensing. Configure Stripe and a monthly or annual price before selling paid plans."
-                    : "Create a product for complimentary licensing now. Connect Stripe and create an active monthly or annual recurring price to add a paid plan.",
+                    ? "Create a product for complimentary licensing. Configure Stripe and a monthly, annual, or lifetime price before selling paid plans."
+                    : "Create a product for complimentary licensing now. Connect Stripe and create an active monthly or annual recurring price or a lifetime price to add a paid plan.",
                 ),
               form(
                 "product-create",
@@ -2717,7 +2875,7 @@ export function mountSellerApp(
                           ).checked;
                         },
                       }),
-                      " Include a paid plan (monthly or annual)",
+                      " Include a paid plan (monthly, annual, or lifetime)",
                     ]),
                   ]),
                   includePaidPlan.value &&
@@ -2747,7 +2905,7 @@ export function mountSellerApp(
                   includePaidPlan.value &&
                     select(
                       "price-id",
-                      "Stripe price (monthly or annual)",
+                      "Stripe price (monthly, annual, or lifetime)",
                       priceOptions(prices.value),
                     ),
                 ],
@@ -2817,7 +2975,7 @@ export function mountSellerApp(
                         )
                       : h(
                           "p",
-                          "No paid plans yet, so this product offers complimentary licenses only. Add a monthly or annual plan to start selling it.",
+                          "No paid plans yet, so this product offers complimentary licenses only. Add a monthly, annual, or lifetime plan to start selling it.",
                         ),
                     form(
                       "product-edit",
@@ -2872,7 +3030,7 @@ export function mountSellerApp(
                                   unmappedPrices()[0]?.id || "";
                               },
                             }),
-                            " Add a paid plan (monthly or annual)",
+                            " Add a paid plan (monthly, annual, or lifetime)",
                           ]),
                         ]),
                         prices.value.length > 0 &&
@@ -2880,7 +3038,7 @@ export function mountSellerApp(
                           h(
                             "p",
                             { id: "edit-price-note", role: "status" },
-                            "Every Stripe price is already used by a plan. Create a new monthly or annual price in Stripe to add another plan.",
+                            "Every Stripe price is already used by a plan. Create a new monthly, annual, or lifetime price in Stripe to add another plan.",
                           ),
                         addPlan.value && field("edit-plan-name", "Plan name"),
                         addPlan.value &&
@@ -2894,7 +3052,7 @@ export function mountSellerApp(
                         addPlan.value &&
                           select(
                             "edit-price-id",
-                            "Stripe price (monthly or annual)",
+                            "Stripe price (monthly, annual, or lifetime)",
                             priceOptions(unmappedPrices()),
                           ),
                       ],
@@ -3371,6 +3529,9 @@ export function mountSellerApp(
                           licenseAccess,
                           [
                             ["", "All access states"],
+                            ["expiring", "Expiring soon (30d)"],
+                            ["canceled", "Canceled"],
+                            ["lifetime", "Lifetime"],
                             ...[
                               "Active",
                               "Expired",
@@ -3408,6 +3569,9 @@ export function mountSellerApp(
                   },
                   "Clear filters",
                 ),
+                btn("Export CSV", () => void run(exportLicenses), busy.value, {
+                  class: "button-secondary",
+                }),
               ]),
               h("div", { class: "table-scroll license-list" }, [
                 h("table", { id: "licenses-table", role: "table" }, [
@@ -3460,7 +3624,7 @@ export function mountSellerApp(
                     "tbody",
                     { role: "rowgroup" },
                     licenses.length
-                      ? licenses.map((license) =>
+                      ? licenses.flatMap((license) => [
                           h(
                             "tr",
                             {
@@ -3527,11 +3691,13 @@ export function mountSellerApp(
                                       ? "Expires"
                                       : "Paid through",
                                   ),
-                                  expiry(license)
-                                    ? new Date(
-                                        expiry(license)!,
-                                      ).toLocaleDateString()
-                                    : "Not yet available",
+                                  license.billing_status === "lifetime"
+                                    ? "Lifetime"
+                                    : licenseExpiry(license)
+                                      ? new Date(
+                                          licenseExpiry(license)!,
+                                        ).toLocaleDateString()
+                                      : "Not yet available",
                                 ],
                               ),
                               h(
@@ -3553,6 +3719,19 @@ export function mountSellerApp(
                                 { class: "license-actions", role: "cell" },
                                 [
                                   h("div", [
+                                    h(
+                                      "button",
+                                      {
+                                        type: "button",
+                                        disabled: busy.value,
+                                        onClick: () =>
+                                          startLicenseEdit(license),
+                                        "aria-label": `Edit license for ${license.customer_email}`,
+                                        "aria-expanded":
+                                          editLicenseId.value === license.id,
+                                      },
+                                      "Edit",
+                                    ),
                                     h(
                                       "button",
                                       {
@@ -3604,7 +3783,10 @@ export function mountSellerApp(
                               ),
                             ],
                           ),
-                        )
+                          ...(editLicenseId.value === license.id
+                            ? [licenseEditor(license)]
+                            : []),
+                        ])
                       : [
                           h("tr", { role: "row" }, [
                             h(
@@ -4333,6 +4515,7 @@ export function mountSellerApp(
                               h(SellerFeaturePanel, {
                                 key: `${selected.value}:${activePage.value}:${proofRound.value}`,
                                 page: activePage.value,
+                                tenantSlug: selected.value,
                                 api: tenantApi(),
                                 platform,
                                 hosted: hosted.value,

@@ -10,7 +10,7 @@ import { randomUUID } from "node:crypto";
 import type { DB, License, Plan, Customer, Job } from "./db.ts";
 import { lock } from "./db.ts";
 import { hash, random, seal, unseal } from "./crypto.ts";
-import type { Licenses } from "./licensing.ts";
+import { licenseCanRenew, type Licenses } from "./licensing.ts";
 import { AppError, check } from "./errors.ts";
 import { DeferredJob, runQueue, assertQueueLease, type WorkerQueueOptions } from "./queue.ts";
 import { withWorkerTurn, workerTurn } from "./worker-continuation.ts";
@@ -29,6 +29,8 @@ export interface PaidGrant {
 }
 export interface BillingSnapshot {
   subscriptionId: string;
+  oneTimePaymentId?: string;
+  renewLicenseId?: string | undefined;
   customerId: string;
   email: string;
   billingStatus: string;
@@ -149,10 +151,16 @@ export class Billing {
             g.periodEnd >= g.periodStart &&
             plans.some((p) => p.stripe_price_id === g.priceId),
         );
+        const providerBinding = {
+          subscription_id: s.oneTimePaymentId ? null : subscriptionId,
+          one_time_payment_id: s.oneTimePaymentId ?? null,
+        };
         let l = await tx<License>("licenses")
           .where({
             tenant_id: this.licensing.tenant.id,
-            subscription_id: subscriptionId,
+            ...(s.oneTimePaymentId
+              ? { one_time_payment_id: s.oneTimePaymentId }
+              : { subscription_id: subscriptionId }),
           })
           .first();
         check(!l || l.provenance !== "complimentary", 409, "billing_provenance_conflict", "Stripe cannot reconcile complimentary entitlement.");
@@ -176,6 +184,21 @@ export class Billing {
             )
               throw new DeferredJob(Date.now() + 60000, "tenant_authority");
             throw error;
+          }
+        }
+        let superseded = false;
+        if (!l) {
+          // Once a renewal replaces the provider binding, the old grants
+          // still identify prior payments and prevent a replay from issuing
+          // a second key or modifying the renewed entitlement.
+          for (const grant of paid) {
+            turn?.work();
+            if (await tx("grants")
+              .where({ tenant_id: this.licensing.tenant.id, id: grant.id })
+              .first("id")) {
+              superseded = true;
+              break;
+            }
           }
         }
         for (const invoice of s.invoices ?? []) {
@@ -202,6 +225,7 @@ export class Billing {
             .merge(["currency", "paid_minor", "refunded_minor"]);
           turn?.work();
         }
+        if (superseded) return true;
         let c = await tx<Customer>("customers")
           .where({
             tenant_id: this.licensing.tenant.id,
@@ -239,9 +263,24 @@ export class Billing {
             await tx("customers").insert(c);
           }
         }
+        let renewed = false;
+        const firstPlan = first && plans.find((p) => p.stripe_price_id === first.priceId);
+        if (!l && firstPlan && s.renewLicenseId) {
+          const target = await tx<License>("licenses")
+            .where({ tenant_id: this.licensing.tenant.id, id: s.renewLicenseId })
+            .first();
+          if (
+            target && target.customer_id === c.id &&
+            target.product_id === firstPlan.product_id &&
+            licenseCanRenew(target, Date.now(), true)
+          ) {
+            renewed = true;
+            l = { ...target, ...providerBinding, provenance: "paid", expires_at: null };
+          }
+        }
         const created = !l;
         if (!l) {
-          const plan = plans.find((p) => p.stripe_price_id === first!.priceId)!;
+          const plan = firstPlan!;
           const key = `DE-${random()}`;
           l = {
             tenant_id: this.licensing.tenant.id,
@@ -252,7 +291,7 @@ export class Billing {
             site_allowance: plan.site_allowance,
             paid_through: 0,
             billing_status: s.billingStatus,
-            subscription_id: subscriptionId,
+            ...providerBinding,
             key_hash: hash(key),
             revoked: 0,
             refund_revoked: 0,
@@ -347,6 +386,7 @@ export class Billing {
             billing_status: s.billingStatus,
             suspended: s.suspended ? 1 : 0,
             refund_revoked: l.refund_revoked || s.fullyRefunded ? 1 : 0,
+            ...(renewed ? { ...providerBinding, provenance: "paid", expires_at: null } : {}),
           });
         if (created)
           await recordBusinessEvent(
@@ -356,13 +396,25 @@ export class Billing {
             l.id,
             "created",
           );
-        else if (paidThrough > Number(l.paid_through))
+        else if (renewed || paidThrough > Number(l.paid_through))
           await recordBusinessEvent(
             tx,
             this.licensing.tenant.id,
             "license.renewed",
             l.id,
-            String(paidThrough),
+            renewed ? `renewal:${hash(subscriptionId)}` : String(paidThrough),
+          );
+        if (
+          !created &&
+          s.billingStatus === "canceled" &&
+          l.billing_status !== "canceled"
+        )
+          await recordBusinessEvent(
+            tx,
+            this.licensing.tenant.id,
+            "license.canceled",
+            l.id,
+            `canceled:${paidThrough}`,
           );
         if (s.fullyRefunded && !l.refund_revoked && !l.revoked)
           await recordBusinessEvent(

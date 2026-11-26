@@ -603,6 +603,12 @@ nav a:hover {
   border-radius: 6px;
   font-size: 0.8125rem;
 }
+.renewal-notice {
+  margin-bottom: 14px;
+}
+.renewal-notice p {
+  margin: 0 0 8px;
+}
 .key-notice {
   padding: 20px;
   background: #eff6ed;
@@ -4364,6 +4370,13 @@ td button {
 }
 #licenses-table :is(.license-customer, .license-product) {
   overflow-wrap: break-word;
+}
+#licenses-table .license-edit-row > td {
+  padding: 14px;
+  background: #f8fbf9;
+}
+#licenses-table .license-edit-row h3 {
+  margin: 0;
 }
 .license-customer {
   color: var(--forest);

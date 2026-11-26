@@ -4256,7 +4256,7 @@ test("sellers edit a complimentary pilot product, add a monthly plan, and archiv
   assert.equal(dom.document.querySelector("#edit-price-id"), null);
   el<HTMLInputElement>("#edit-add-plan").click();
   await flush();
-  assert.match(el('label[for="edit-price-id"]').textContent!, /monthly or annual/);
+  assert.match(el('label[for="edit-price-id"]').textContent!, /monthly, annual, or lifetime/);
   await input("#edit-product-name", "Pilot app Pro");
   await input("#edit-plan-name", "Monthly");
   await input("#edit-site-allowance", "3");

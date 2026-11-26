@@ -932,6 +932,7 @@ test("public catalog requires an explicit tenant namespace and platform info exp
     tenant: { slug: "primary", name: "Primary" },
     products: [],
     billingAvailable: true,
+    allowPromotionCodes: false,
   });
   for (const url of [
     "/api/v1/catalog",
@@ -1733,7 +1734,7 @@ test("seller Stripe catalog selects active paid monthly and annual prices and se
   assert.equal(fixtures.json().localMode, true);
   assert.deepEqual(
     new Set(fixtures.json().prices.map((price: { interval: string }) => price.interval)),
-    new Set(["month", "year"]),
+    new Set(["month", "year", "lifetime"]),
   );
   const monthly = fixtures.json().prices.find((price: { interval: string }) => price.interval === "month");
   const saved = await local.post(`${prefix}/seller/products`, {

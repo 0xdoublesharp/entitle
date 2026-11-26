@@ -19,6 +19,7 @@ import type { PlatformBilling } from "./platform-billing.ts";
 import { AppError, check } from "./errors.ts";
 import { hash } from "./crypto.ts";
 import { tenantMetrics } from "./metrics.ts";
+import { licenseManagementRoutes } from "./license-management-api.ts";
 import { validateAssetMetadata } from "./package-validation.ts";
 import { frameworks, validateFrameworkConfig } from "./frameworks.ts";
 import {
@@ -28,7 +29,7 @@ import {
 } from "./licensing.ts";
 import { stripeConfigured } from "./config.ts";
 import { requireTenantCapacity } from "./publication-policy.ts";
-import { isSupportedRecurringPrice } from "./stripe.ts";
+import { isSupportedPlanPrice, promotionCoupon } from "./stripe.ts";
 const slug = z
     .string()
     .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/)
@@ -84,8 +85,8 @@ function sellerLicense(license: SellerLicense, planName: string | undefined) {
   };
 }
 
-function localPrice(interval: "month" | "year") {
-  return { unit_amount: 10000, currency: "usd", billing_interval: interval };
+function localPrice(interval: "month" | "year" | "lifetime") {
+  return { unit_amount: interval === "lifetime" ? 29900 : 10000, currency: "usd", billing_interval: interval };
 }
 
 export async function sellerRoutes(
@@ -127,7 +128,9 @@ export async function sellerRoutes(
           ? "operations:write"
           : "read"
         : !mutation
-          ? "read"
+          ? route.endsWith("/licenses/export")
+            ? "data:export"
+            : "read"
           : route.endsWith("/products") || route.includes("/plans/")
             ? "catalog:write"
             : route.includes("/releases/") || route.includes("/assets/")
@@ -183,6 +186,7 @@ export async function sellerRoutes(
         "Renew the platform subscription or contact the operator before adding capacity.",
       );
   });
+  await app.register(licenseManagementRoutes, { context, auth });
   async function audit(
     req: FastifyRequest,
     action: string,
@@ -260,6 +264,7 @@ export async function sellerRoutes(
         tenant,
         undefined,
         config.exemptSuffixes,
+        { products, plans: planRows },
       ),
       sandbox:
         (await new PublisherSandboxes(db, config).describe(tenant.id)) ?? null,
@@ -314,13 +319,13 @@ export async function sellerRoutes(
     if (config.localBilling)
       return {
         localMode: true,
-        prices: (["year", "month"] as const).flatMap((interval) => {
+        prices: (["year", "month", "lifetime"] as const).flatMap((interval) => {
           const { unit_amount, currency } = localPrice(interval);
           return [1, 5, 25].map((sites) => ({
             id:
               interval === "year"
                 ? `price_local_${sites}`
-                : `price_local_month_${sites}`,
+                : `price_local_${interval}_${sites}`,
             productName: "Local test fixture",
             nickname: `${sites} sites`,
             unit_amount,
@@ -351,13 +356,12 @@ export async function sellerRoutes(
         for await (const p of stripe.stripe.prices.list(
           {
             active: true,
-            type: "recurring",
             limit: 100,
             expand: ["data.product"],
           },
           stripe.options(),
         )) {
-          if (!isSupportedRecurringPrice(p)) continue;
+          if (!isSupportedPlanPrice(p)) continue;
           prices.push({
             id: p.id,
             productName:
@@ -367,7 +371,7 @@ export async function sellerRoutes(
             nickname: p.nickname,
             unit_amount: p.unit_amount,
             currency: p.currency,
-            interval: p.recurring!.interval,
+            interval: p.type === "one_time" ? "lifetime" : p.recurring!.interval,
           });
           if (prices.length >= 100) break;
         }
@@ -375,6 +379,48 @@ export async function sellerRoutes(
       },
     );
     return { localMode: false, prices };
+  });
+  app.get("/promotions", async (req) => {
+    const { tenant, stripe, config } = context(req);
+    if (config.localBilling)
+      return {
+        localMode: true,
+        promotions: [{
+          id: "promo_local_bf30", code: "BF30", active: true, percentOff: 30,
+          amountOff: null, currency: null, duration: "once", durationInMonths: null,
+          timesRedeemed: 0, maxRedemptions: null, expiresAt: null,
+        }],
+      };
+    check(stripeConfigured(config), 503, "billing_unavailable", "Stripe billing is not configured.");
+    check(
+      config.deploymentMode === "standalone" || tenant.stripe_account_id,
+      409,
+      "stripe_not_connected",
+      "Connect a Stripe account first.",
+    );
+    const { data } = await stripe.stripe.promotionCodes.list(
+      { active: true, limit: 50, expand: ["data.promotion.coupon"] },
+      stripe.options(),
+    );
+    return {
+      localMode: false,
+      promotions: data.map((p) => {
+        const coupon = promotionCoupon(p);
+        return {
+          id: p.id,
+          code: p.code,
+          active: p.active,
+          percentOff: coupon?.percent_off ?? null,
+          amountOff: coupon?.amount_off ?? null,
+          currency: coupon?.currency ?? null,
+          duration: coupon?.duration ?? null,
+          durationInMonths: coupon?.duration_in_months ?? null,
+          timesRedeemed: p.times_redeemed,
+          maxRedemptions: p.max_redemptions,
+          expiresAt: p.expires_at,
+        };
+      }),
+    };
   });
   app.post("/products", async (req) => {
     const { db, tenant, config, stripe } = context(req);
@@ -429,7 +475,9 @@ export async function sellerRoutes(
       let price: PriceSnapshot;
       if (config.localBilling) {
         price = localPrice(
-          plan.priceId.startsWith("price_local_month_") ? "month" : "year",
+          plan.priceId.startsWith("price_local_lifetime_")
+            ? "lifetime"
+            : plan.priceId.startsWith("price_local_month_") ? "month" : "year",
         );
       } else {
         const p = await stripe.stripe.prices.retrieve(
@@ -438,15 +486,15 @@ export async function sellerRoutes(
           stripe.options(),
         );
         check(
-          isSupportedRecurringPrice(p),
+          isSupportedPlanPrice(p),
           409,
           "invalid_price",
-          "Choose an active paid monthly or annual Stripe price.",
+          "Choose an active paid monthly, annual, or one-time Stripe price.",
         );
         price = {
           unit_amount: p.unit_amount,
           currency: p.currency,
-          billing_interval: p.recurring!.interval,
+          billing_interval: p.type === "one_time" ? "lifetime" : p.recurring!.interval,
         };
       }
       plans.push({ ...plan, price });

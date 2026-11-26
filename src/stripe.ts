@@ -7,12 +7,13 @@ import type {
   BillingSource,
   PaidGrant,
 } from "./billing.ts";
-import type { DB, Plan, Tenant } from "./db.ts";
+import type { DB, License, Plan, Tenant } from "./db.ts";
 import { lock } from "./db.ts";
 import type { Config } from "./config.ts";
 import { check } from "./errors.ts";
 import { stripeWorkerHttpClient, workerTurn } from "./worker-continuation.ts";
-import { workerSnapshot, workerResolveSubscription } from "./stripe-worker.ts";
+import { oneTimeSnapshot, workerSnapshot, workerResolveSubscription } from "./stripe-worker.ts";
+import { licenseCanRenew } from "./licensing.ts";
 const id = (value: string | { id: string } | null | undefined) =>
   typeof value === "string" ? value : value?.id;
 export function isSupportedRecurringPrice(
@@ -25,6 +26,18 @@ export function isSupportedRecurringPrice(
     recurring.interval_count === 1 &&
     (price.unit_amount ?? 0) > 0;
 }
+export function isSupportedPlanPrice(
+  price: Parameters<typeof isSupportedRecurringPrice>[0],
+): boolean {
+  return isSupportedRecurringPrice(price) ||
+    (price.active === true && price.type === "one_time" && (price.unit_amount ?? 0) > 0);
+}
+export function promotionCoupon(promotion: Stripe.PromotionCode) {
+  const coupon = promotion.promotion?.coupon;
+  return coupon !== null && typeof coupon === "object" ? coupon : null;
+}
+export const oneTimeTarget = (session: Stripe.Checkout.Session) =>
+  session.mode === "payment" ? `one_time:${session.id}` : null;
 export function creditInvoiceTotal(invoice: Stripe.Invoice, customerId: string): number {
   return invoice.amount_paid === 0 &&
     invoice.amount_due === 0 &&
@@ -217,6 +230,7 @@ export class StripeBilling implements BillingSource {
       "Stripe reconciliation is disabled in local fixture mode.",
     );
     if (workerTurn()) return workerSnapshot(this, subscriptionId);
+    if (subscriptionId.startsWith("one_time:")) return oneTimeSnapshot(this, subscriptionId);
     const sub = await this.stripe.subscriptions.retrieve(
       subscriptionId,
       {},
@@ -338,6 +352,7 @@ export class StripeBilling implements BillingSource {
       // already-known customer from reconciling. New issuance validates it.
       email: customer.deleted ? "" : (customer.email ?? ""),
       billingStatus: sub.status,
+      renewLicenseId: sub.metadata?.renew_license_id || undefined,
       ...settleMerchantGrants(grants, credits, unsettledInvoiceIds),
       invoices,
       suspended,
@@ -420,11 +435,8 @@ export class StripeBilling implements BillingSource {
   }
   private async checkoutTax(
     plan: Plan,
+    tenant: Tenant,
   ): Promise<Partial<Stripe.Checkout.SessionCreateParams>> {
-    const tenant = await this.db("tenants")
-      .where({ id: this.tenant.id })
-      .first();
-    check(tenant, 404, "tenant_not_found", "Tenant was not found.");
     const flags = [
       tenant.automatic_tax,
       tenant.collect_tax_id,
@@ -469,6 +481,7 @@ export class StripeBilling implements BillingSource {
     authenticatedCustomerId?: string,
     uiMode: "hosted" | "elements" = "hosted",
     guest: GuestCheckout = {},
+    { promotionCode, renewLicenseId }: { promotionCode?: string | undefined; renewLicenseId?: string | undefined } = {},
   ) {
     check(
       !this.config.localBilling,
@@ -497,10 +510,20 @@ export class StripeBilling implements BillingSource {
         "stripe_elements_unconfigured",
         "Stripe Elements checkout is not configured.",
       );
+    if (renewLicenseId)
+      check(authenticatedCustomerId, 401, "login_required", "Sign in before renewing a license.");
     // Commit the local identity before HTTP so retries retain the same provider
     // idempotency key even if the network response or subsequent database write fails.
     const { customer, created } = await this.db.transaction(async (tx) => {
       await lock(tx, "billing", this.tenant.id);
+      if (renewLicenseId) {
+        const license = await tx<License>("licenses")
+          .where({ tenant_id: this.tenant.id, id: renewLicenseId })
+          .first();
+        check(license && license.customer_id === authenticatedCustomerId, 404, "not_found", "License not found.");
+        check(license.product_id === plan.product_id, 409, "renewal_product_mismatch", "Choose a plan for the same product.");
+        check(licenseCanRenew(license, Date.now()), 409, "renewal_not_allowed", "This license is not eligible for renewal.");
+      }
       let c = await tx("customers")
         .where({ tenant_id: this.tenant.id, email })
         .first();
@@ -521,6 +544,7 @@ export class StripeBilling implements BillingSource {
           "Sign in with this email address before purchasing another license.",
         );
       } else {
+        check(!renewLicenseId, 409, "checkout_identity_conflict", "Use the email address on your signed-in account.");
         c = {
           tenant_id: this.tenant.id,
           id: randomUUID(),
@@ -538,12 +562,34 @@ export class StripeBilling implements BillingSource {
       this.options(),
     );
     check(
-      isSupportedRecurringPrice(price),
+      isSupportedPlanPrice(price),
       409,
       "invalid_price",
-      "Plan must use an active, paid monthly or annual Stripe price.",
+      "Plan must use an active, paid monthly, annual, or one-time Stripe price.",
     );
-    const tax = await this.checkoutTax(plan);
+    const tenant = await this.db<Tenant>("tenants").where({ id: this.tenant.id }).first();
+    check(tenant, 404, "tenant_not_found", "Tenant was not found.");
+    const tax = await this.checkoutTax(plan, tenant);
+    const allowPromoCodes = tenant.allow_promotion_codes === 1;
+    let promotion: Pick<Stripe.Checkout.SessionCreateParams, "allow_promotion_codes" | "discounts"> =
+      { allow_promotion_codes: allowPromoCodes };
+    if (promotionCode !== undefined) {
+      check(allowPromoCodes, 409, "promotions_disabled", "Promotion codes are disabled for this workspace.");
+      const { data } = await this.stripe.promotionCodes.list(
+        { code: promotionCode, active: true, limit: 1, expand: ["data.promotion.coupon"] },
+        this.options(),
+      );
+      const promo = data.find((p) => p.active && p.code.toLowerCase() === promotionCode.toLowerCase());
+      const coupon = promo && promotionCoupon(promo);
+      check(promo && coupon?.valid === true, 400, "invalid_promotion_code", "Promotion code is invalid.");
+      check(
+        coupon.percent_off !== 100 && (coupon.amount_off == null || coupon.amount_off < (price.unit_amount ?? 0)),
+        409,
+        "zero_amount_promotion",
+        "Promotion codes must leave a positive amount due. Use complimentary licenses for free access.",
+      );
+      promotion = { discounts: [{ promotion_code: promo.id }] };
+    }
     let stripeId = customer.stripe_id;
     if (!stripeId) {
       const external = await this.stripe.customers.create(
@@ -582,10 +628,36 @@ export class StripeBilling implements BillingSource {
           "Sign in before purchasing another license.",
         );
       });
+    const metadata = {
+      product_id: plan.product_id,
+      plan_id: plan.id,
+      ...(renewLicenseId ? { renew_license_id: renewLicenseId } : {}),
+    };
+    const hostedFee = this.config.deploymentMode === "hosted"
+      ? this.config.hostedApplicationFeePercent
+      : 0;
     const session = await this.stripe.checkout.sessions.create(
       {
-        mode: "subscription",
+        ...(price.type === "one_time"
+          ? {
+              mode: "payment" as const,
+              metadata,
+              payment_intent_data: {
+                metadata,
+                ...(hostedFee > 0
+                  ? { application_fee_amount: Math.round((price.unit_amount ?? 0) * hostedFee / 100) }
+                  : {}),
+              },
+            }
+          : {
+              mode: "subscription" as const,
+              subscription_data: {
+                metadata,
+                ...(hostedFee > 0 ? { application_fee_percent: hostedFee } : {}),
+              },
+            }),
         ...tax,
+        ...promotion,
         line_items: [{ price: plan.stripe_price_id, quantity: 1 }],
         customer: stripeId,
         ...(uiMode === "elements"
@@ -606,17 +678,6 @@ export class StripeBilling implements BillingSource {
                 `/t/${this.tenant.slug}?checkout=canceled`,
               ),
             }),
-        subscription_data: {
-          ...(this.config.deploymentMode === "hosted" &&
-          this.config.hostedApplicationFeePercent > 0
-            ? {
-                application_fee_percent:
-                  this.config.hostedApplicationFeePercent,
-              }
-            : {}),
-          metadata: { product_id: plan.product_id, plan_id: plan.id },
-        },
-        allow_promotion_codes: false,
       },
       this.options(),
     );
@@ -824,21 +885,23 @@ export class StripeBilling implements BillingSource {
         {},
         this.options(),
       );
-      return id(session.subscription) ?? null;
+      return oneTimeTarget(session) ?? id(session.subscription) ?? null;
     }
     let charge: Stripe.Charge | undefined;
-    let refundIntent: string | undefined;
+    let eventIntent: string | undefined;
     if (event.type.startsWith("charge.dispute.")) {
       const dispute = await this.stripe.disputes.retrieve(
         String(obj.id),
         {},
         this.options(),
       );
-      charge = await this.stripe.charges.retrieve(
-        id(dispute.charge)!,
-        {},
-        this.options(),
-      );
+      eventIntent = id(dispute.payment_intent);
+      if (dispute.charge)
+        charge = await this.stripe.charges.retrieve(
+          id(dispute.charge)!,
+          {},
+          this.options(),
+        );
     } else if (
       event.type.startsWith("refund.") ||
       event.type.startsWith("charge.refund.")
@@ -848,21 +911,21 @@ export class StripeBilling implements BillingSource {
         {},
         this.options(),
       );
+      eventIntent = id(refund.payment_intent);
       if (refund.charge)
         charge = await this.stripe.charges.retrieve(
           id(refund.charge)!,
           {},
           this.options(),
         );
-      else refundIntent = id(refund.payment_intent);
     } else if (event.type.startsWith("charge."))
       charge = await this.stripe.charges.retrieve(
         String(obj.id),
         {},
         this.options(),
       );
-    const pi = id(charge?.payment_intent) ?? refundIntent;
-    if (pi)
+    const pi = id(charge?.payment_intent) ?? eventIntent;
+    if (pi) {
       for await (const payment of this.stripe.invoicePayments.list(
         {
           payment: { type: "payment_intent", payment_intent: pi },
@@ -880,7 +943,12 @@ export class StripeBilling implements BillingSource {
         const sub = id(invoice.parent?.subscription_details?.subscription);
         if (sub) return sub;
       }
-    else if (charge?.customer) {
+      const sessions = await this.stripe.checkout.sessions.list(
+        { payment_intent: pi, limit: 1 },
+        this.options(),
+      );
+      return sessions.data[0] ? oneTimeTarget(sessions.data[0]) : null;
+    } else if (charge?.customer) {
       // Legacy direct-charge invoice payments cannot be filtered by charge in
       // Stripe's list API. Inspect this customer's invoices with pagination.
       for await (const invoice of this.stripe.invoices.list(

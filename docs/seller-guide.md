@@ -47,22 +47,22 @@ after the first license or release.
 | Generic                  | Optional `activationKind`, `device` by default or explicitly `site`.                                                      |
 | Electron, Tauri, Sparkle | Empty framework configuration; targets and signing metadata belong to release assets.                                     |
 
-For complimentary licensing, leave **Include a paid plan (monthly or annual)**
-unchecked. The form clears this option when no prices are available.
+For complimentary licensing, leave the paid plan option unchecked. The form
+clears this option when no prices are available.
 
-To offer a paid plan, create a monthly or annual recurring Stripe price on your
-merchant account. Enable **Include a paid plan (monthly or annual)** and select
-the price. A plan pairs the price with an installation
-allowance. Use your connected account on hosted or the account configured on
-your standalone server. The price and server credentials must both use the same
-Stripe mode.
+To offer a paid plan, create a monthly, annual, or one-time Stripe price on your
+merchant account. Enable the paid plan option and select the price. A plan pairs
+the price with an installation allowance. A one-time price creates a lifetime
+plan and appears as `interval: "lifetime"` in the seller API. Use your connected
+account on hosted or the account configured on your standalone server. The
+price and server credentials must use the same Stripe mode.
 
 ### Edit a product and its plans
 
-Choose **Edit product** beside a product to rename it or add plans. Turn on
-**Add a paid plan (monthly or annual)**, enter the plan name and allowance, and
-select a price. You can add a paid plan to a pilot product at any time. Existing
-complimentary licenses and previously saved plans stay in place.
+Choose **Edit product** beside a product to rename it or add plans. Enable the
+paid plan option, enter the plan name and allowance, and select a price. You can
+add a paid plan to a pilot product at any time. Existing complimentary licenses
+and previously saved plans stay in place.
 
 The editor lists each plan with its allowance, price ID, and formatted price,
 such as `$9 / month`. **Archive** a plan to remove it from the customer catalog
@@ -71,14 +71,27 @@ are not changed. **Restore** offers it again. Archived plans stay in the editor
 and in paid history.
 
 The customer catalog shows each available plan's price and interval, for example
-`$49 / year`, and Elements checkout states whether the plan renews monthly or
-annually. Plans created before intervals were recorded show as annual, because
-earlier versions accepted only annual prices.
+`$49 / year`. Elements checkout shows a monthly or annual renewal or a one-time
+lifetime payment. Plans created before intervals were recorded show as annual,
+because earlier versions accepted only annual prices.
 
 The service preserves price-to-product and allowance mappings for past invoices.
 Use a new price to change seats. Changing a display name does not rewrite paid
 history. A future paid period applies at its start; overlapping grants preserve
 the larger paid allowance. An unpaid upgrade grants no extra seats.
+
+### Share a promotion
+
+Create a promotion code in the workspace's Stripe account, then enable **Allow
+promotion codes at checkout** in Commerce settings. The equivalent API field
+is `allowPromotionCodes`. Use **Promotion codes** in the dashboard or
+`GET /seller/promotions` to find active codes.
+
+Share `/t/WORKSPACE?promo=CODE` to prefill a code. Add `&plan=PLAN_ID` to preselect
+a plan and `&renew=LICENSE_ID` to target a specific buyer license. The full
+link has the form `/t/WORKSPACE?promo=CODE&plan=PLAN_ID&renew=LICENSE_ID`. The
+buyer signs in to renew. Paid checkout requires a positive amount due after the
+discount. Issue a complimentary license for free access.
 
 ## Publish a release
 
@@ -143,15 +156,24 @@ revocation/restoration and customer key replacement use the same controls as
 other licenses. Restoration does not extend expiration. Key replacement revokes
 old keys and activation tokens and queues a replacement email.
 
-Pilot customers are never automatically charged or enrolled in a subscription.
-Any later paid purchase follows the normal checkout flow and creates a separate
-paid entitlement.
+Pilot customers start paid checkout themselves. A signed-in buyer can convert an
+eligible complimentary license to paid or renew an eligible canceled, expired,
+or unpaid license in place. They choose a plan for the same product. Checkout
+uses `renewLicenseId` to identify the existing license, and payment confirmation
+preserves its key and active installations. Revoked, suspended, and lifetime
+licenses are ineligible for this renewal flow.
 
 ### Diagnose an existing license
 
 Search Licenses by customer email, product, plan or license ID. Combine the
 product, license type and access filters, and select a column heading to sort;
 select it again to reverse the order. Clear filters restores the full list.
+
+Use the [license management API](api.md#license-management-and-analytics) to
+filter by expiration window or to save matching records as CSV or JSON. Exports
+omit license keys and installation tokens and require `data:export` for API
+keys. A key with `licenses:write` can update the internal note on any license
+and adjust the expiration and seat allowance on complimentary licenses.
 
 Use the license view to distinguish paid-through time, manual revocation,
 refund/dispute restrictions and installation usage. Ask the buyer for a request
@@ -253,6 +275,11 @@ served bytes, storage reads and billing-capacity warnings. Counts belong to the
 selected workspace; select a sandbox to inspect its activity. Successfully sent
 emails count as completed jobs rather than pending jobs.
 
+Use `GET /seller/analytics` to read monthly and annual recurring revenue by
+currency, retention counts, and per-product license, installation, and
+seat counts. The same report is available through `pnpm cli analytics` and
+`entitle_op_analytics` with a `read` key.
+
 Load an activity report for daily job charts and the latest 50 email jobs in
 the period. Charts group jobs by the UTC day they were queued and show their
 current results. Sent means the configured mail transport accepted the message.
@@ -267,7 +294,8 @@ They do not extend paid time. Queue/mail delays can defer delivery, so confirm
 access from current license state.
 
 Hosted Pro and standalone can read daily reports for 1-365 days and send
-[signed outgoing events](webhooks.md). Report rows are recorded UTC days; days
+[signed outgoing events](webhooks.md), including `license.canceled` and
+`license.expired`. Report rows are recorded UTC days; days
 with no records need not appear. The dashboard fills missing chart days with
 zero and offers 7-, 30- and 90-day views of downloads, delivered bytes, origin
 reads and average response size. Served responses and bytes do not prove a

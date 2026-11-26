@@ -13,6 +13,7 @@ import type { PropType, VNodeArrayChildren } from "vue";
 import { ApiClient, ApiError, errorMessage } from "./api.ts";
 import { RecoveryPanel } from "./auth-recovery.ts";
 import { hardwareVerification, PublisherSecurity } from "./oidc.ts";
+import { formatMinorAmount, stripeExponent } from "./checkout.ts";
 
 type Confirm = (
   title: string,
@@ -106,9 +107,54 @@ interface Session {
   current: boolean;
   expiresAt: number;
 }
+interface Promotion {
+  id: string;
+  code: string;
+  active: boolean;
+  percentOff: number | null;
+  amountOff: number | null;
+  currency: string | null;
+  duration: string;
+  timesRedeemed: number;
+  maxRedemptions: number | null;
+  expiresAt: number | null;
+}
+interface Promotions {
+  localMode: boolean;
+  promotions: Promotion[];
+}
+interface RevenueAnalytics {
+  generatedAt: number;
+  recurringByCurrency: {
+    currency: string;
+    mrrMinor: string;
+    arrMinor: string;
+    activeSubscriptions: number;
+  }[];
+  retention: {
+    activeSubscriptions: number;
+    canceledPendingExpiry: number;
+    expiredLicenses: number;
+    expiringIn30Days: number;
+    lifetimeLicenses: number;
+    complimentaryActive: number;
+  };
+  byProduct: {
+    productId: string;
+    productName: string;
+    activeLicenses: number;
+    expiredLicenses: number;
+    lifetimeLicenses: number;
+    activeInstallations: number;
+    seatsUsed: number;
+    seatAllowance: number;
+  }[];
+}
 const eventTypes = [
   "license.created",
   "license.renewed",
+  "license.canceled",
+  "license.expired",
   "license.revoked",
   "activation.changed",
   "release.published",
@@ -118,6 +164,8 @@ const eventTypes = [
 const eventTitles: Record<string, string> = {
   "license.created": "License created",
   "license.renewed": "License renewed",
+  "license.canceled": "License canceled",
+  "license.expired": "License expired",
   "license.revoked": "License revoked",
   "activation.changed": "Installations changed",
   "release.published": "Release published",
@@ -144,6 +192,20 @@ const metadata = (value: string) =>
 const numeric = { style: { fontVariantNumeric: "tabular-nums" } };
 const numberText = (value: number | undefined) =>
   value === undefined ? "—" : value.toLocaleString("en-US");
+const currencyAmount = (currency: string, minor: string | number) => {
+  const digits = stripeExponent(currency);
+  return formatMinorAmount(currency, minor, {
+    currencyDisplay: "code",
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  });
+};
+const promotionDiscount = (promo: Promotion) => {
+  if (promo.percentOff != null) return `${promo.percentOff}% off`;
+  if (promo.amountOff != null && promo.currency)
+    return `${currencyAmount(promo.currency, promo.amountOff)} off`;
+  return "Discount";
+};
 const bytesText = (value: number) => {
   const index = Math.min(4, Math.floor(Math.log2(Math.max(1, value)) / 10));
   return `${(value / 1024 ** index).toLocaleString("en-US", { maximumFractionDigits: 1 })} ${["B", "KiB", "MiB", "GiB", "TiB"][index]}`;
@@ -326,6 +388,7 @@ export const SellerFeaturePanel = defineComponent({
     hosted: { type: Boolean, required: true },
     subscribed: { type: Boolean, default: false },
     products: { type: Array as PropType<FeatureProduct[]>, required: true },
+    tenantSlug: { type: String, default: "" },
     confirm: { type: Function as PropType<Confirm>, required: true },
   },
   emits: ["expired", "signedOut", "update:emailChange"],
@@ -419,6 +482,9 @@ export const SellerFeaturePanel = defineComponent({
       deliveries = ref<Delivery[]>([]),
       sessions = ref<Session[]>([]);
     const activity = ref<ActivityReport | null>(null);
+    const promotions = ref<Promotions | null>();
+    const analytics = ref<RevenueAnalytics | null>();
+    let supportsPromotionSettings = false;
     const activityDays = ref("30");
     const reportDays = ref("30");
     const retainedExports = ref<ExportHandle[]>([]);
@@ -462,6 +528,15 @@ export const SellerFeaturePanel = defineComponent({
       endpoints.value = result.endpoints;
       deliveries.value = result.deliveries;
     };
+    const getOptionalReport = async <T>(path: string) => {
+      try {
+        return await props.api.get<T>(path);
+      } catch (failure) {
+        if (failure instanceof ApiError && failure.status === 401)
+          throw failure;
+        return null;
+      }
+    };
     const loadExports = async () => {
       const result = await props.api.request<{ exports: ExportHandle[] }>(
         "/exports",
@@ -475,15 +550,19 @@ export const SellerFeaturePanel = defineComponent({
       loading.value = true;
       await run(async () => {
         switch (props.page) {
-          case "commerce":
-            Object.assign(
-              values.value,
-              (await props.api.get<{ settings: Values }>("/commerce/settings"))
-                .settings,
+          case "commerce": {
+            const { settings } = await props.api.get<{ settings: Values }>(
+              "/commerce/settings",
             );
+            supportsPromotionSettings =
+              typeof settings.allowPromotionCodes === "boolean";
+            Object.assign(values.value, settings, {
+              allowPromotionCodes: settings.allowPromotionCodes === true,
+            });
             for (const product of props.products)
               values.value[`tax-${product.id}`] = product.tax_code ?? "";
             break;
+          }
           case "sandbox": {
             const result = await props.api.get<{
               sandbox: Sandbox | null;
@@ -692,6 +771,75 @@ export const SellerFeaturePanel = defineComponent({
     const showSecret = (value: string) => {
       if (alive) oneTime.value = value;
     };
+    const promotionCodes = () => {
+      const active = promotions.value?.promotions.filter(
+        (promo) => promo.active,
+      );
+      return card(
+        "Promotion codes",
+        "Share a checkout link with a code already filled in.",
+        [
+          !promotions.value &&
+            button(
+              "Load promotion codes",
+              () =>
+                void run(async () => {
+                  const result =
+                    await getOptionalReport<Promotions>("/promotions");
+                  promotions.value = Array.isArray(result?.promotions)
+                    ? result
+                    : null;
+                }),
+              pending.value,
+            ),
+          promotions.value === null &&
+            h("p", { role: "status" }, "Promotion codes are unavailable."),
+          active?.length === 0 && h("p", "No active promotion codes."),
+          active &&
+            active.length > 0 &&
+            h(
+              "ul",
+              { class: "release-list" },
+              active.map((promo) => {
+                const saleLink = new URL(
+                  applicationHref(
+                    `/t/${props.tenantSlug}?promo=${encodeURIComponent(promo.code)}`,
+                  ),
+                  window.location.origin,
+                ).href;
+                return h("li", { key: promo.id }, [
+                  h("div", { class: "release-row" }, [
+                    h("div", [
+                      h("strong", [
+                        metadata(promo.code),
+                        ` · ${promotionDiscount(promo)}`,
+                      ]),
+                      h("p", { class: "small muted" }, [
+                        numberText(promo.timesRedeemed),
+                        promo.maxRedemptions == null
+                          ? ""
+                          : ` of ${numberText(promo.maxRedemptions)}`,
+                        " redeemed",
+                      ]),
+                    ]),
+                    props.tenantSlug &&
+                      button(
+                        "Copy sale link",
+                        () =>
+                          void run(async () => {
+                            await navigator.clipboard.writeText(saleLink);
+                            notice.value = "Sale link copied.";
+                          }),
+                        pending.value,
+                        "button-secondary button-small",
+                      ),
+                  ]),
+                ]);
+              }),
+            ),
+        ],
+      );
+    };
     const commerce = () => [
       h("p", "Choose the tax and billing details collected at checkout."),
       form(
@@ -701,6 +849,7 @@ export const SellerFeaturePanel = defineComponent({
           check("automaticTax", "Automatic tax"),
           check("collectTaxId", "Collect tax ID"),
           check("collectBillingAddress", "Collect billing address"),
+          check("allowPromotionCodes", "Allow promotion codes at checkout"),
         ],
         async () => {
           await mutate(
@@ -709,6 +858,14 @@ export const SellerFeaturePanel = defineComponent({
               automaticTax: values.value.automaticTax,
               collectTaxId: values.value.collectTaxId,
               collectBillingAddress: values.value.collectBillingAddress,
+              // Older commerce settings APIs omit this field.
+              ...(supportsPromotionSettings || values.value.allowPromotionCodes
+                ? {
+                    allowPromotionCodes: Boolean(
+                      values.value.allowPromotionCodes,
+                    ),
+                  }
+                : {}),
             },
             "PUT",
           );
@@ -744,6 +901,7 @@ export const SellerFeaturePanel = defineComponent({
           ),
         ],
       ),
+      promotionCodes(),
     ];
     const renderSandbox = () => [
       h(
@@ -933,6 +1091,113 @@ export const SellerFeaturePanel = defineComponent({
             pending.value,
           ),
       ]);
+    const revenueAnalytics = () => {
+      const data = analytics.value;
+      const metric = (label: string, value: string) =>
+        h("div", { key: label }, [h("dt", label), h("dd", numeric, value)]);
+      return card(
+        "Revenue and retention",
+        "Track recurring revenue and license activity.",
+        [
+          !data &&
+            button(
+              "Load revenue and retention",
+              () =>
+                void run(async () => {
+                  const result =
+                    await getOptionalReport<RevenueAnalytics>("/analytics");
+                  analytics.value =
+                    result?.retention &&
+                    Array.isArray(result.recurringByCurrency) &&
+                    Array.isArray(result.byProduct)
+                      ? result
+                      : null;
+                }),
+              pending.value,
+            ),
+          data === null &&
+            h(
+              "p",
+              { role: "status" },
+              "Revenue and retention data is unavailable.",
+            ),
+          data && [
+            h("dl", { class: "feature-stats" }, [
+              ...data.recurringByCurrency.flatMap(
+                ({ currency, mrrMinor, arrMinor }) => [
+                  metric(
+                    `MRR · ${currency.toUpperCase()}`,
+                    currencyAmount(currency, mrrMinor),
+                  ),
+                  metric(
+                    `ARR · ${currency.toUpperCase()}`,
+                    currencyAmount(currency, arrMinor),
+                  ),
+                ],
+              ),
+              metric(
+                "Active subscriptions",
+                numberText(data.retention.activeSubscriptions),
+              ),
+              metric(
+                "Canceled pending expiry",
+                numberText(data.retention.canceledPendingExpiry),
+              ),
+              metric(
+                "Expired licenses",
+                numberText(data.retention.expiredLicenses),
+              ),
+              metric(
+                "Expiring in 30 days",
+                numberText(data.retention.expiringIn30Days),
+              ),
+              metric(
+                "Lifetime licenses",
+                numberText(data.retention.lifetimeLicenses),
+              ),
+              metric(
+                "Active complimentary licenses",
+                numberText(data.retention.complimentaryActive),
+              ),
+            ]),
+            data.byProduct.length > 0 &&
+              h("div", { class: "table-scroll" }, [
+                h("table", [
+                  h("caption", "License activity by product"),
+                  h("thead", [
+                    h(
+                      "tr",
+                      [
+                        "Product",
+                        "Active",
+                        "Expired",
+                        "Lifetime",
+                        "Active installations",
+                        "Seats used",
+                      ].map((label) => h("th", { scope: "col" }, label)),
+                    ),
+                  ]),
+                  h(
+                    "tbody",
+                    data.byProduct.map((product) =>
+                      h("tr", { key: product.productId }, [
+                        h("th", { scope: "row" }, product.productName),
+                        ...[
+                          numberText(product.activeLicenses),
+                          numberText(product.expiredLicenses),
+                          numberText(product.lifetimeLicenses),
+                          numberText(product.activeInstallations),
+                          `${numberText(product.seatsUsed)} of ${numberText(product.seatAllowance)}`,
+                        ].map((value) => h("td", numeric, value)),
+                      ]),
+                    ),
+                  ),
+                ]),
+              ]),
+          ],
+        ],
+      );
+    };
     const operations = () => {
       const data = health.value!,
         summary = data.summary;
@@ -1295,6 +1560,7 @@ export const SellerFeaturePanel = defineComponent({
             ),
           ],
         ),
+        revenueAnalytics(),
         card("Daily reports", "See download activity over time.", [
           (!props.hosted || data.features.advancedReports) &&
             h("div", { class: "form-field report-period" }, [

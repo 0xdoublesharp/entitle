@@ -23,6 +23,7 @@ export interface Tenant {
   automatic_tax?: number;
   collect_tax_id?: number;
   collect_billing_address?: number;
+  allow_promotion_codes?: number;
 }
 
 export const workspaceArchived = (tenant: Tenant): boolean =>

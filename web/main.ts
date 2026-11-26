@@ -1,4 +1,5 @@
 import {
+  computed,
   createApp,
   defineComponent,
   h,
@@ -6,6 +7,7 @@ import {
   onMounted,
   onUnmounted,
   ref,
+  watch,
 } from "vue";
 import type { VNodeArrayChildren } from "vue";
 import { ApiClient, ApiError, errorMessage, watchLoginTokens } from "./api.ts";
@@ -43,6 +45,19 @@ import type {
 
 type CatalogPlan = Plan & PlanPricing;
 type CatalogProduct = Omit<Product, "plans"> & { plans: CatalogPlan[] };
+
+function canRenewLicense(license: License) {
+  return (
+    !license.revoked &&
+    !license.suspended &&
+    license.billing_status !== "lifetime" &&
+    (license.provenance === "complimentary" ||
+      ["canceled", "incomplete_expired", "unpaid"].includes(
+        license.billing_status,
+      ) ||
+      !license.entitled)
+  );
+}
 
 const tabularNumbers = { fontVariantNumeric: "tabular-nums" };
 const date = (value: number | null) =>
@@ -141,6 +156,7 @@ export function mountCustomerApp(
       const privacyOpen = ref(false);
       const products = ref<CatalogProduct[]>([]);
       const billingAvailable = ref(true);
+      const allowPromotionCodes = ref(false);
       const loading = ref(true);
       const catalogLoading = ref(true);
       const sessionError = ref("");
@@ -190,6 +206,49 @@ export function mountCustomerApp(
       const email = ref("");
       const checkoutEmail = ref("");
       const selectedPlan = ref("");
+      const query = new URLSearchParams(window.location.search);
+      const prefilledPromotionCode = query.get("promo")?.trim() ?? "";
+      const promotionCode = ref(prefilledPromotionCode);
+      const renewLicenseId = ref("");
+      let requestedRenewal = query.get("renew");
+      const renewalProduct = (license: License) =>
+        billingAvailable.value && canRenewLicense(license)
+          ? products.value.find(
+              (product) =>
+                product.id === license.product_id && product.plans.length > 0,
+            )
+          : undefined;
+      const renewingLicense = computed(() =>
+        account.value?.licenses.find(
+          (license) =>
+            license.id === renewLicenseId.value && renewalProduct(license),
+        ),
+      );
+      const checkoutProducts = computed(() =>
+        products.value.filter(
+          (product) =>
+            product.plans.length > 0 &&
+            (!renewingLicense.value ||
+              product.id === renewingLicense.value.product_id),
+        ),
+      );
+      const selectRenewal = (license: License) => {
+        const product = renewalProduct(license);
+        if (!product) return;
+        if (!product.plans.some((plan) => plan.id === selectedPlan.value))
+          selectedPlan.value = product.plans[0]!.id;
+        renewLicenseId.value = license.id;
+        requestedRenewal = null;
+      };
+      watch([account, products, billingAvailable], () => {
+        if (renewLicenseId.value && !renewingLicense.value)
+          renewLicenseId.value = "";
+        if (!requestedRenewal || checkoutOpen.value) return;
+        const license = account.value?.licenses.find(
+          (item) => item.id === requestedRenewal,
+        );
+        if (license) selectRenewal(license);
+      });
       const loginSentTo = ref("");
       const newKey = ref<{ licenseId: string; value: string } | null>(null);
       const keyInput = ref<HTMLInputElement>();
@@ -238,12 +297,17 @@ export function mountCustomerApp(
           const catalog = await api.get<{
             products: CatalogProduct[];
             billingAvailable?: boolean;
+            allowPromotionCodes?: boolean;
           }>("/catalog");
           billingAvailable.value = catalog.billingAvailable !== false;
+          allowPromotionCodes.value = catalog.allowPromotionCodes === true;
           products.value = catalog.products;
-          if (!selectedPlan.value)
+          const plans = products.value.flatMap((product) => product.plans);
+          if (!plans.some((plan) => plan.id === selectedPlan.value))
             selectedPlan.value =
-              products.value.flatMap((product) => product.plans)[0]?.id || "";
+              plans.find((plan) => plan.id === query.get("plan"))?.id ??
+              plans[0]?.id ??
+              "";
         } catch (failure) {
           catalogError.value = errorMessage(failure);
         } finally {
@@ -316,6 +380,7 @@ export function mountCustomerApp(
         });
       const beginCheckout = () =>
         void run("checkout", async () => {
+          const promo = promotionCode.value.trim();
           const revision = ++checkoutRevision;
           payment.dispose();
           checkoutOpen.value = true;
@@ -328,6 +393,10 @@ export function mountCustomerApp(
                 planId: selectedPlan.value,
                 email: checkoutEmail.value.trim(),
                 uiMode: "elements",
+                ...(promo ? { promotionCode: promo } : {}),
+                ...(renewingLicense.value
+                  ? { renewLicenseId: renewLicenseId.value }
+                  : {}),
               },
               false,
             );
@@ -419,10 +488,10 @@ export function mountCustomerApp(
         products.value
           .flatMap((product) => product.plans)
           .find((plan) => plan.id === selectedPlan.value)!;
-      const purchasable = () =>
-        products.value.filter((product) => product.plans.length > 0);
       const renderCheckout = () => {
         const state = checkoutState.value;
+        const plan = selectedPlanDetails();
+        const renewal = planInterval(plan).renewal;
         const finished =
           state.phase === "complete" || state.phase === "pending";
         return h(
@@ -449,7 +518,9 @@ export function mountCustomerApp(
                 ),
                 h(
                   "p",
-                  `${planInterval(selectedPlanDetails()).renewal} Manage or cancel your subscription from your account billing page.`,
+                  plan.billing_interval === "lifetime"
+                    ? renewal
+                    : `${renewal} Manage or cancel your subscription from your account billing page.`,
                 ),
               ]),
             state.phase === "loading" &&
@@ -548,10 +619,13 @@ export function mountCustomerApp(
           ? "Revoked"
           : license.suspended
             ? "Suspended"
-            : license.entitled
-              ? "Active"
-              : "Expired";
+            : license.billing_status === "lifetime"
+              ? "Lifetime"
+              : license.entitled
+                ? "Active"
+                : "Expired";
       const renderLicense = (license: License) => {
+        const lifetime = license.billing_status === "lifetime";
         const active = license.installations.filter(
           (item) => item.active && !item.exempt,
         ).length;
@@ -595,18 +669,22 @@ export function mountCustomerApp(
               h("div", [
                 h(
                   "dt",
-                  license.provenance === "complimentary"
-                    ? "Expires"
-                    : "Paid through",
+                  lifetime
+                    ? "Access"
+                    : license.provenance === "complimentary"
+                      ? "Expires"
+                      : "Paid through",
                 ),
                 h(
                   "dd",
                   { style: tabularNumbers },
-                  date(
-                    license.provenance === "complimentary"
-                      ? (license.expires_at ?? null)
-                      : license.paid_through,
-                  ),
+                  lifetime
+                    ? "Lifetime"
+                    : date(
+                        license.provenance === "complimentary"
+                          ? (license.expires_at ?? null)
+                          : license.paid_through,
+                      ),
                 ),
               ]),
               h("div", [
@@ -636,6 +714,22 @@ export function mountCustomerApp(
                 ),
               ]),
             ]),
+            renewalProduct(license) &&
+              button(
+                license.provenance === "complimentary"
+                  ? "Upgrade to paid"
+                  : "Renew license",
+                () => {
+                  selectRenewal(license);
+                  void nextTick(() =>
+                    document.getElementById("renewal-notice")?.focus(),
+                  );
+                },
+                {
+                  class: "button-secondary",
+                  disabled: interactionBusy() || checkoutOpen.value,
+                },
+              ),
             !license.entitled &&
               h("p", { class: "access-note" }, [
                 icon(icons.warning),
@@ -1299,7 +1393,7 @@ export function mountCustomerApp(
                             { class: "empty-message" },
                             "No plans are available yet. Please check back soon.",
                           )
-                        : purchasable().length === 0
+                        : checkoutProducts.value.length === 0
                           ? h(
                               "p",
                               { class: "empty-message" },
@@ -1309,7 +1403,30 @@ export function mountCustomerApp(
                               "form",
                               { onSubmit: checkout, class: "checkout-form" },
                               [
-                                ...purchasable().map((product) =>
+                                renewingLicense.value &&
+                                  h(
+                                    "div",
+                                    { class: "access-note renewal-notice" },
+                                    [
+                                      h(
+                                        "p",
+                                        { id: "renewal-notice", tabindex: -1 },
+                                        `Renewing existing license for ${renewingLicense.value.product_name} — your current license key and active installations stay intact.`,
+                                      ),
+                                      button(
+                                        "Cancel renewal",
+                                        () => {
+                                          renewLicenseId.value = "";
+                                        },
+                                        {
+                                          class:
+                                            "button-secondary button-small",
+                                          disabled: checkoutOpen.value,
+                                        },
+                                      ),
+                                    ],
+                                  ),
+                                ...checkoutProducts.value.map((product) =>
                                   h(
                                     "fieldset",
                                     { key: product.id, class: "product-plans" },
@@ -1413,6 +1530,27 @@ export function mountCustomerApp(
                                       },
                                     }),
                                   ]),
+                                  (allowPromotionCodes.value ||
+                                    prefilledPromotionCode) &&
+                                    h("div", { class: "checkout-email" }, [
+                                      h(
+                                        "label",
+                                        { for: "promotion-code" },
+                                        "Promotion code",
+                                      ),
+                                      h("input", {
+                                        id: "promotion-code",
+                                        type: "text",
+                                        placeholder: "BF30",
+                                        disabled: checkoutOpen.value,
+                                        value: promotionCode.value,
+                                        onInput: (event: Event) => {
+                                          promotionCode.value = (
+                                            event.target as HTMLInputElement
+                                          ).value;
+                                        },
+                                      }),
+                                    ]),
                                   h(
                                     "button",
                                     {

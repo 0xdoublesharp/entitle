@@ -24,13 +24,23 @@ owner-session actions. Discover their schemas using `tools/list`. For example,
 `entitle_op_asset_publish` accept structured metadata; artifact file paths refer
 to the MCP server's local filesystem.
 
-Typical catalog and support tasks map to these tools:
+Use these tools for catalog, checkout, and license support.
 
 | Task | Tool and input |
 | --- | --- |
-| Add a monthly or annual plan to a product, including a complimentary pilot product | `entitle_op_product_save` with the existing `slug`, `name`, and new `plans`; existing plans stay. Use `entitle_prices` to find price IDs and their `interval`. |
+| Add a monthly, annual, or lifetime plan | `entitle_op_product_save` with the `slug`, `name`, and new `plans`. Use `entitle_prices` to find a price ID with `interval` of `month`, `year`, or `lifetime`. |
 | Archive or restore a plan | `entitle_op_plan_archive` with `{"id":"PLAN_ID","archived":true}` or `false`. Existing licenses are unchanged. |
+| Find promotion codes | `entitle_op_promotions_list` with no arguments and a `read` key. Enable `allowPromotionCodes` with `entitle_op_commerce_settings_update` using an owner session. |
+| Start checkout or renew in place | `entitle_op_checkout_create` with `planId`, `email`, and optional `uiMode`, `promotionCode`, and `renewLicenseId`. Promotions require a positive amount due. Supply `ENTITLE_BUYER_SESSION_FILE` to renew or convert an eligible license for the signed-in buyer. |
+| Find licenses | `entitle_op_licenses_list` with optional `productId`, `provenance`, `status`, `expiringWithinDays`, `q`, `limit`, and `after`. Use a `read` key and pass `nextCursor` as `after` for the next page. |
+| Save a filtered license export | `entitle_op_licenses_export` with `output`, optional `format` of `csv` or `json`, and the license filters. Use a `data:export` key and a new private output path on the MCP server. |
+| Edit a license | `entitle_op_license_update` with `id` and at least one of `internalNote`, `expiresAt`, and `siteAllowance`. Use a `licenses:write` key. Only complimentary licenses accept expiration and seat changes. |
 | Free a customer's seat | `entitle_op_license_detail` with `{"id":"LICENSE_ID"}`, then `entitle_op_license_installation_deactivate` with `{"id":"LICENSE_ID","installationId":"INSTALLATION_ID"}` |
+| Read recurring revenue and retention | `entitle_op_analytics` with no arguments and a `read` key. Returns currency-specific MRR and ARR, retention counts, and per-product license and seat metrics. |
+| Subscribe to cancellation and expiry | `entitle_op_webhook_create` with `url` and `events` containing `license.canceled` and `license.expired`. Use an `operations:write` key and store the returned signing secret privately. |
+
+See [license filters and scopes](api.md#license-management-and-analytics) and
+[shareable sale links](seller-guide.md#share-a-promotion).
 
 Native feed and protected-download tools use the configured installation bearer
 token. The server checks entitlement for each request. File downloads require a
