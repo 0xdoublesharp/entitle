@@ -167,11 +167,11 @@ importers:
   .:
     devDependencies:
       '@0xdoublesharp/adaptive-cache':
-        specifier: 0.2.1
-        version: 0.2.1(@0xdoublesharp/lru-cache-clustered@2.1.2(lru-cache@11.5.3))(express@5.3.0)(fastify@5.12.7)(lru-cache@11.5.3)
+        specifier: 0.5.0
+        version: 0.5.0(@0xdoublesharp/lru-cache-clustered@2.1.5(lru-cache@11.5.3))(express@5.3.0)(fastify@5.12.7)(lru-cache@11.5.3)
       '@0xdoublesharp/lru-cache-clustered':
-        specifier: 2.1.2
-        version: 2.1.2(lru-cache@11.5.3)
+        specifier: 2.1.5
+        version: 2.1.5(lru-cache@11.5.3)
       '@aws-sdk/client-s3':
         specifier: 3.1155.0
         version: 3.1155.0
@@ -323,11 +323,11 @@ importers:
   apps/server:
     dependencies:
       '@0xdoublesharp/adaptive-cache':
-        specifier: 0.2.1
-        version: 0.2.1(@0xdoublesharp/lru-cache-clustered@2.1.2(lru-cache@11.5.3))(express@5.3.0)(fastify@5.12.7)(lru-cache@11.5.3)
+        specifier: 0.5.0
+        version: 0.5.0(@0xdoublesharp/lru-cache-clustered@2.1.5(lru-cache@11.5.3))(express@5.3.0)(fastify@5.12.7)(lru-cache@11.5.3)
       '@0xdoublesharp/lru-cache-clustered':
-        specifier: 2.1.2
-        version: 2.1.2(lru-cache@11.5.3)
+        specifier: 2.1.5
+        version: 2.1.5(lru-cache@11.5.3)
       '@aws-sdk/client-s3':
         specifier: 3.1155.0
         version: 3.1155.0
@@ -454,13 +454,13 @@ importers:
 
 packages:
 
-  '@0xdoublesharp/adaptive-cache@0.2.1':
-    resolution: {integrity: sha512-VVvekPs8oU6nPs8Bc6nfOGNJJBILKpF0fgeyNHz9v0RkTEQU+z5s4iiFVlS7iMCzpl4mJAbiZgyKuNkpgZK5sA==}
+  '@0xdoublesharp/adaptive-cache@0.5.0':
+    resolution: {integrity: sha512-GOvIE4TIukLWF1Ct+GN8pErMT2k83rIR78sY3B2Ri45hF8qpWh5YGCKlMPu+3AMm4r2YnxGeW/mU3bqVPbF35g==}
     engines: {node: '>=22'}
     peerDependencies:
-      '@0xdoublesharp/lru-cache-clustered': ^2.1.2
+      '@0xdoublesharp/lru-cache-clustered': ^2.1.5
       express: ^4.18.2 || ^5.0.0
-      fastify: ^4.0.0 || ^5.0.0
+      fastify: ^4.0.0 || ^5.12.6
       lru-cache: ^11.0.0
     peerDependenciesMeta:
       '@0xdoublesharp/lru-cache-clustered':
@@ -472,8 +472,8 @@ packages:
       lru-cache:
         optional: true
 
-  '@0xdoublesharp/lru-cache-clustered@2.1.2':
-    resolution: {integrity: sha512-0TmLtZNt7amCA/Yfb0j/NCcGat4IK2o3U6Ct+PIfWJezvMwGHZrm5isU243C40Bg5UuwTPMWmydla6nTZ9sUCQ==}
+  '@0xdoublesharp/lru-cache-clustered@2.1.5':
+    resolution: {integrity: sha512-PawgUzQW3/Sd2u+3R4Uz2IIYkGwillr6CpZYPBvaT/G04Tgm5Q34d57o+9j7MOv//gKGg85Uu+4jkOv+D6Fcfw==}
     engines: {node: '>=22'}
     peerDependencies:
       lru-cache: ^11
@@ -2461,19 +2461,19 @@ packages:
 
 snapshots:
 
-  '@0xdoublesharp/adaptive-cache@0.2.1(@0xdoublesharp/lru-cache-clustered@2.1.2(lru-cache@11.5.3))(express@5.3.0)(fastify@5.12.7)(lru-cache@11.5.3)':
+  '@0xdoublesharp/adaptive-cache@0.5.0(@0xdoublesharp/lru-cache-clustered@2.1.5(lru-cache@11.5.3))(express@5.3.0)(fastify@5.12.7)(lru-cache@11.5.3)':
     dependencies:
       debug: 4.4.3
       ioredis: 6.0.0
     optionalDependencies:
-      '@0xdoublesharp/lru-cache-clustered': 2.1.2(lru-cache@11.5.3)
+      '@0xdoublesharp/lru-cache-clustered': 2.1.5(lru-cache@11.5.3)
       express: 5.3.0
       fastify: 5.12.7
       lru-cache: 11.5.3
     transitivePeerDependencies:
       - supports-color
 
-  '@0xdoublesharp/lru-cache-clustered@2.1.2(lru-cache@11.5.3)':
+  '@0xdoublesharp/lru-cache-clustered@2.1.5(lru-cache@11.5.3)':
     dependencies:
       debug: 4.4.3
       lru-cache: 11.5.3

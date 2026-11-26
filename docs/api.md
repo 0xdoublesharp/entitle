@@ -1,8 +1,7 @@
 # API v1
 
-Use the deployment's common `PUBLIC_ORIGIN` as the base for every route below.
-See [deployment](deployment.md) for the planned hosted address and
-[platform support](platform-support.md) for supported framework adapters and integration limits.
+Use your deployment's `PUBLIC_ORIGIN` as the base for every route below. For
+client package and feed requirements, see [platform support](platform-support.md).
 
 Errors use `{error:{code,message,requestId}}`. Credentials belong in Authorization headers or request JSON, never package URLs. Responses containing identity, client secrets or customer data are `Cache-Control: no-store`. Requests have IDs and rate limits. No legacy unscoped licensing routes exist.
 
@@ -34,13 +33,13 @@ being transferred or verified; an already committed release remains published.
 
 | Seller key scope    | Operations                                                                            |
 | ------------------- | ------------------------------------------------------------------------------------- |
-| `read`              | Overview, price picker, safe jobs, features and basic/eligible advanced health reads. |
+| `read`              | Overview, prices, promotions, licenses, analytics, safe jobs, features, and eligible health reads. |
 | `catalog:write`     | Save products and plan mappings.                                                      |
 | `releases:write`    | Publish ZIPs/assets and withdraw releases.                                            |
-| `licenses:write`    | Issue complimentary licenses, set/clear seller revocation and enabled local purchase fixtures. |
+| `licenses:write`    | Issue complimentary licenses, update license notes and complimentary limits, set or clear seller revocation, and create enabled local purchase fixtures. |
 | `billing:reconcile` | Queue reconciliation, run tenant jobs and retry work/email.                           |
 | `operations:write`  | Update operating settings and manage eligible webhook endpoints/deliveries.           |
-| `data:export`       | Create, download and delete encrypted workspace exports.                              |
+| `data:export`       | Export filtered licenses and create, download, or delete encrypted workspace exports. |
 
 An allowed scope does not bypass ownership, paid capability or interactive-only
 requirements. Keys default to `read` plus `releases:write` for 90 days, with a
@@ -157,8 +156,8 @@ Prefix `/api/v1/tenants/:tenant`:
 
 | Method   | Route                                            | Input / behavior                                                                                                                      |
 | -------- | ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------- |
-| GET      | /catalog                                         | Tenant name, products, and unarchived plans with `id`, `name`, `site_allowance`, `unit_amount` (minor units), `currency`, and `billing_interval` (`month`, `year`, or null for plans created before intervals were recorded) |
-| POST     | /checkout                                        | `{planId,email,uiMode?:"hosted"\|"elements"}`; server resolves price/account; existing email requires buyer sign-in                   |
+| GET      | /catalog                                         | Tenant name, `allowPromotionCodes`, products, and unarchived plans with `id`, `name`, `site_allowance`, `unit_amount` (minor units), `currency`, and `billing_interval` (`month`, `year`, `lifetime`, or null for older plans) |
+| POST     | /checkout                                        | `{planId,email,uiMode?,promotionCode?,renewLicenseId?}`. `uiMode` is `hosted` or `elements`. The server resolves the price and account. Existing customers must sign in. |
 | POST     | /activate                                        | `{key,installationId,siteUrl?,installationLabel?,product}`; stable installation ID, transactional allowance, retry returns same token |
 | GET      | /activation                                      | Installation bearer token; current entitlement and billing status                                                                     |
 | POST     | /deactivate                                      | Installation bearer token, `{}`                                                                                                       |
@@ -191,6 +190,20 @@ share an IP budget. Rate-limit responses use HTTP 429 and include `Retry-After`.
 
 Hosted checkout returns `{url}`. Elements returns `{uiMode:"elements",clientSecret,publishableKey,stripeAccount,returnUrl}`. Initialize the official Stripe.js loader with that publishable key and `stripeAccount`, then `initCheckoutElementsSdk({clientSecret,elementsOptions:{appearance:...}})`. Mount the Payment Element, load actions, display Stripe's canonical total and confirm through Stripe. Keep secrets only in memory. Neither a successful confirmation nor the return URL grants entitlement. Card details go directly to Stripe. See [Elements design](architecture.md#checkout-and-billing).
 
+`promotionCode` accepts 1–64 ASCII letters, digits, underscores, or hyphens.
+Enable `allowPromotionCodes` in Commerce settings before accepting codes.
+Paid checkout requires a positive amount due after discounts. A code that
+reduces the amount due to zero is rejected. Share a buyer link such as
+`/t/:tenant?promo=CODE&plan=PLAN_ID&renew=LICENSE_ID`. Include `plan` to preselect
+a plan and `renew` when the link targets a specific license.
+
+`renewLicenseId` is a UUID and requires the license holder's buyer session.
+Select a plan for the same product and an eligible expired, canceled, unpaid,
+or complimentary license. Revoked, suspended, and lifetime licenses are
+ineligible. After payment is confirmed, reconciliation renews the license or
+converts it from complimentary to paid while keeping its key and active
+installations.
+
 A seller's independent website can proxy guest checkout and render its own Elements form if it relays the issuing browser's HttpOnly checkout cookie, including on a provider error response. That claim allows retries only for its unpaid, unlicensed customer; it is not a buyer session. Existing customers must sign in through the hosted buyer flow or a complete same-origin session proxy. No general cross-domain authentication bridge is included. Customer-session cross-origin CORS is intentionally disabled. Never put tenant automation keys into browsers or plugin ZIPs. The server controls the return URL.
 
 Update metadata returns `{name,slug,version,download_url,requires,requires_php,min_free,tested,sections:{changelog},sha256}`. Package URLs never expire merely because cached metadata is old. Current expiry, revocation, suspension or withdrawal can still deny a cached offer. Authenticate only the exact configured tenant package path, reject redirects, and verify SHA-256. Status must never gate installed plugin features.
@@ -205,13 +218,18 @@ Site normalization lowercases hostname, removes scheme/default ports, query/frag
 
 ## Tenant seller API
 
-Prefix `/api/v1/tenants/:tenant/seller`. Interactive owners use seller sessions + CSRF. Automation uses scoped, expiring `Authorization: Bearer DE-TK-...`; keys are tenant-bound and returned once. Read requests require `read`. Key management, Connect and platform billing require an interactive owner.
+Prefix `/api/v1/tenants/:tenant/seller`. Interactive owners use seller sessions + CSRF. Automation uses scoped, expiring `Authorization: Bearer DE-TK-...`; keys are tenant-bound and returned once. Use the scope listed for each route. Key management, Connect and platform billing require an interactive owner.
 
 | Method | Route                       | Scope / behavior                                                                                              |
 | ------ | --------------------------- | ------------------------------------------------------------------------------------------------------------- |
 | GET    | /overview                   | read; tenant, products/plans, safe licenses/releases and measured metrics                                     |
+| GET    | /licenses                   | `read`. Filtered, cursor-paginated licenses with active installation counts. |
 | GET    | /licenses/:id               | read; one tenant license and safe installation records, `limit` 1–500 (default 100), optional `after` cursor; returns `nextCursor` |
-| GET    | /prices                     | read; active monthly and annual merchant prices, each with `interval` of `month` or `year`; local fixtures clearly labeled |
+| GET    | /licenses/export            | `data:export`. Filtered CSV or JSON without license keys or activation tokens. |
+| PATCH  | /licenses/:id               | `licenses:write`. Update an internal note or change a complimentary license's expiration or seat allowance. |
+| GET    | /analytics                  | `read`. Recurring revenue by currency, retention counts, and per-product license and installation metrics. |
+| GET    | /prices                     | `read`. Active merchant prices with `interval` of `month`, `year`, or `lifetime`. Local fixtures are labeled. |
+| GET    | /promotions                 | `read`. Active Stripe promotion codes for the workspace. |
 | POST   | /products                   | catalog:write; `{slug,name,framework?,frameworkConfig?,pluginBasename?,plans:[{name,siteAllowance,priceId}]}`; an existing slug updates the name and adds the listed plans, keeping existing ones |
 | POST   | /plans/:id/archive          | catalog:write; `{archived:boolean}`; archived plans leave the catalog and refuse new checkout (`409 plan_archived`); existing licenses are unchanged |
 | POST   | /releases/:product/:version | releases:write; WordPress raw ZIP and base64url JSON `X-Release-Metadata`                                     |
@@ -238,7 +256,33 @@ Native asset upload uses `Content-Type: application/octet-stream`, required `Con
 
 WordPress release metadata: `{changelog,minWp?,minPhp?,minFree?,tested?}`. Defaults 6.0/8.0/0.0.0/0.0.0 respectively. Authentication precedes parsing. Default WordPress cap 25 MiB, hard ceiling 100 MiB. Changelog schema permits 30,000 characters, but the entire encoded metadata header must fit 12,288 bytes. Publication verifies paths, CRC, expansion/entries, plugin identity/version, SHA-256 and private storage before committing metadata. Withdrawn objects remain stored and count against quota.
 
-Plan prices must be active recurring Stripe prices billed every month or every year. Catalog setup preserves immutable price-to-product and allowance mappings. Add a new Stripe price to change seats. A future paid plan takes effect at its paid period start; overlapping paid grants retain the larger allowance through its paid period. No unpaid upgrade grants seats.
+Map an active monthly, annual, or one-time Stripe price by `priceId`. A one-time
+price with a positive amount produces `interval: "lifetime"` in the price picker
+and `billing_interval: "lifetime"` in the catalog. Checkout collects one payment
+for a lifetime license. Full refunds can revoke access, and disputes can suspend
+it. Catalog setup preserves price-to-product and allowance mappings. Add a new
+Stripe price to change seats. Future paid grants take effect at their paid
+period start, and overlapping grants retain the larger allowance.
+
+### License management and analytics
+
+`GET /licenses` accepts optional `productId`, `provenance` (`paid` or
+`complimentary`), `status` (`active`, `expiring`, `expired`, `canceled`, `revoked`,
+`suspended`, or `lifetime`), `expiringWithinDays` (1–90), and `q` (up to 200
+characters). Set `limit` from 1 to 500 and pass `nextCursor` as `after` to fetch
+the next page. `GET /licenses/export` accepts the same filters and a `format` of
+`csv` or `json`. An interactive seller session or a key with `data:export` can
+download the export.
+
+`PATCH /licenses/:id` requires at least one of `internalNote` (up to 2,000
+characters, or `null` to clear), `expiresAt` (positive Unix milliseconds), or
+`siteAllowance` (1–100,000). Paid licenses accept note changes. Send expiration
+and seat changes for complimentary licenses.
+
+`GET /analytics` reports monthly and annual recurring revenue in minor units by
+currency for active and trialing auto-renewing subscriptions. It also reports
+canceled licenses pending expiry, expired and soon-expiring licenses, lifetime
+and active complimentary licenses, and per-product installation and seat counts.
 
 ### Complimentary issuance
 
@@ -372,14 +416,14 @@ All paths below are relative to `/api/v1/tenants/:tenant/seller`.
 | GET       | `/sandbox`                        | Server-confirmed environment and Stripe-test availability                                    |
 | POST      | `/sandbox`                        | `{mode:'fixture'\|'stripe'}`; one isolated child workspace, immutable mode |
 | POST      | `/sandbox/purchase`               | `{planId}`; fixture child only, delivery to the verified seller's email                      |
-| GET / PUT | `/commerce/settings`              | Server-controlled automatic tax, tax-ID and address collection                               |
+| GET / PUT | `/commerce/settings`              | `automaticTax`, `collectTaxId`, `collectBillingAddress`, and `allowPromotionCodes`. `allowPromotionCodes` is optional on PUT. |
 | PUT       | `/commerce/products/:id/tax-code` | `{taxCode:null\|'txcd_########'}` on the seller's Stripe product         |
 | GET       | `/operations`                     | Basic queue, storage, byte/read counters, persisted alerts and settings                      |
 | GET       | `/operations/activity?days=30`     | Core reporting; 1-365 UTC calendar days of job cohorts and the latest 50 email job results, scoped to the workspace |
 | PUT       | `/operations/settings`            | Bounded threshold, cooldown and lifecycle-notice settings                                    |
 | GET       | `/operations/reports?days=30`     | Hosted Pro or standalone; daily served-response and byte/read aggregates                     |
 | GET       | `/webhooks`                       | Hosted Pro or standalone; endpoints and safe delivery states                                 |
-| POST      | `/webhooks`                       | `{url,events}`; returns a signing secret once                                                |
+| POST      | `/webhooks`                       | `{url,events}` with up to nine [event types](webhooks.md#events-and-payload), including `license.canceled` and `license.expired`. Returns a signing secret once. |
 | POST      | `/webhooks/:id/rotate`            | `{}`; returns replacement secret once, preserves undelivered events under the new generation |
 | DELETE    | `/webhooks/:id`                   | Disables endpoint and cancels queued deliveries                                              |
 | POST      | `/webhook-deliveries/:id/retry`   | `{}`; retries a failed delivery using its 64-character hashed ID                             |

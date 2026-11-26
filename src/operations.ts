@@ -6,7 +6,10 @@ import { AppError, check } from "./errors.ts";
 import type { OutboundWebhooks } from "./outbound-webhooks.ts";
 import { enqueueEmail } from "./email.ts";
 import { lifecycleEmail } from "./transactional-email.ts";
+import { recordBusinessEvent } from "./business-events.ts";
+import { entitlementEnd } from "./licensing.ts";
 
+const currentNotificationEnd = "n.paid_through = CASE WHEN l.provenance = 'complimentary' THEN COALESCE(l.expires_at, 0) ELSE l.paid_through END";
 const settingsSchema = z.object({
   failureThreshold: z.number().int().min(1).max(1000000),
   pendingAgeMs: z.number().int().min(1000).max(30 * 86400000),
@@ -147,20 +150,23 @@ export class Operations {
     const settings = await this.settings();
     if (!settings.notificationsEnabled) return {cursor:null,processed:0};
     return this.db.transaction(async tx => {
+      await lock(tx,"billing",this.tenantId);
       await lock(tx,"work",this.tenantId);
       const query = tx("licenses").where({tenant_id:this.tenantId}).orderBy("id").limit(limit);
       if(cursor !== null) query.andWhere("id",">",cursor);
       const licenses = await query;
       for(const license of licenses) {
-        const paidThrough = Number(license.paid_through);
-        if(license.revoked || license.refund_revoked || license.suspended || paidThrough<=0) continue;
+        const end = entitlementEnd(license);
+        if(license.revoked || license.refund_revoked || license.suspended || license.billing_status==="lifetime" || end<=0) continue;
         let kind: string;
-        if(paidThrough<=now) kind="expired";
-        else if(license.billing_status==="canceled") kind="canceled_no_autorenew";
-        else if(paidThrough<=now+settings.warningDays*86400000) kind="expiry_approaching";
+        if(end<=now) {
+          kind="expired";
+          await recordBusinessEvent(tx, this.tenantId, "license.expired", license.id, `expired:${end}`, now);
+        } else if(license.billing_status==="canceled") kind="canceled_no_autorenew";
+        else if(end<=now+settings.warningDays*86400000) kind="expiry_approaching";
         else continue;
-        const id=hash(JSON.stringify([this.tenantId,license.id,kind,paidThrough]));
-        await tx("operation_notifications").insert({tenant_id:this.tenantId,id,customer_id:license.customer_id,license_id:license.id,kind,paid_through:paidThrough,created_at:now})
+        const id=hash(JSON.stringify([this.tenantId,license.id,kind,end]));
+        await tx("operation_notifications").insert({tenant_id:this.tenantId,id,customer_id:license.customer_id,license_id:license.id,kind,paid_through:end,created_at:now})
           .onConflict(["tenant_id","id"]).ignore();
       }
       return {cursor:licenses.length===limit ? licenses.at(-1)!.id as string : null,processed:licenses.length};
@@ -173,7 +179,7 @@ export class Operations {
       .join("customers as c",function(){this.on("c.tenant_id","=","n.tenant_id").andOn("c.id","=","n.customer_id");})
       .join("licenses as l",function(){this.on("l.tenant_id","=","n.tenant_id").andOn("l.id","=","n.license_id");})
       .where({"n.tenant_id":this.tenantId,"n.customer_id":customerId,"n.dismissed":0,"l.revoked":0,"l.refund_revoked":0,"l.suspended":0})
-      .whereRaw("?? = ??",["n.paid_through","l.paid_through"]).select("n.id","n.kind","n.license_id","n.paid_through","n.created_at","l.billing_status")
+      .whereNot("l.billing_status","lifetime").whereRaw(currentNotificationEnd).select("n.id","n.kind","n.license_id","n.paid_through","n.created_at","l.billing_status")
       .orderBy("n.created_at","desc").orderBy("n.id").limit(100);
     return rows.filter(row => row.kind==="expired" ? Number(row.paid_through)<=now : row.kind==="canceled_no_autorenew" ? row.billing_status==="canceled" && Number(row.paid_through)>now : Number(row.paid_through)>now && Number(row.paid_through)<=now+settings.warningDays*86400000)
       .map(row=>({id:row.id as string,kind:row.kind as string,licenseId:row.license_id as string,paidThrough:Number(row.paid_through),createdAt:Number(row.created_at)}));
@@ -197,7 +203,7 @@ export class Operations {
         .join("products as p",function(){this.on("p.tenant_id","=","l.tenant_id").andOn("p.id","=","l.product_id");})
         .join("tenants as t","t.id","l.tenant_id")
         .where({"n.tenant_id":this.tenantId,"n.dismissed":0,"l.revoked":0,"l.refund_revoked":0,"l.suspended":0})
-        .whereRaw("?? = ??",["n.paid_through","l.paid_through"]).whereNot("c.email","like","%.invalid")
+        .whereNot("l.billing_status","lifetime").whereRaw(currentNotificationEnd).whereNot("c.email","like","%.invalid")
         .where(function(){
           this.whereExists(tx("login_tokens as proof").select("proof.id").whereRaw("?? = ??",["proof.tenant_id","n.tenant_id"]).whereRaw("?? = ??",["proof.customer_id","n.customer_id"]).andWhere("proof.used",1))
             .orWhereExists(tx("sessions as proof").select("proof.id").whereRaw("?? = ??",["proof.tenant_id","n.tenant_id"]).whereRaw("?? = ??",["proof.customer_id","n.customer_id"]).andWhere("proof.expires_at",">",now));

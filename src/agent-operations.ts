@@ -59,12 +59,34 @@ const commerceSettings = z
     automaticTax: z.boolean(),
     collectTaxId: z.boolean(),
     collectBillingAddress: z.boolean(),
+    allowPromotionCodes: z.boolean().optional(),
   })
   .strict();
+const licenseFilters = {
+  productId: id.max(64).optional(),
+  provenance: z.enum(["paid", "complimentary"]).optional(),
+  status: z
+    .enum([
+      "active",
+      "expiring",
+      "expired",
+      "pending",
+      "canceled",
+      "revoked",
+      "suspended",
+      "lifetime",
+    ])
+    .optional(),
+  expiringWithinDays: z.number().int().min(1).max(90).optional(),
+  q: z.string().trim().max(200).optional(),
+};
+const licenseFilterKeys = Object.keys(licenseFilters);
 const event = z.enum([
   "license.created",
   "license.renewed",
   "license.revoked",
+  "license.canceled",
+  "license.expired",
   "activation.changed",
   "release.published",
   "release.withdrawn",
@@ -100,10 +122,18 @@ const tenantPath = (env: NodeJS.ProcessEnv) => {
 const routeId = (input: Input, name: string) =>
   encodeURIComponent(String(input[name]));
 
+function queryRoute(route: string, input: Input, keys: string[]) {
+  const query = new URLSearchParams();
+  for (const key of keys) {
+    if (input[key] !== undefined) query.set(key, String(input[key]));
+  }
+  return query.size ? `${route}?${query}` : route;
+}
+
 export const agentOperations: Record<string, Operation> = {
   "product-save": {
     description:
-      "Create or update a product and its monthly or annual plan mappings using structured fields.",
+      "Create or update a product and its monthly, annual, or one-time lifetime plan mappings using structured fields.",
     schema: z
       .object({
         slug,
@@ -470,6 +500,41 @@ export const agentOperations: Record<string, Operation> = {
     textResponse: true,
     readOnly: true,
   },
+  "licenses-list": {
+    description:
+      "List and filter workspace licenses by product, provenance, status, expiring window, or search query.",
+    schema: z
+      .object({
+        ...licenseFilters,
+        limit: z.number().int().min(1).max(500).optional(),
+        after: id.max(64).optional(),
+      })
+      .strict(),
+    mode: "api",
+    method: "GET",
+    readOnly: true,
+    destructive: false,
+    route: (v) =>
+      queryRoute("/licenses", v, [...licenseFilterKeys, "limit", "after"]),
+  },
+  "licenses-export": {
+    description:
+      "Export filtered workspace licenses as CSV or JSON to a new private file (requires data:export scope).",
+    schema: z
+      .object({
+        format: z.enum(["csv", "json"]).optional(),
+        ...licenseFilters,
+        output: path,
+      })
+      .strict(),
+    mode: "api",
+    method: "GET",
+    readOnly: true,
+    destructive: false,
+    route: (v) =>
+      queryRoute("/licenses/export", v, ["format", ...licenseFilterKeys]),
+    output: (v) => String(v.output),
+  },
   "license-detail": {
     description:
       "Inspect one license and a bounded page of installations. Pass nextCursor as after to continue.",
@@ -486,6 +551,34 @@ export const agentOperations: Record<string, Operation> = {
     route: (v) =>
       `/licenses/${routeId(v, "id")}?${new URLSearchParams({ ...(v.after === undefined ? {} : { after: String(v.after) }), ...(v.limit === undefined ? {} : { limit: String(v.limit) }) })}`,
     readOnly: true,
+  },
+  "license-update": {
+    description:
+      "Update a license's internal note, or adjust expiration and seat allowance on a complimentary license.",
+    schema: z
+      .object({
+        id: id.max(64),
+        internalNote: z.string().trim().max(2000).nullable().optional(),
+        expiresAt: z.number().int().positive().max(8640000000000000).optional(),
+        siteAllowance: z.number().int().min(1).max(100000).optional(),
+      })
+      .strict()
+      .refine(
+        (v) =>
+          v.internalNote !== undefined ||
+          v.expiresAt !== undefined ||
+          v.siteAllowance !== undefined,
+        "Provide at least one field to update.",
+      ),
+    mode: "api",
+    method: "PATCH",
+    destructive: true,
+    route: (v) => `/licenses/${routeId(v, "id")}`,
+    body: (v) => ({
+      ...(v.internalNote === undefined ? {} : { internalNote: v.internalNote }),
+      ...(v.expiresAt === undefined ? {} : { expiresAt: v.expiresAt }),
+      ...(v.siteAllowance === undefined ? {} : { siteAllowance: v.siteAllowance }),
+    }),
   },
   "license-installation-deactivate": {
     description: "Deactivate an installation on a seller's license.",
@@ -564,6 +657,16 @@ export const agentOperations: Record<string, Operation> = {
     route: (v) => `/jobs/${v.table}/retry-failed`,
     body: (v) => (v.limit === undefined ? {} : { limit: v.limit }),
   },
+  analytics: {
+    description:
+      "Read recurring revenue (MRR/ARR), retention counts, and per-product license analytics.",
+    schema: empty,
+    mode: "api",
+    method: "GET",
+    readOnly: true,
+    destructive: false,
+    route: () => "/analytics",
+  },
   reports: {
     description: "Read daily download and storage reports.",
     schema: z
@@ -591,7 +694,7 @@ export const agentOperations: Record<string, Operation> = {
     schema: z
       .object({
         url: z.string().url().max(1000),
-        events: z.array(event).min(1).max(7),
+        events: z.array(event).min(1).max(9),
       })
       .strict(),
     mode: "api",
@@ -654,6 +757,28 @@ export const agentOperations: Record<string, Operation> = {
     destructive: false,
     route: (_v, e) => `${tenantPath(e)}/catalog`,
     readOnly: true,
+  },
+  "checkout-create": {
+    description:
+      "Start a buyer checkout session for a plan, optionally applying a promotion code or renewing an existing license in place.",
+    schema: z
+      .object({
+        planId: id.max(200),
+        email: z.email().max(254),
+        uiMode: z.enum(["hosted", "elements"]).optional(),
+        promotionCode: z
+          .string()
+          .trim()
+          .regex(/^[A-Za-z0-9_-]{1,64}$/)
+          .optional(),
+        renewLicenseId: uuid.optional(),
+      })
+      .strict(),
+    mode: "request",
+    method: "POST",
+    destructive: false,
+    route: (_v, e) => `${tenantPath(e)}/checkout`,
+    body: (v) => v,
   },
   "activation-status": {
     description:
@@ -956,6 +1081,15 @@ export const agentOperations: Record<string, Operation> = {
     destructive: false,
     route: (_v, e) => `${tenantPath(e)}/seller/sandbox/purchase`,
     body: (v) => v,
+  },
+  "promotions-list": {
+    description: "List active Stripe promotion codes for this workspace.",
+    schema: empty,
+    mode: "api",
+    method: "GET",
+    readOnly: true,
+    destructive: false,
+    route: () => "/promotions",
   },
   "commerce-settings": {
     description: "Read interactive owner commerce settings.",

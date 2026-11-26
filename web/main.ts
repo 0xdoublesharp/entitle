@@ -1,4 +1,5 @@
 import {
+  computed,
   createApp,
   defineComponent,
   h,
@@ -6,6 +7,7 @@ import {
   onMounted,
   onUnmounted,
   ref,
+  watch,
 } from "vue";
 import type { VNodeArrayChildren } from "vue";
 import { ApiClient, ApiError, errorMessage, watchLoginTokens } from "./api.ts";
@@ -43,6 +45,19 @@ import type {
 
 type CatalogPlan = Plan & PlanPricing;
 type CatalogProduct = Omit<Product, "plans"> & { plans: CatalogPlan[] };
+
+function canRenewLicense(license: License) {
+  return (
+    !license.revoked &&
+    !license.suspended &&
+    license.billing_status !== "lifetime" &&
+    (license.provenance === "complimentary" ||
+      ["canceled", "incomplete_expired", "unpaid"].includes(
+        license.billing_status,
+      ) ||
+      !license.entitled)
+  );
+}
 
 const tabularNumbers = { fontVariantNumeric: "tabular-nums" };
 const date = (value: number | null) =>
@@ -141,6 +156,7 @@ export function mountCustomerApp(
       const privacyOpen = ref(false);
       const products = ref<CatalogProduct[]>([]);
       const billingAvailable = ref(true);
+      const allowPromotionCodes = ref(false);
       const loading = ref(true);
       const catalogLoading = ref(true);
       const sessionError = ref("");
@@ -154,7 +170,7 @@ export function mountCustomerApp(
         notice.value =
           checkoutReturn === "canceled"
             ? "Checkout was canceled. You can choose a plan and try again."
-            : "Payment submitted. Confirmation is pending. Check your email for confirmation, or sign in to view your licenses after our server confirms payment.";
+            : "Payment submitted. Confirmation is pending. After payment is confirmed, check your email for the license key or sign in to view your licenses.";
         returnUrl.searchParams.delete("checkout");
         window.history.replaceState(
           null,
@@ -190,6 +206,49 @@ export function mountCustomerApp(
       const email = ref("");
       const checkoutEmail = ref("");
       const selectedPlan = ref("");
+      const query = new URLSearchParams(window.location.search);
+      const prefilledPromotionCode = query.get("promo")?.trim() ?? "";
+      const promotionCode = ref(prefilledPromotionCode);
+      const renewLicenseId = ref("");
+      let requestedRenewal = query.get("renew");
+      const renewalProduct = (license: License) =>
+        billingAvailable.value && canRenewLicense(license)
+          ? products.value.find(
+              (product) =>
+                product.id === license.product_id && product.plans.length > 0,
+            )
+          : undefined;
+      const renewingLicense = computed(() =>
+        account.value?.licenses.find(
+          (license) =>
+            license.id === renewLicenseId.value && renewalProduct(license),
+        ),
+      );
+      const checkoutProducts = computed(() =>
+        products.value.filter(
+          (product) =>
+            product.plans.length > 0 &&
+            (!renewingLicense.value ||
+              product.id === renewingLicense.value.product_id),
+        ),
+      );
+      const selectRenewal = (license: License) => {
+        const product = renewalProduct(license);
+        if (!product) return;
+        if (!product.plans.some((plan) => plan.id === selectedPlan.value))
+          selectedPlan.value = product.plans[0]!.id;
+        renewLicenseId.value = license.id;
+        requestedRenewal = null;
+      };
+      watch([account, products, billingAvailable], () => {
+        if (renewLicenseId.value && !renewingLicense.value)
+          renewLicenseId.value = "";
+        if (!requestedRenewal || checkoutOpen.value) return;
+        const license = account.value?.licenses.find(
+          (item) => item.id === requestedRenewal,
+        );
+        if (license) selectRenewal(license);
+      });
       const loginSentTo = ref("");
       const newKey = ref<{ licenseId: string; value: string } | null>(null);
       const keyInput = ref<HTMLInputElement>();
@@ -238,12 +297,17 @@ export function mountCustomerApp(
           const catalog = await api.get<{
             products: CatalogProduct[];
             billingAvailable?: boolean;
+            allowPromotionCodes?: boolean;
           }>("/catalog");
           billingAvailable.value = catalog.billingAvailable !== false;
+          allowPromotionCodes.value = catalog.allowPromotionCodes === true;
           products.value = catalog.products;
-          if (!selectedPlan.value)
+          const plans = products.value.flatMap((product) => product.plans);
+          if (!plans.some((plan) => plan.id === selectedPlan.value))
             selectedPlan.value =
-              products.value.flatMap((product) => product.plans)[0]?.id || "";
+              plans.find((plan) => plan.id === query.get("plan"))?.id ??
+              plans[0]?.id ??
+              "";
         } catch (failure) {
           catalogError.value = errorMessage(failure);
         } finally {
@@ -316,6 +380,7 @@ export function mountCustomerApp(
         });
       const beginCheckout = () =>
         void run("checkout", async () => {
+          const promo = promotionCode.value.trim();
           const revision = ++checkoutRevision;
           payment.dispose();
           checkoutOpen.value = true;
@@ -328,6 +393,10 @@ export function mountCustomerApp(
                 planId: selectedPlan.value,
                 email: checkoutEmail.value.trim(),
                 uiMode: "elements",
+                ...(promo ? { promotionCode: promo } : {}),
+                ...(renewingLicense.value
+                  ? { renewLicenseId: renewLicenseId.value }
+                  : {}),
               },
               false,
             );
@@ -419,10 +488,10 @@ export function mountCustomerApp(
         products.value
           .flatMap((product) => product.plans)
           .find((plan) => plan.id === selectedPlan.value)!;
-      const purchasable = () =>
-        products.value.filter((product) => product.plans.length > 0);
       const renderCheckout = () => {
         const state = checkoutState.value;
+        const plan = selectedPlanDetails();
+        const renewal = planInterval(plan).renewal;
         const finished =
           state.phase === "complete" || state.phase === "pending";
         return h(
@@ -449,7 +518,9 @@ export function mountCustomerApp(
                 ),
                 h(
                   "p",
-                  `${planInterval(selectedPlanDetails()).renewal} Manage or cancel your subscription from your account billing page.`,
+                  plan.billing_interval === "lifetime"
+                    ? renewal
+                    : `${renewal} Manage or cancel your subscription from your account billing page.`,
                 ),
               ]),
             state.phase === "loading" &&
@@ -471,7 +542,9 @@ export function mountCustomerApp(
                   ]),
                   h(
                     "p",
-                    "Your license will appear after our server confirms payment. Check your email or refresh your licenses.",
+                    account.value
+                      ? "Your license appears after payment is confirmed. Check your email for the key or refresh your licenses."
+                      : "Check your email for the license key after payment is confirmed.",
                   ),
                   account.value &&
                     button(
@@ -546,10 +619,13 @@ export function mountCustomerApp(
           ? "Revoked"
           : license.suspended
             ? "Suspended"
-            : license.entitled
-              ? "Active"
-              : "Expired";
+            : license.billing_status === "lifetime"
+              ? "Lifetime"
+              : license.entitled
+                ? "Active"
+                : "Expired";
       const renderLicense = (license: License) => {
+        const lifetime = license.billing_status === "lifetime";
         const active = license.installations.filter(
           (item) => item.active && !item.exempt,
         ).length;
@@ -593,18 +669,22 @@ export function mountCustomerApp(
               h("div", [
                 h(
                   "dt",
-                  license.provenance === "complimentary"
-                    ? "Expires"
-                    : "Paid through",
+                  lifetime
+                    ? "Access"
+                    : license.provenance === "complimentary"
+                      ? "Expires"
+                      : "Paid through",
                 ),
                 h(
                   "dd",
                   { style: tabularNumbers },
-                  date(
-                    license.provenance === "complimentary"
-                      ? (license.expires_at ?? null)
-                      : license.paid_through,
-                  ),
+                  lifetime
+                    ? "Lifetime"
+                    : date(
+                        license.provenance === "complimentary"
+                          ? (license.expires_at ?? null)
+                          : license.paid_through,
+                      ),
                 ),
               ]),
               h("div", [
@@ -634,6 +714,22 @@ export function mountCustomerApp(
                 ),
               ]),
             ]),
+            renewalProduct(license) &&
+              button(
+                license.provenance === "complimentary"
+                  ? "Upgrade to paid"
+                  : "Renew license",
+                () => {
+                  selectRenewal(license);
+                  void nextTick(() =>
+                    document.getElementById("renewal-notice")?.focus(),
+                  );
+                },
+                {
+                  class: "button-secondary",
+                  disabled: interactionBusy() || checkoutOpen.value,
+                },
+              ),
             !license.entitled &&
               h("p", { class: "access-note" }, [
                 icon(icons.warning),
@@ -985,7 +1081,6 @@ export function mountCustomerApp(
                 [
                   h("div", { class: "panel-icon" }, [icon(icons.shield)]),
                   h("div", [
-                    h("p", { class: "eyebrow" }, "Secure sign in"),
                     h(
                       "h1",
                       { id: "login-confirm-title" },
@@ -1128,7 +1223,7 @@ export function mountCustomerApp(
                                   confirmation.value = {
                                     title,
                                     description:
-                                      "Review retained data and paid rights before requesting closure.",
+                                      "The service operator will review your request. Manage subscription renewals separately in billing.",
                                     label,
                                     run,
                                   };
@@ -1148,10 +1243,10 @@ export function mountCustomerApp(
                               account.value.licenses.map(renderLicense),
                             )
                           : h("div", { class: "panel empty-account" }, [
-                              h("h2", "Your licenses will appear here"),
+                              h("h2", "No licenses in this account"),
                               h(
                                 "p",
-                                "Choose a plan below to get started. If you just completed checkout, allow a moment for your payment to be confirmed.",
+                                "If you just paid, wait for the license email, then refresh. If you expected a license, sign in with the address that received it.",
                               ),
                               button(
                                 "Refresh licenses",
@@ -1170,22 +1265,11 @@ export function mountCustomerApp(
                       { class: "welcome", "aria-labelledby": "welcome-title" },
                       [
                         h("div", { class: "welcome-copy" }, [
-                          h(
-                            "p",
-                            { class: "eyebrow" },
-                            "Software licenses, accounted for",
-                          ),
-                          h("h1", { id: "welcome-title" }, [
-                            "Your software.",
-                            h("br"),
-                            "Your licenses.",
-                            h("br"),
-                            h("span", "All in one place."),
-                          ]),
+                          h("h1", { id: "welcome-title" }, "Your software licenses"),
                           h(
                             "p",
                             { class: "intro" },
-                            "Download releases, manage your installations, and keep track of your subscription.",
+                            "Sign in to download releases, replace a license key, or manage your installations.",
                           ),
                           h(
                             "p",
@@ -1211,7 +1295,7 @@ export function mountCustomerApp(
                             ),
                             h(
                               "p",
-                              "We will email you a secure sign-in link. No password needed.",
+                              "Enter the email address you used for your license.",
                             ),
                             h("form", { onSubmit: requestLogin }, [
                               h(
@@ -1258,7 +1342,7 @@ export function mountCustomerApp(
                                     h("p", [h("strong", loginSentTo.value)]),
                                     h(
                                       "p",
-                                      "If an account exists for this email, a sign-in link is on its way. Check your inbox and spam folder.",
+                                      "If an account exists for this address, check your inbox or spam folder for a sign-in link. The link works once and expires after 15 minutes.",
                                     ),
                                   ]),
                                 ],
@@ -1277,16 +1361,10 @@ export function mountCustomerApp(
               [
                 h("div", { class: "page-heading" }, [
                   h("div", [
-                    h("p", { class: "eyebrow" }, "Choose your allowance"),
                     h(
                       "h2",
                       { id: "plans-title" },
-                      "Make room for your next installation",
-                    ),
-                    h(
-                      "p",
-                      { class: "muted" },
-                      "Every plan includes downloads and updates for the licensed product. Confirm the total at secure checkout.",
+                      "Available plans",
                     ),
                   ]),
                 ]),
@@ -1307,7 +1385,7 @@ export function mountCustomerApp(
                       ? h(
                           "p",
                           { class: "empty-message" },
-                          "Paid checkout is unavailable until the publisher configures billing. Complimentary licenses remain available in your account.",
+                          "Paid checkout is unavailable. Contact the publisher about purchase options.",
                         )
                       : products.value.length === 0
                         ? h(
@@ -1315,7 +1393,7 @@ export function mountCustomerApp(
                             { class: "empty-message" },
                             "No plans are available yet. Please check back soon.",
                           )
-                        : purchasable().length === 0
+                        : checkoutProducts.value.length === 0
                           ? h(
                               "p",
                               { class: "empty-message" },
@@ -1325,7 +1403,30 @@ export function mountCustomerApp(
                               "form",
                               { onSubmit: checkout, class: "checkout-form" },
                               [
-                                ...purchasable().map((product) =>
+                                renewingLicense.value &&
+                                  h(
+                                    "div",
+                                    { class: "access-note renewal-notice" },
+                                    [
+                                      h(
+                                        "p",
+                                        { id: "renewal-notice", tabindex: -1 },
+                                        `Renewing existing license for ${renewingLicense.value.product_name} — your current license key and active installations stay intact.`,
+                                      ),
+                                      button(
+                                        "Cancel renewal",
+                                        () => {
+                                          renewLicenseId.value = "";
+                                        },
+                                        {
+                                          class:
+                                            "button-secondary button-small",
+                                          disabled: checkoutOpen.value,
+                                        },
+                                      ),
+                                    ],
+                                  ),
+                                ...checkoutProducts.value.map((product) =>
                                   h(
                                     "fieldset",
                                     { key: product.id, class: "product-plans" },
@@ -1429,6 +1530,27 @@ export function mountCustomerApp(
                                       },
                                     }),
                                   ]),
+                                  (allowPromotionCodes.value ||
+                                    prefilledPromotionCode) &&
+                                    h("div", { class: "checkout-email" }, [
+                                      h(
+                                        "label",
+                                        { for: "promotion-code" },
+                                        "Promotion code",
+                                      ),
+                                      h("input", {
+                                        id: "promotion-code",
+                                        type: "text",
+                                        placeholder: "BF30",
+                                        disabled: checkoutOpen.value,
+                                        value: promotionCode.value,
+                                        onInput: (event: Event) => {
+                                          promotionCode.value = (
+                                            event.target as HTMLInputElement
+                                          ).value;
+                                        },
+                                      }),
+                                    ]),
                                   h(
                                     "button",
                                     {

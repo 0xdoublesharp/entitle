@@ -121,6 +121,7 @@ const shapes = {
       paid_through: number,
       billing_status: z.string().max(40),
       subscription_id: identifier.nullable(),
+      one_time_payment_id: identifier.nullable().default(null),
       provenance: z.enum(["paid", "complimentary"]).default("paid"),
       expires_at: number.positive().nullable().default(null),
       complimentary_request_id: uuid.nullable().default(null),
@@ -264,6 +265,7 @@ const tenantShape = z
     automatic_tax: flag,
     collect_tax_id: flag,
     collect_billing_address: flag,
+    allow_promotion_codes: flag.default(0),
   })
   .strict();
 const blobShape = z
@@ -500,35 +502,39 @@ function validateManifest(input: unknown, maxBytes: number): Manifest {
     );
   for (const row of manifest.tables.plans)
     valid(find("products", row.product_id));
+  const oneTimePayments = new Set<string>();
   for (const row of manifest.tables.licenses) {
     valid(
       find("customers", row.customer_id) && find("products", row.product_id),
     );
+    const hasComplimentaryIssuance =
+      row.issued_at !== null && row.issued_by !== null &&
+      row.complimentary_request_id !== null && row.complimentary_request_hash !== null;
+    if (typeof row.one_time_payment_id === "string") {
+      valid(!oneTimePayments.has(row.one_time_payment_id));
+      oneTimePayments.add(row.one_time_payment_id);
+    }
     if (row.provenance === "complimentary")
       valid(
         row.plan_id === null &&
           row.subscription_id === null &&
+          row.one_time_payment_id === null &&
           row.paid_through === 0 &&
           row.billing_status === "complimentary" &&
           Number(row.site_allowance) > 0 &&
           row.expires_at !== null &&
-          row.issued_at !== null &&
-          row.issued_at! < row.expires_at! &&
-          row.issued_by !== null &&
-          row.complimentary_request_id !== null &&
-          row.complimentary_request_hash !== null,
+          hasComplimentaryIssuance &&
+          row.issued_at! < row.expires_at!,
       );
     else
       valid(
         row.plan_id !== null &&
-          row.subscription_id !== null &&
+          (row.subscription_id === null) !== (row.one_time_payment_id === null) &&
           find("plans", row.plan_id)?.product_id === row.product_id &&
           row.expires_at === null &&
-          row.complimentary_request_id === null &&
-          row.complimentary_request_hash === null &&
-          row.issued_by === null &&
-          row.issued_at === null &&
-          row.internal_note === null,
+          (hasComplimentaryIssuance ||
+            (row.complimentary_request_id === null && row.complimentary_request_hash === null &&
+              row.issued_by === null && row.issued_at === null && row.internal_note === null)),
       );
   }
   for (const row of manifest.tables.grants)
@@ -1293,6 +1299,9 @@ async function fresh(tx: Tx) {
 }
 const marker = (account: string) => `primary:portability:${hash(account)}`;
 function subscriptionIds(licenses: Row[], work: Row[], closures: Row[]) {
+  const billingTarget = (row: Row) => row.one_time_payment_id
+    ? `one_time:${row.one_time_payment_id}`
+    : row.subscription_id;
   const closedCustomers = new Set(
     closures
       .filter((row) => row.status === "completed")
@@ -1301,7 +1310,7 @@ function subscriptionIds(licenses: Row[], work: Row[], closures: Row[]) {
   const closedSubscriptions = new Set(
     licenses
       .filter((row) => closedCustomers.has(row.customer_id))
-      .map((row) => row.subscription_id),
+      .map(billingTarget),
   );
   return [
     ...new Set([
@@ -1311,7 +1320,7 @@ function subscriptionIds(licenses: Row[], work: Row[], closures: Row[]) {
             row.provenance !== "complimentary" &&
             !closedCustomers.has(row.customer_id),
         )
-        .map((row) => row.subscription_id),
+        .map(billingTarget),
       ...work
         .filter((row) => row.kind === "reconcile" && row.payload !== "")
         .map((row) => JSON.parse(String(row.payload)).subscriptionId as string),
@@ -1529,6 +1538,7 @@ export async function importPortability(
           automatic_tax: source.automatic_tax,
           collect_tax_id: source.collect_tax_id,
           collect_billing_address: source.collect_billing_address,
+          allow_promotion_codes: source.allow_promotion_codes,
           stripe_account_id: null,
           stripe_status: "platform",
           exempt: 1,

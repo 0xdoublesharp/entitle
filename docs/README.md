@@ -1,68 +1,65 @@
 # Documentation
 
-Start with the task you need to complete. These guides describe the current
-application; pinned versions and validation rules live in source and configuration.
-The public `/docs` guide is available without an account on a running deployment.
+Use your deployment's origin in the examples. The public `/docs` guide on a
+running deployment is available without an account.
 
 ## Publish and sell
 
-- [Getting started](getting-started.md): choose hosted, self-hosted or local
-  development, then complete a purchase, activation and update.
-- [Seller guide](seller-guide.md): products, plans, releases, buyer support,
-  account security, sandboxes and tax collection.
-- [Hosted tiers and fees](hosted-pricing.md): service charges, Pro capabilities,
-  renewals, refunds and the separation from buyer licenses.
+- [Getting started](getting-started.md) walks through setup, your first
+  product, licensing an installation, and delivering an update.
+- [Seller guide](seller-guide.md) covers products, plans, releases, buyer
+  support, sandbox testing, and tax collection.
+- [Hosted tiers and fees](hosted-pricing.md) explains service charges, Pro
+  capabilities, renewals, and refunds.
 
 ## Integrate software
 
-- [Client integration](client-integration.md): installation identity, activation,
-  status, update discovery, verified downloads and failure handling.
-- [Framework support](platform-support.md): supported adapters and exact package
-  requirements, with links to examples.
-- [WordPress](wordpress.md): plugin setup, update hooks and local qualification.
-- [API](api.md), [CLI](cli.md), [MCP](mcp.md) and [outgoing webhooks](webhooks.md): protocol and
-  automation reference.
+- [Client integration](client-integration.md) covers installation identity,
+  activation, update feeds, verified downloads, and failure handling.
+- [Framework adapters](platform-support.md) lists package and metadata
+  requirements and links to example clients.
+- [WordPress](wordpress.md) explains plugin setup, update hooks, and local testing.
+- [API](api.md), [CLI](cli.md), [MCP](mcp.md), and [outgoing webhooks](webhooks.md)
+  document the automation interfaces.
 
 ## Operate a deployment
 
-- [Deployment](deployment.md) and [configuration](configuration.md): production
-  setup, Stripe endpoints, private storage, capacity and optional Redis.
-- [Backup and restore](backup.md): consistent database, artifact and secret recovery.
-- [Portability](portability.md): encrypted workspace transfer and cutover.
-- [Operator maintenance](operator-maintenance.md): offline import/finalize and
-  reviewed customer-closure procedures.
-- [Troubleshooting](troubleshooting.md): diagnose access, billing, publication,
-  updates, email and infrastructure failures.
+- [Deployment](deployment.md) and [configuration](configuration.md) cover setup,
+  Stripe, private storage, capacity, and optional Redis.
+- [Backup and restore](backup.md) covers database, artifact, and secret recovery.
+- [Portability](portability.md) explains how to export and move a workspace.
+- [Operator maintenance](operator-maintenance.md) documents offline import,
+  billing reconciliation, and customer account closure.
+- [Troubleshooting](troubleshooting.md) covers access, billing, publication,
+  updates, email, and infrastructure failures.
 
 ## Develop and maintain
 
-- [Architecture](architecture.md): components, authority and data flow.
-- [Development](development.md): toolchain, setup, build and repository layout.
-- [Testing](testing.md): coverage, integration fixtures, fuzzing and release checks.
-- [Branding](branding.md): shared name, links and presentation conventions.
-- [Licensing](licensing.md) and [contributing](../.github/CONTRIBUTING.md): applicable
-  terms and contribution paths.
+- [Architecture](architecture.md) maps the components, tenant boundaries, and data flow.
+- [Development](development.md) covers the toolchain, setup, build, and repository layout.
+- [Testing](testing.md) lists checks, fixtures, and release verification steps.
+- [Branding](branding.md) lists naming and presentation conventions.
+- [Licensing](licensing.md) and [contributing](../.github/CONTRIBUTING.md) explain
+  the applicable terms and contribution paths.
 
 ## Vocabulary
 
 | Term | Meaning |
 | --- | --- |
-| Workspace / tenant | An isolated publisher catalog, customers and releases. Public URLs use its immutable slug. |
-| Product | An application or extension with a fixed framework identity. |
-| Plan | An annual Stripe price mapped to an installation allowance. |
-| License | A customer's product, paid or complimentary entitlement, allowance and access restrictions. |
+| Workspace / tenant | An isolated publisher catalog with its own customers and releases. Public URLs use the workspace slug. |
+| Product | An app or extension whose framework identity locks after its first license or release. |
+| Plan | A monthly or annual recurring Stripe price mapped to an installation allowance. |
+| License | Paid or complimentary access to a product for one customer, with an installation allowance and any access restrictions. |
 | Installation | A registered site or device with a scoped activation token. |
-| Release / asset | An immutable version and its package bytes; a native release can contain several targets. |
-| Entitlement | Whether paid rights or complimentary expiry and current restrictions permit access. |
-| Platform subscription | A hosted seller's service subscription, separate from buyer licenses. |
+| Release / asset | A release is a published version with immutable packages. A native release can have an asset for each target. |
+| Entitlement | Whether a license's paid period or complimentary term and access restrictions allow an action. |
+| Platform subscription | A hosted publisher's subscription to Entitle. Buyers purchase product licenses separately. |
 
-Use your deployment origin in examples. `primary` is the default standalone
-workspace slug; an import can preserve another slug. Internal tenant IDs are
-not public slugs.
+The default standalone workspace slug is `primary`. An imported workspace can
+retain a different slug. Use the public slug in URLs.
 
 ## CI identity publishing
 
 Use [OIDC publishing](oidc-publishing.md) to configure trusted GitHub Actions,
-GitLab, and other CI identities with passkey or security key reauthentication.
-
-- [Authentication capabilities, hardware provisioning and recovery](authentication-policy.md)
+GitLab, and other CI identities. The [authentication policy](authentication-policy.md)
+covers which keys can approve trusted publishers and how to recover account access.

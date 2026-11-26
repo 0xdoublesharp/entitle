@@ -1,42 +1,38 @@
 # Getting started
 
-This walkthrough ends with a product in the catalog, a licensed installation,
-and an update delivered through its normal updater. Choose hosted setup,
-standalone production setup, or the local fixture first.
+Set up Entitle, publish a release, and license an installation. Then publish a
+newer version and install it through your client's normal updater.
 
 ## Choose who operates the service
 
 | Path                  | You provide                                                                           | Start here                                                            |
 | --------------------- | ------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
-| Hosted publisher      | Your seller email, product builds and client integration; Stripe for paid sales       | Sign in at `/app/seller` on the hosted deployment.                    |
+| Hosted publisher      | Your seller email, product builds, and client integration. Connect Stripe for paid sales. | Sign in at `/app/seller` on the hosted deployment.                    |
 | Self-hosted publisher | HTTPS server with Docker, private S3 bucket, SMTP, and backups; Stripe for paid sales  | Start the [two-container stack](#self-host-with-docker-compose) below. |
-| Local development     | Pinned Node/pnpm, Docker for the mail fixture, and Go 1.27.1 for the source-built S3 fixture | Use the local procedure below. No paid services are required.         |
+| Local development     | Pinned Node and pnpm, Docker for the mail fixture, and Go 1.27.1 for the source-built S3 fixture | [Run the local fixture](#run-the-local-fixture). No paid services are required. |
 
 Use the deployment origin supplied by your operator.
 
-Hosted sellers create a **publisher workspace** for their business or brand and
-choose its permanent slug. Add each plugin or app as a **product** inside that
-workspace. A workspace can contain multiple products; they share billing,
-access, API keys and storage, while each product has its own plans, licenses
-and releases. The overview displays this relationship and totals across the
-workspace. See the [seller guide](seller-guide.md) for license search, filters,
-sorting, email history and daily activity reports.
+On the hosted service, create a **publisher workspace** for your business or
+brand and choose its permanent slug. On standalone, sign in with
+`STANDALONE_OWNER_EMAIL` to access the existing `primary` workspace after
+verification. Add each plugin or app as a **product**. Products share the
+workspace's billing, access, API keys, and storage, and each has its own plans,
+licenses, and releases.
 
-Complimentary licensing needs no connected Stripe account; connect Stripe from
-Billing when you offer monthly or annual paid plans. Hosted capacity and service
-limits still apply. Standalone owners set `STANDALONE_OWNER_EMAIL` and sign in
-with that address. Verification grants access to the existing `primary`
-workspace. Standalone needs no Connect onboarding or platform subscription.
+You can issue complimentary licenses before configuring Stripe. Workspace
+capacity limits still apply. For paid sales, connect Stripe from Billing on a
+hosted deployment or configure your merchant account on the standalone server.
 
-Email links are single-use and bound to the browser that requested them. Open
-the link in that browser. Seller and buyer sign-ins are separate.
+Open a seller sign-in link in the browser that requested it. Buyers can open
+their sign-in links in any browser. Each link works once and expires after
+15 minutes.
 
 ## Self-host with Docker Compose
 
-`deploy/compose.standalone.yaml` runs a standalone server as two containers: one
-app built from `deploy/standalone.Dockerfile` that serves the API and dashboard at
-the root of `PUBLIC_ORIGIN`, and a Caddy proxy that obtains HTTPS certificates.
-It needs no separate frontend release step.
+The [standalone Compose stack](../deploy/compose.standalone.yaml) runs the API
+and dashboard in one container and Caddy in another. Caddy obtains HTTPS
+certificates for `PUBLIC_ORIGIN`. The app image includes the frontend.
 
 1. Point your domain's DNS at the host and open ports 80 and 443.
 2. Copy `.env.example` to `.env`, protect it with mode 0600, and set
@@ -44,8 +40,8 @@ It needs no separate frontend release step.
    `DEPLOYMENT_MODE=standalone`, `STANDALONE_OWNER_EMAIL`, private S3 storage,
    SMTP, and `ENTITLE_DATA_DIR`, an absolute persistent host directory. The
    copied file sets `PRIVILEGED_AUTH_POLICY=passkey`, which lets you approve API
-   keys and browser releases with your own passkey; change it to `hardware` if
-   your operator will inventory hardware keys. See
+   key changes and browser releases with your own passkey. Set it to `hardware`
+   if your operator will inventory and approve hardware keys. See
    [configuration](configuration.md#deployment-and-identity).
 3. Create the app's data directory, then start the stack. This example uses
    `ENTITLE_DATA_DIR=/srv/entitle`:
@@ -57,9 +53,9 @@ It needs no separate frontend release step.
 
 4. Open `PUBLIC_ORIGIN/seller` and sign in with `STANDALONE_OWNER_EMAIL`.
 
-The app mounts only `${ENTITLE_DATA_DIR}/app`; Caddy keeps its certificate keys
-in the sibling `caddy-data` and `caddy-config` directories. Startup fails if the
-`app` directory is missing, so it never creates an empty database by accident.
+The app mounts only `${ENTITLE_DATA_DIR}/app`. Caddy keeps its certificate keys
+in the sibling `caddy-data` and `caddy-config` directories. Create the `app`
+directory before startup.
 If you are upgrading an installation that mounted `ENTITLE_DATA_DIR` itself, move
 its files into `app/` first, as described in
 [operator maintenance](operator-maintenance.md#move-data-into-the-app-subdirectory).
@@ -91,17 +87,15 @@ node --env-file=.env \
 `setup-local.ts` creates a private `.env` and refuses to overwrite one. Reuse an
 existing configuration rather than regenerating its secrets. The default owner
 for this fixture is `owner@example.test`. The S3 helper uses the pinned source
-fixture and requires exactly Go 1.27.1; `GO_BINARY` selects that executable.
-Inspect or stop only its owned process with `node scripts/local-s3.ts status` or `stop`.
+fixture and requires Go 1.27.1. To select that executable, set `GO_BINARY`. Check
+or stop the fixture with `node scripts/local-s3.ts status` or `node scripts/local-s3.ts stop`.
 
 Open `http://localhost:3211/seller`, request a link for the configured owner,
 then read the email in Mailpit at `http://localhost:8025`. The default buyer page
 is `http://localhost:3211/t/primary`. The public guide is `/docs`.
 
-This fixture uses `LOCAL_BILLING=true`, which blocks real Stripe Checkout and
-Portal calls. Its purchase helper creates canonical test entitlement and queues
-license email. It does not collect money. For a host without Scratch or with an existing private S3 service, use the
-manual procedure below.
+This fixture sets `LOCAL_BILLING=true`. The purchase helper grants test access
+and queues the license email without contacting Stripe Checkout or Customer Portal.
 
 ## Manual setup
 
@@ -109,7 +103,7 @@ manual procedure below.
    `.env`. Generate independent `APP_SECRET` and `OPERATOR_TOKEN` values; do not
    copy development placeholders into a deployed service.
 2. Set `DEPLOYMENT_MODE=standalone`, `STANDALONE_OWNER_EMAIL`, `PUBLIC_ORIGIN`,
-   `DATABASE_URL`, private `DATA_DIR` / `WORK_DIR`, and `BUILD_DIR` / `WEB_DIR`.
+   `DATABASE_URL`, private `DATA_DIR` and `WORK_DIR`, and `BUILD_DIR` and `WEB_DIR`.
    Choose persistent paths for data and disposable paths for builds and caches.
    The example file's `DATA_DIR` and `BUILD_DIR` point at the macOS Scratch
    volume; elsewhere, use repository-relative paths such as `DATA_DIR=./.data`
@@ -124,19 +118,20 @@ manual procedure below.
    `node --env-file=.env src/server.ts`. Skip `setup-local.ts`, `local-s3.ts`
    and their generated `integration.env` when using this procedure.
 
-See [configuration](configuration.md) for the full environment reference and
-[deployment](deployment.md) for HTTPS, production credentials and Compose. This
-alternative does not need Go. Existing `.env` secrets and provider data should
-be reused deliberately, not regenerated by a setup helper.
+This setup uses your existing S3 service and needs no Go toolchain. See
+[configuration](configuration.md) for the full environment reference and
+[deployment](deployment.md) for HTTPS, production credentials, and Compose.
 
 ## Create a product
 
-1. In Products, choose the framework your build actually uses. WordPress needs
-   the exact `directory/main-file.php` plugin basename. Joomla and JetBrains
-   need their extension/plugin identity. Generic defaults to device activation.
-2. For a complimentary pilot, leave **Include a paid plan** unchecked. No price
-   or payment provider is needed. For paid sales, create an active monthly or
-   annual recurring price in the correct merchant account and Stripe mode.
+1. Open **Products & sales → Products** and choose your software's framework.
+   WordPress needs the exact `directory/main-file.php` plugin basename. Joomla
+   and JetBrains need their extension or plugin identity. Generic defaults to
+   device activation.
+2. For a complimentary pilot, leave **Include a paid plan (monthly or annual)**
+   unchecked. To test a purchase in the local fixture, enable it and select a
+   **Local test fixture** price. For paid sales through Stripe, create an
+   active monthly or annual recurring price in the correct account and mode.
 3. If adding a paid plan, select that price and its site/device allowance. The same API field,
    `siteAllowance`, counts seats for either activation type.
 4. Save and check `/api/v1/tenants/YOUR_SLUG/catalog`. Confirm the product slug,
@@ -151,10 +146,10 @@ changing an allowance, and archive a plan to stop new purchases. See
 
 ## Publish version 1.0.0
 
-Use Releases in the dashboard. Browser publication requires a fresh passkey or
-security-key approval for that action; the server's
-[privileged policy](authentication-policy.md) decides which keys qualify. CI uses
-a scoped automation key or a [trusted OIDC publisher](oidc-publishing.md) instead.
+Open **Products & sales → Releases**, select the product, and enter `1.0.0`.
+Approve the upload with a passkey or security key accepted by the server's
+[privileged policy](authentication-policy.md). To publish from CI, use a scoped
+automation key or a [trusted OIDC publisher](oidc-publishing.md).
 
 For WordPress, publish a ZIP whose main plugin header and directory match the
 product and version. For other frameworks, upload a package for an exact target
@@ -162,43 +157,44 @@ and include the metadata required by its adapter. Tauri and Sparkle signatures
 come from your build system. Inspect [framework requirements](platform-support.md)
 before packaging.
 
-Publication validates the package, writes private immutable bytes, verifies
-storage readback, then commits the release. A release offer never points at an
-unfinished upload. The server reports separate WordPress and native upload caps
-under `/docs#server-limits`.
+Publication validates the package and verifies the private stored bytes before
+offering the release. The server reports separate WordPress and native upload
+limits in the application guide's **Server limits** section.
 
 ## Issue a complimentary pilot license
 
-Open **Licenses → Issue complimentary license**. Enter the customer email,
-product, installation allowance and a future expiration date and time, plus an
-optional internal note. The form uses your browser's local time zone. Review
-the confirmation before issuing.
+Open **Products & sales → Licenses** and select **Issue complimentary license**.
+Enter the customer's email, product, installation allowance, and a future
+expiration date and time. The form uses your browser's local time zone. You can
+add a private note. Review the confirmation before issuing.
 
-Entitle creates or reuses the customer within this workspace and queues a normal
-license-key email. Retry an uncertain submission with unchanged form values to
-reuse its request ID and avoid another license or email job. The success notice
-confirms queuing, not SMTP delivery. The internal note stays private to the seller.
+Entitle creates or reuses the customer within this workspace and queues the
+license-key email. The success notice confirms that the email is queued. If
+you're unsure whether a submission succeeded, retry with the same values to
+reuse its request ID and avoid issuing another license or queuing another email.
 
-Complimentary licenses are labelled in seller and customer views and create no
-invoice, subscription or revenue. They never automatically charge or enroll a
-pilot customer, including after Stripe is enabled. Revocation/restoration and
-customer key replacement use the normal controls. Restoration does not extend
-expiration. Expiration stops new activations, downloads, and updates while
-installed software keeps working.
+Seller and customer views label these licenses as complimentary. Customers keep
+their complimentary licenses when you enable Stripe and can choose a paid plan
+separately. Use the usual controls to revoke, restore, or replace a key.
+Restoration preserves the original expiration. Expiration stops new activations,
+downloads, and updates while installed software keeps working.
 
 Follow [activation](#activate-the-client) below using the emailed key. The existing
-WordPress client needs no changes. See the [seller guide](seller-guide.md#issue-a-complimentary-license)
-for the workflow and [API contract](api.md#complimentary-issuance) for automation.
+WordPress client accepts it. See the [API contract](api.md#complimentary-issuance)
+for automation.
 
 ## Purchase a paid license
 
-For real test-mode commerce, use the merchant's test prices, matching keys and
-signed webhook endpoint from [deployment](deployment.md). A checkout redirect
-does not create paid rights; wait for canonical payment reconciliation.
+To test a paid purchase with Stripe, configure the merchant's test prices,
+matching keys, and signed webhook endpoint. Open `/app/t/YOUR_SLUG` on hosted or
+`/t/YOUR_SLUG` on standalone, choose a plan, and complete checkout. Wait until
+Entitle reconciles the payment and sends the license email. See
+[deployment](deployment.md#buyer-checkout-and-billing-in-both-versions) for configuration.
 
-In the local fixture, create an API key in the seller dashboard with
-`licenses:write`. Set `TENANT_SLUG=primary` and supply `TENANT_API_KEY` privately
-through your environment or secret manager, then run:
+In the local fixture, use the ID of the plan you created with a fixture price.
+Open **Integrations → API keys** and create a key with `licenses:write`. Set
+`TENANT_SLUG=primary` and supply `TENANT_API_KEY` privately through your
+environment or secret manager, then run:
 
 ```sh
 pnpm cli demo-purchase PLAN_ID_FROM_CATALOG buyer@example.test
@@ -208,11 +204,11 @@ Read the license-key email in Mailpit when using the local fixture.
 
 ## Activate the client
 
-In your client, enter the emailed complimentary or paid key and
-activate one persisted installation ID. Site products also send `siteUrl`.
-Store the returned activation token in protected client storage. The raw
-license key is for activation; the installation token authenticates update
-checks and downloads. See [client integration](client-integration.md).
+Open **Integrations → Client setup** in the seller dashboard and select the
+product to get its workspace-specific settings. In your client, activate the
+emailed license key with a persisted installation ID. Site products also send
+`siteUrl`. Store the returned activation token in protected client storage and
+use it for update checks and downloads. See [client integration](client-integration.md).
 
 For routine publisher testing on an existing deployment, use an isolated
 [sandbox](seller-guide.md#test-in-a-sandbox). Do not enable local billing on a
@@ -227,12 +223,8 @@ client's normal update flow. Check the following before shipping your adapter:
 - The downloaded package matches the offered checksum and required signature.
 - Installation preserves the installation ID and activation token.
 - An activation retry returns the existing token without consuming another seat.
-- Deactivation frees a seat; replacing a license key invalidates existing tokens.
+- Deactivation frees a seat, and replacing a license key invalidates existing tokens.
 - An unavailable licensing server leaves installed functionality usable.
 
-Server tests and example compilation do not qualify native installation on every
-OS. Follow the [release checks](testing.md#release-checks) for the actual
-framework, provider and deployment you intend to ship.
-
-Next, read the [seller guide](seller-guide.md), automate publication with the
-[CLI](cli.md), or use the [API reference](api.md).
+Follow the [release checks](testing.md#release-checks) on the operating systems,
+framework versions, and deployment you intend to support.

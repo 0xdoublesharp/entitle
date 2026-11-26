@@ -9,7 +9,7 @@ import { lock } from "./db.ts";
 import { random, seal, unseal, equal, hash } from "./crypto.ts";
 import { check } from "./errors.ts";
 
-export const outboundEventTypes = ["license.created","license.renewed","license.revoked","activation.changed","release.published","release.withdrawn","alert.raised"] as const;
+export const outboundEventTypes = ["license.created","license.renewed","license.revoked","license.canceled","license.expired","activation.changed","release.published","release.withdrawn","alert.raised"] as const;
 const opaqueId=z.string().regex(/^[A-Za-z0-9_-]{1,64}$/);
 const eventSchema=z.object({id:opaqueId,type:z.enum(outboundEventTypes),resourceId:opaqueId,occurredAt:z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER)}).strict();
 export type OutboundEvent = z.infer<typeof eventSchema>;

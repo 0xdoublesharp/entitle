@@ -1,5 +1,5 @@
 import { mkdtemp, rm } from "node:fs/promises";
-import { createTenant, type DB } from "../src/db.ts";
+import { createTenant, migrate, type DB } from "../src/db.ts";
 import { isolatedDatabase } from "./helpers/database.ts";
 import { up } from "../src/migrations/012_business_events.ts";
 import { OutboundWebhooks } from "../src/outbound-webhooks.ts";
@@ -9,27 +9,7 @@ export async function businessFixture(run: (db: DB) => Promise<void>) {
   );
   const fixture = await isolatedDatabase(`sqlite:${root}/db`);
   try {
-    const migrations = [
-      "001_initial",
-      "002_plugin_identity",
-      "003_tenants",
-      "004_stripe_status",
-      "005_security",
-      "006_checkout",
-      "007_frameworks",
-      "009_accounts",
-      "010_operations",
-      "011_sandboxes",
-    ];
-    await fixture.db.migrate.latest({
-      migrationSource: {
-        getMigrations: async () => migrations,
-        getMigrationName: (name: string) => name,
-        getMigration: async (name: string) =>
-          import(`../src/migrations/${name}.ts`),
-      },
-    });
-    await up(fixture.db);
+    await migrate(fixture.db);
     await up(fixture.db);
     await createTenant(fixture.db, {
       id: "b0000000-0000-4000-8000-000000000001",

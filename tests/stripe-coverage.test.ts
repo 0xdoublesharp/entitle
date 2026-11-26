@@ -669,6 +669,9 @@ test("PaymentIntent refund/dispute lookup skips unrelated invoice payments and f
   routes.set("GET /v1/invoice_payments", () =>
     list("/v1/invoice_payments", []),
   );
+  routes.set("GET /v1/checkout/sessions", () =>
+    list("/v1/checkout/sessions", []),
+  );
   assert.equal(
     await source.resolveSubscription({
       id: "evt",
@@ -753,7 +756,8 @@ test("checkout rejects inactive, unsupported and free prices before creating Str
       type: "recurring",
       recurring: { interval: "year", interval_count: 1 },
     },
-    { active: true, type: "one_time" },
+    { active: false, type: "one_time" },
+    { active: true, type: "one_time", unit_amount: 0 },
     { active: true, type: "recurring", recurring: null },
     {
       active: true,

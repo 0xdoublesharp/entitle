@@ -5,34 +5,34 @@ export const pageMetadata = {
   home: {
     title: `${site.name} · ${site.tagline}`,
     description:
-      "Ship private updates and license WordPress, Joomla, Electron, Tauri, Sparkle, JetBrains, and other software. Sell monthly or annual plans through your own Stripe account, or start with complimentary pilot licenses.",
+      "License WordPress plugins, desktop apps, and other software. Start with complimentary licenses or sell subscriptions through your own Stripe account.",
     path: "/",
     imageAlt:
-      "Doublesharp Entitle. Software licensing and private updates for independent developers.",
+      "Doublesharp Entitle. License your software and ship private updates.",
   },
   docs: {
     title: `Documentation · ${site.name}`,
     description:
-      "Set up complimentary licenses, monthly or annual paid plans, and private updates. Automate with MCP, the CLI, or OIDC from CI, and self-host with Docker Compose.",
+      "Set up licensing and private updates. Find guides for client adapters, release publishing, automation, and self-hosting.",
     path: "/docs",
     imageAlt:
-      "Doublesharp Entitle documentation. From your first license to your next release.",
+      "Doublesharp Entitle documentation. Set up licensing and private updates.",
   },
   seller: {
     title: `Seller dashboard · ${site.name}`,
     description:
-      "Sign in to manage your software products, licenses, subscriptions, and private releases with Doublesharp Entitle.",
+      "Sign in to manage products, issue licenses, and publish private releases from your Entitle workspace.",
     path: "/seller",
     imageAlt:
-      "Doublesharp Entitle seller dashboard. Your software business, in one place.",
+      "Doublesharp Entitle seller dashboard. Manage licenses and private releases.",
   },
   customer: {
     title: `Customer account · ${site.name}`,
     description:
-      "Sign in to manage your software licenses, installations, subscriptions, and downloads with Doublesharp Entitle.",
+      "Sign in to download releases, replace a license key, or manage your installations and subscriptions.",
     path: null,
     imageAlt:
-      "Doublesharp Entitle customer account. Your licenses and downloads, together.",
+      "Doublesharp Entitle customer account. Your software licenses and downloads.",
   },
 } as const;
 
@@ -62,7 +62,8 @@ export function renderPageMetadata(
       .replaceAll('"', "&quot;");
   const metadata = pageMetadata[page];
   const basePath = normalizeAppBasePath(appBasePath);
-  const image = `${url.origin}${basePath}/social/${page}.png`;
+  // Increment the revision when replacing the preview artwork.
+  const image = `${url.origin}${basePath}/social/${page}.png?v=2`;
   const meta = (name: string, value: string, attribute = "property") =>
     `<meta ${attribute}="${name}" content="${escape(value)}" />`;
   return [

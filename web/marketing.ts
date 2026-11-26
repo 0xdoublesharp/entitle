@@ -63,8 +63,8 @@ const documentationPreview = () =>
         h("code", "POST /activate"),
       ]),
       h("ul", [
-        h("li", [publicIcon(icons.check), "Verify a license"]),
-        h("li", [publicIcon(icons.check), "Register an installation"]),
+        h("li", [publicIcon(icons.check), "Activate a site or device"]),
+        h("li", [publicIcon(icons.check), "Store its activation token"]),
         h("li", [publicIcon(icons.check), "Deliver private updates"]),
       ]),
       h("a", { href: "/docs#client-integration", class: "home-secondary" }, [
@@ -76,15 +76,14 @@ const documentationPreview = () =>
 const publicHome = () => [
   h("section", { class: "saas-hero", "aria-labelledby": "home-title" }, [
     h("div", { class: "hero-copy" }, [
-      h("p", { class: "eyebrow" }, "Software licensing and updates"),
       h("h1", { id: "home-title" }, [
-        "Your software. ",
-        h("span", "Ready to sell."),
+        "License your software and ",
+        h("span", "ship private updates"),
       ]),
       h(
         "p",
         { class: "intro" },
-        "Ship private updates and license WordPress, Joomla, Electron, Tauri, Sparkle, JetBrains, and other software. Start with complimentary pilot licenses, then sell monthly or annual subscriptions through your own Stripe account.",
+        "Give invited customers complimentary licenses or sell monthly or annual subscriptions through your own Stripe account.",
       ),
       h("div", { class: "button-row hero-actions" }, [
         h(
@@ -100,7 +99,7 @@ const publicHome = () => [
       h(
         "p",
         { class: "hero-note" },
-        "Automate with MCP, the CLI, or OIDC from CI. Export your workspace or self-host anytime.",
+        "Run Entitle on your own server or use the hosted service.",
       ),
     ]),
     h(
@@ -122,9 +121,8 @@ const publicHome = () => [
           h("div", { class: "workflow-node" }, [
             h("span", { class: "workflow-icon" }, publicIcon(icons.invite)),
             h("div", [
-              h("span", { class: "workflow-overline" }, "01 / ACCESS"),
-              h("strong", "Invite a pilot or sell"),
-              h("span", "No charge for pilots. Checkout\u00a0for\u00a0buyers."),
+              h("strong", "Invite customers or sell a plan"),
+              h("span", "Complimentary licenses or paid checkout"),
             ]),
             h(
               "span",
@@ -136,9 +134,8 @@ const publicHome = () => [
           h("div", { class: "workflow-node workflow-license" }, [
             h("span", { class: "workflow-icon" }, publicIcon(icons.key)),
             h("div", [
-              h("span", { class: "workflow-overline" }, "02 / LICENSE"),
-              h("strong", "License key, delivered"),
-              h("span", "Complimentary or paid, with site or device seats"),
+              h("strong", "Email a license key"),
+              h("span", "Customers use it to activate a site or device"),
             ]),
             h(
               "span",
@@ -150,9 +147,8 @@ const publicHome = () => [
           h("div", { class: "workflow-node" }, [
             h("span", { class: "workflow-icon" }, publicIcon(icons.box)),
             h("div", [
-              h("span", { class: "workflow-overline" }, "03 / UPDATE"),
-              h("strong", "Your next release arrives"),
-              h("span", "Private package. Entitlement checked."),
+              h("strong", "Deliver a private update"),
+              h("span", "Entitle checks access on every download"),
             ]),
             h(
               "span",
@@ -168,7 +164,7 @@ const publicHome = () => [
     "section",
     { class: "framework-strip", "aria-label": "Supported framework adapters" },
     [
-      h("p", "For the software you ship"),
+      h("p", "Supported frameworks"),
       h(
         "ul",
         Object.entries(frameworkMarks).map(([name, mark]) =>
@@ -194,15 +190,14 @@ const publicHome = () => [
     },
     [
       h("div", { class: "home-section-heading" }, [
-        h("p", { class: "eyebrow" }, "Works with your AI agent"),
         h(
           "h2",
           { id: "agents-title" },
-          "From plugin setup to your next sales check.",
+          "Manage Entitle from your AI agent",
         ),
         h(
           "p",
-          "Connect an MCP-compatible AI agent to Entitle. Set up products, publish private releases, and check your workspace’s stats from the conversation where you already build.",
+          "Give an MCP-compatible agent a scoped API key for your workspace.",
         ),
       ]),
       h("div", { class: "home-feature-grid home-agent-grid" }, [
@@ -221,7 +216,7 @@ const publicHome = () => [
         ]),
         h("article", { class: "home-feature" }, [
           h("span", { class: "feature-icon" }, publicIcon(icons.chart)),
-          h("h3", "Ask how your business is doing"),
+          h("h3", "Review workspace activity"),
           h(
             "p",
             "Ask for a workspace overview of licenses, seats, downloads, storage, and payments by currency. Daily download and bandwidth reports come with Hosted Pro or self-hosting.",
@@ -240,7 +235,7 @@ const publicHome = () => [
           "Connect your AI agent",
         ),
         h("a", { href: "/docs#dashboard-reports", class: "home-secondary" }, [
-          "Explore the stats",
+          "See available reports",
           publicIcon(icons.arrow),
         ]),
       ]),
@@ -255,39 +250,26 @@ const publicHome = () => [
     },
     [
       h("div", { class: "home-section-heading" }, [
-        h("p", { class: "eyebrow" }, "Less admin. More building."),
-        h("h2", { id: "journey-title" }, "One connected customer journey."),
-        h(
-          "p",
-          "Take customers from an invited pilot or first purchase to every release that follows.",
-        ),
+        h("h2", { id: "journey-title" }, "From your first license to your next release"),
       ]),
       h(
         "ol",
         { class: "journey-grid" },
         [
           [
-            "01",
-            "Start with your product",
-            "Publish a private release and issue complimentary licenses to invited customers. No Stripe account, price, or payment is required.",
+            "Start with a pilot",
+            "Publish a private release and issue complimentary licenses to invited customers. Set an expiration date and a site or device allowance.",
           ],
           [
-            "02",
-            "Add payments when you’re ready",
-            "Connect your Stripe account and sell monthly or annual plans through hosted checkout or an embedded payment form. Confirmed payments create separate paid licenses, and pilot customers are never enrolled automatically.",
+            "Add paid plans",
+            "Connect your Stripe account to sell monthly or annual plans. Entitle issues paid licenses after it confirms payment. Pilot customers can buy a plan separately.",
           ],
           [
-            "03",
-            "Keep good software moving",
-            "Publish private releases. Customers get eligible updates and manage their keys, downloads, and installations.",
+            "Ship the next version",
+            "Publish a new release. Customers with active access can update through your integrated updater or download from their account.",
           ],
-        ].map(([number, title, copy]) =>
+        ].map(([title, copy]) =>
           h("li", [
-            h(
-              "span",
-              { class: "journey-number", "aria-hidden": "true" },
-              number,
-            ),
             h("h3", title),
             h("p", copy),
           ]),
@@ -304,15 +286,10 @@ const publicHome = () => [
     },
     [
       h("div", { class: "home-section-heading" }, [
-        h("p", { class: "eyebrow" }, "The tools behind your business"),
         h(
           "h2",
           { id: "features-title" },
-          "A lot to manage. One place to do it.",
-        ),
-        h(
-          "p",
-          "Manage payments, customers, and releases together.",
+          "Licensing, billing, and release tools",
         ),
       ]),
       h(
@@ -322,32 +299,32 @@ const publicHome = () => [
           [
             icons.key,
             "Paid and complimentary licenses",
-            "Give invited pilots an expiration date and a site or device allowance. Paid plans add monthly or annual renewals, refunds, and dispute handling. Installed software stays available after expiry.",
+            "Set a site or device allowance for each license. Track expiration for complimentary licenses and paid access, renewals, refunds, and disputes for subscriptions.",
           ],
           [
             icons.box,
-            "Private releases, ready to ship",
-            "Publish immutable packages with checksums and framework metadata. Each download checks current entitlement before the bytes leave private storage.",
+            "Private release packages",
+            "Publish immutable packages with checksums and framework metadata. Withdraw a release to stop new update offers and downloads for that version.",
           ],
           [
             icons.card,
-            "Your customers, your payments",
-            "Connect your own Stripe account when you’re ready for buyer checkout and billing. Complimentary licenses need no payment provider. Hosted platform charges are separate.",
+            "Checkout and customer billing",
+            "Accept payments into your own Stripe account. Buyers can manage their subscriptions through Stripe Customer Portal.",
           ],
           [
             icons.chart,
-            "See what is happening",
-            "See licenses, seats, storage, and served downloads. Complimentary licenses are counted apart from payment revenue. Track payments by currency and review daily bandwidth with Hosted Pro.",
+            "Workspace reports",
+            "See licenses, seats, storage, and successful download responses. Review payment totals by currency and get daily bandwidth reports with Hosted Pro or self-hosting.",
           ],
           [
             icons.layers,
-            "Room for your next product",
-            "Manage several plugins, apps, plans, and purchase flows. Each seller’s workspace keeps its customers and releases isolated.",
+            "Multiple products per workspace",
+            "Manage several apps or plugins together. Each product has its own plans, licenses, and releases. Workspaces keep customer and release data separate.",
           ],
           [
             icons.code,
-            "Your AI agent, dashboard, or build pipeline",
-            "Use MCP tools to configure products, publish releases, and read stats. The CLI, API, and scoped API keys cover the same work, and trusted OIDC publishers release from CI without a stored API key.",
+            "Release automation",
+            "Use the API, CLI, or MCP with a scoped API key. Set up a trusted OIDC publisher to release from CI without storing an API key.",
           ],
         ].map(([icon, title, copy]) =>
           h("article", { class: "home-feature" }, [
@@ -364,11 +341,10 @@ const publicHome = () => [
     { class: "wordpress-feature", "aria-labelledby": "wordpress-title" },
     [
       h("div", [
-        h("p", { class: "eyebrow" }, "Built to feel at home"),
-        h("h2", { id: "wordpress-title" }, "First-class WordPress support"),
+        h("h2", { id: "wordpress-title" }, "Private updates in WordPress"),
         h(
           "p",
-          "Sell your Pro plugin with the update experience your customers already know. Site activations, compatibility checks, and authenticated packages work with the normal WordPress update screen. Your free plugin can stay on WordPress.org.",
+          "Integrate the WordPress client so licensed sites can install private releases from the standard update screen. The adapter provides compatibility metadata and authenticated downloads. You can keep the free plugin on WordPress.org.",
         ),
         h("a", { href: "/docs#framework-support" }, [
           "Explore WordPress support",
@@ -381,7 +357,7 @@ const publicHome = () => [
           publicIcon(icons.box),
           h("div", [
             h("strong", "A new release is available"),
-            h("span", "Same familiar update experience."),
+            h("span", "Install it from WordPress Updates."),
           ]),
         ]),
       ]),
@@ -395,15 +371,14 @@ const publicHome = () => [
     },
     [
       h("div", [
-        h("p", { class: "eyebrow" }, "Built around trust"),
         h(
           "h2",
           { id: "confidence-title" },
-          "Protect access. Respect your customers.",
+          "Installed software keeps working",
         ),
         h(
           "p",
-          "License expiration stops new activations, downloads, and updates. It never remotely disables installed functionality. Paid and complimentary customers keep using the software they already installed, including during server outages.",
+          "When a license expires, Entitle stops new activations, downloads, and updates. The example clients keep installed features available after expiration and during a licensing-server outage.",
         ),
       ]),
       h("div", { class: "confidence-details" }, [
@@ -433,8 +408,7 @@ const publicHome = () => [
     [
       h("div", [
         h("div", { class: "home-section-heading" }, [
-          h("p", { class: "eyebrow" }, "Explore Entitle"),
-          h("h2", { id: "explore-title" }, "Find your next step."),
+          h("h2", { id: "explore-title" }, "Dashboard and guides"),
         ]),
         h(
           "ul",
@@ -453,7 +427,7 @@ const publicHome = () => [
             {
               href: "/docs#getting-started",
               title: "Read the setup guide",
-              copy: "Connect your first product and publish an update.",
+              copy: "Set up a product, activate a license, and publish an update.",
             },
           ].map(({ href, title, copy }) =>
             h("li", [
@@ -477,20 +451,18 @@ const publicHome = () => [
     },
     [
       h("div", { class: "home-section-heading" }, [
-        h("p", { class: "eyebrow" }, "Choose who runs it"),
-        h("h2", { id: "hosting-title" }, "Your business. Your way to run it."),
+        h("h2", { id: "hosting-title" }, "Hosted or self-hosted"),
         h("p", [
-          "Both options run the same licensing engine and framework adapters. Once your verified Stripe account is connected, you can export an encrypted copy of your hosted workspace and restore it on your own server. ",
+          "Once your verified Stripe account is connected, you can export an encrypted copy of your hosted workspace and import it into a fresh standalone installation. ",
           h("a", { href: "/docs#portability" }, "How exports work"),
         ]),
       ]),
       h("div", { class: "hosting-grid" }, [
         h("article", { class: "hosting-option" }, [
-          h("p", { class: "eyebrow" }, "Focus on your products"),
           h("h3", "Hosted service"),
           h(
             "p",
-            "Create a publisher workspace for your products and invited pilots, and connect payments when you’re ready to sell. The service operator runs the app, private storage, and backups.",
+            "The service operator runs the app, private storage, email, and backups. Create a workspace and connect Stripe when you’re ready to sell.",
           ),
           h("ul", [
             h(
@@ -505,7 +477,7 @@ const publicHome = () => [
           h(
             "p",
             { class: "hosting-cost" },
-            "You pay a platform subscription and the configured application fee on customer payments, plus Stripe’s processing fees. Subscription amounts are shown at checkout, and the dashboard shows the fee rate.",
+            "Platform subscription prices are shown at checkout. The dashboard shows the application fee rate for new customer subscriptions and their renewals. Stripe fees are separate.",
           ),
           h("div", { class: "hosting-actions" }, [
             h(
@@ -521,16 +493,15 @@ const publicHome = () => [
           ]),
         ]),
         h("article", { class: "hosting-option" }, [
-          h("p", { class: "eyebrow" }, "Run your own infrastructure"),
           h("h3", "Self-hosted standalone"),
           h(
             "p",
-            "Run Entitle for your own software business, with your own Stripe account, database, and private storage.",
+            "Run Entitle for your own software business. You manage hosting, the database, private storage, email, and backups.",
           ),
           h("ul", [
             h(
               "li",
-              "All local capabilities, including signed events and advanced reports.",
+              "Includes signed webhooks and daily bandwidth reports.",
             ),
             h(
               "li",
@@ -540,7 +511,7 @@ const publicHome = () => [
           h(
             "p",
             { class: "hosting-cost" },
-            "No platform subscription or application fee. You supply hosting, storage, email, and backups, and pay your own infrastructure and payment processing costs.",
+            "No platform subscription or application fee. You pay your infrastructure and payment providers directly.",
           ),
           h("div", { class: "hosting-actions" }, [
             h(
@@ -567,11 +538,10 @@ const publicHome = () => [
     },
     [
       h("div", { class: "home-section-heading" }, [
-        h("p", { class: "eyebrow" }, "Before your first release"),
         h(
           "h2",
           { id: "questions-title" },
-          "A few things you might be wondering.",
+          "Common questions",
         ),
       ]),
       ...[
@@ -583,13 +553,13 @@ const publicHome = () => [
         ],
         [
           "Can I keep my own website and checkout design?",
-          "Yes. Use hosted checkout or embed a payment form styled to fit your storefront. Entitle controls prices and paid access on the server.",
+          "Use Stripe-hosted Checkout or style an embedded Stripe payment form. To embed it on a separate site, follow the integration guide for checkout and customer sessions. Entitle verifies prices and payment before issuing paid access.",
           "/docs#checkout",
           "Explore checkout integration",
         ],
         [
           "What happens when a customer stops renewing?",
-          "They keep access to downloads through their paid period. Installed software keeps working after expiry and during licensing-server outages.",
+          "Canceling renewal keeps download access through the paid period. A full refund, dispute, or revocation can affect access sooner. Installed software keeps working after expiration.",
           "/docs#billing",
           "Understand billing and access",
         ],
@@ -619,12 +589,7 @@ const publicHome = () => [
   ),
   h("section", { class: "home-cta", "aria-labelledby": "start-title" }, [
     h("div", [
-      h("p", { class: "eyebrow" }, "Your next release starts here"),
-      h("h2", { id: "start-title" }, "Build the software. Grow the business."),
-      h(
-        "p",
-        "Give your customers a simple way to buy, activate, and stay up to date.",
-      ),
+      h("h2", { id: "start-title" }, "Publish your first product"),
     ]),
     h("div", { class: "home-cta-actions" }, [
       h(

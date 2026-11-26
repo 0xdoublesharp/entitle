@@ -12,6 +12,7 @@ const settingsSchema = z
     automaticTax: z.boolean(),
     collectTaxId: z.boolean(),
     collectBillingAddress: z.boolean(),
+    allowPromotionCodes: z.boolean().optional(),
   })
   .strict();
 type CommerceContext = (
@@ -43,12 +44,13 @@ export async function commerceAdminRoutes(
   const view = (
     tenant: ReturnType<CommerceContext>["tenant"],
     config: ReturnType<CommerceContext>["config"],
-    taxSettings: Pick<typeof tenant, "automatic_tax" | "collect_tax_id" | "collect_billing_address">,
+    taxSettings: Pick<typeof tenant, "automatic_tax" | "collect_tax_id" | "collect_billing_address" | "allow_promotion_codes">,
   ) => ({
     settings: {
       automaticTax: taxSettings.automatic_tax === 1,
       collectTaxId: taxSettings.collect_tax_id === 1,
       collectBillingAddress: taxSettings.collect_billing_address === 1,
+      allowPromotionCodes: taxSettings.allow_promotion_codes === 1,
     },
     features: featureEntitlements(config, tenant),
   });
@@ -65,8 +67,11 @@ export async function commerceAdminRoutes(
       automatic_tax: Number(input.automaticTax),
       collect_tax_id: Number(input.collectTaxId),
       collect_billing_address: Number(input.collectBillingAddress),
+      ...(input.allowPromotionCodes === undefined
+        ? {}
+        : { allow_promotion_codes: Number(input.allowPromotionCodes) }),
     };
-    await db.transaction(async (tx) => {
+    const settings = await db.transaction(async (tx) => {
       await lock(tx, "billing", tenant.id);
       await tx("tenants").where({ id: tenant.id }).update(update);
       await tx("audit_events").insert({
@@ -78,8 +83,9 @@ export async function commerceAdminRoutes(
         details: JSON.stringify(input),
         created_at: Date.now(),
       });
+      return (await tx("tenants").where({ id: tenant.id }).first())!;
     });
-    return view(tenant, config, update);
+    return view(tenant, config, settings);
   });
   app.put("/commerce/products/:id/tax-code", limit, async (req) => {
     const { db, tenant, stripe } = await authorize(req, true);

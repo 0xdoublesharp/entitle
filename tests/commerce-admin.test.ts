@@ -182,10 +182,10 @@ for (const deploymentMode of ["standalone", "hosted"] as const)
         payload,
       });
       assert.equal(response.statusCode, 200, response.body);
-      assert.deepEqual(response.json().settings, payload);
+      assert.deepEqual(response.json().settings, { ...payload, allowPromotionCodes: false });
       assert.equal(response.json().features.tax, true);
       response = await app.inject({ url: "/commerce/settings", headers });
-      assert.deepEqual(response.json().settings, payload);
+      assert.deepEqual(response.json().settings, { ...payload, allowPromotionCodes: false });
       assert.equal(response.json().features.automations, true);
       assert.equal(response.body.includes(config.secret), false);
       assert.equal(response.body.includes("stripeSecret"), false);

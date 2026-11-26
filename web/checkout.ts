@@ -250,10 +250,17 @@ const intervals = {
     label: "Annual subscription",
     renewal: "Renews annually until canceled.",
   },
+  lifetime: {
+    suffix: " one-time",
+    label: "Lifetime license",
+    renewal: "One-time purchase. No recurring renewal.",
+  },
 };
 // Plans recorded before billing intervals existed accepted annual prices only.
-export const planInterval = (plan: PlanPricing) =>
-  intervals[plan.billing_interval === "month" ? "month" : "year"];
+export const planInterval = (plan: PlanPricing) => {
+  if (plan.billing_interval === "lifetime") return intervals.lifetime;
+  return plan.billing_interval === "month" ? intervals.month : intervals.year;
+};
 // Stripe's documented amount exponents. Every other currency, including ISK,
 // UGX, HUF and TWD, uses two decimals even where Intl displays no minor units
 // (unit_amount 500 is 5 ISK).
@@ -267,6 +274,31 @@ export const stripeExponent = (currency: string) => {
   const code = currency.toUpperCase();
   return stripeZeroDecimal.has(code) ? 0 : stripeThreeDecimal.has(code) ? 3 : 2;
 };
+/** Formats integer Stripe amounts without losing precision on large totals. */
+export function formatMinorAmount(
+  currency: string,
+  minor: string | number,
+  options?: Intl.NumberFormatOptions,
+) {
+  const formatter = new Intl.NumberFormat("en-US", {
+    ...options,
+    style: "currency",
+    currency: currency.toUpperCase(),
+  });
+  const digits = formatter.resolvedOptions().maximumFractionDigits!;
+  const value = BigInt(minor);
+  const scale = 10n ** BigInt(stripeExponent(currency));
+  const negative = value < 0n;
+  const absolute = negative ? -value : value;
+  const fraction = (absolute % scale).toString().padStart(digits, "0");
+  return (
+    (negative ? "-" : "") +
+    formatter
+      .formatToParts(absolute / scale)
+      .map((part) => (part.type === "fraction" ? fraction : part.value))
+      .join("")
+  );
+}
 /** Formats a catalog price such as "$49 / year", or "" when the plan has no usable price. */
 export function planPrice(plan: PlanPricing) {
   if (typeof plan.unit_amount !== "number" || !plan.currency) return "";

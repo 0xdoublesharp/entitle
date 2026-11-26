@@ -5,9 +5,9 @@ Technical names, example slugs and project directories use `entitle`.
 First-party npm packages use `@0xdoublesharp`; the application package is
 `@0xdoublesharp/entitle`.
 
-The shared name, tagline, description and hosted origin are defined in
-[`src/site.ts`](../src/site.ts). Runtime email, checkout and package URLs use
-`PUBLIC_ORIGIN`; the brand's hosted link does not replace deployment configuration.
+The shared name, tagline, description, and hosted link are defined in
+[`packages/shared/site.ts`](../packages/shared/site.ts). Runtime email, checkout,
+and package URLs use `PUBLIC_ORIGIN`.
 
 Use [`web/public/favicon.svg`](../web/public/favicon.svg) for both the header
 mark and favicon. The double-sharp mark is ivory on a forest-green square.

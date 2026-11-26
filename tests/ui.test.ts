@@ -575,7 +575,7 @@ test("empty accounts can refresh newly confirmed licenses without a full page re
     fixture.currentAccount = account([]);
   });
   await flush();
-  assert.match(text(), /Your licenses will appear here/);
+  assert.match(text(), /No licenses in this account/);
   const refresh = deferred<Response>();
   server.on("GET", "/me", () => refresh.promise);
   findButton("Refresh licenses").click();
@@ -1339,7 +1339,7 @@ test("Elements checkout mounts branded payment fields, shows canonical total, re
   });
   await flush();
   assert.match(text(), /Payment completed/);
-  assert.match(text(), /after our server confirms payment/);
+  assert.match(text(), /after payment is confirmed/i);
   assert.equal(p.destroyed(), 1);
   assert.equal(server.calls("/me").length, 1);
   assert.equal(dom.document.querySelector(".dashboard"), null);
@@ -1445,7 +1445,7 @@ test("Elements confirmation stays pending until the server confirms licensing", 
   await submit(".checkout-form");
   await click("Pay now");
   assert.match(text(), /Payment submitted. Confirmation is pending/);
-  assert.match(text(), /after our server confirms payment/);
+  assert.match(text(), /after payment is confirmed/i);
   assert.equal(dom.document.querySelector(".payment-form"), null);
   assert.equal(server.calls("/me").length, 1);
 });
@@ -1524,8 +1524,8 @@ test("checkout return markers show non-authoritative notices and are removed wit
       if (marker === "canceled") assert.match(text(), /Checkout was canceled/);
       else {
         assert.match(text(), /Confirmation is pending/);
-        assert.match(text(), /Check your email/);
-        assert.match(text(), /after our server confirms payment/);
+        assert.match(text(), /check your email for the license key/i);
+        assert.match(text(), /after payment is confirmed/i);
       }
     }
     assert.equal(server.calls("/checkout").length, 0);

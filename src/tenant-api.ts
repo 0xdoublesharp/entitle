@@ -90,7 +90,7 @@ export async function buyerRoutes(
         }),
       );
     }
-    return { tenant: { slug: tenant.slug, name: tenant.name }, products, billingAvailable: config.localBilling || (stripeConfigured(config) && (config.deploymentMode === "standalone" || tenant.stripe_status === "connected")) };
+    return { tenant: { slug: tenant.slug, name: tenant.name }, products, billingAvailable: config.localBilling || (stripeConfigured(config) && (config.deploymentMode === "standalone" || tenant.stripe_status === "connected")), allowPromotionCodes: tenant.allow_promotion_codes === 1 };
   });
   api.post("/checkout", { config: apiLimit(10) }, async (req, reply) => {
     const { db, tenant, auth, stripe, config } = context(req);
@@ -106,6 +106,8 @@ export async function buyerRoutes(
         planId: bounded,
         email: z.email().max(254),
         uiMode: z.enum(["hosted", "elements"]).default("hosted"),
+        promotionCode: z.string().trim().regex(/^[A-Za-z0-9_-]{1,64}$/).optional(),
+        renewLicenseId: z.string().uuid().optional(),
       })
       .strict()
       .parse(req.body);
@@ -142,6 +144,7 @@ export async function buyerRoutes(
         ...(guestCustomerId ? { guestCustomerId } : {}),
         issueGuestClaim: (id) => auth.issueCheckoutClaim(id, reply),
       },
+      { promotionCode: input.promotionCode, renewLicenseId: input.renewLicenseId },
     );
   });
   api.post("/activate", { config: apiLimit(20) }, async (req) => {

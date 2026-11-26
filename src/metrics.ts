@@ -1,22 +1,122 @@
-import type { DB, License, Tenant } from "./db.ts";
+import type { DB, License, Plan, Tenant } from "./db.ts";
 import { check } from "./errors.ts";
 import { effectiveLicense, entitlementEnd, installationExempt, productActivationKind } from "./licensing.ts";
 
-export async function tenantMetrics(db: DB, tenant: Tenant, now = Date.now(), exemptSuffixes: readonly string[] = []) {
-  const licenses = await db<License>("licenses").where({ tenant_id: tenant.id });
-  const installations = (await db("installations")
+async function loadLicenseMetrics(db: DB, tenantId: string, now: number, exemptSuffixes: readonly string[]) {
+  const licenses = await db<License>("licenses").where({ tenant_id: tenantId });
+  const installationRows = await db("installations")
     .join("licenses", function () { this.on("licenses.id", "=", "installations.license_id").andOn("licenses.tenant_id", "=", "installations.tenant_id"); })
     .join("products", function () { this.on("products.id", "=", "licenses.product_id").andOn("products.tenant_id", "=", "licenses.tenant_id"); })
-    .where({ "installations.tenant_id": tenant.id, "installations.active": 1 })
-    .select("installations.*", "products.framework", "products.framework_config"))
-    .map((installation) => ({ ...installation, exempt: installationExempt(installation.site_url, productActivationKind(installation), exemptSuffixes) }));
+    .where({ "installations.tenant_id": tenantId, "installations.active": 1 })
+    .select("installations.license_id", "installations.site_url", "licenses.product_id", "products.framework", "products.framework_config");
+  const installations = installationRows.map(installation => ({
+    ...installation,
+    exempt: installationExempt(installation.site_url, productActivationKind(installation), exemptSuffixes),
+  }));
+  const entitled = new Map<string, License>();
+  for (const license of licenses) {
+    if (entitlementEnd(license) > now && !license.revoked && !license.refund_revoked && !license.suspended)
+      entitled.set(license.id, await effectiveLicense(license, db, tenantId, now));
+  }
+  return { licenses, installations, entitled };
+}
+
+async function summarizeAnalytics(
+  db: DB,
+  tenantId: string,
+  now: number,
+  { licenses, installations, entitled }: Awaited<ReturnType<typeof loadLicenseMetrics>>,
+  preloaded?: { products?: { id: string; name: string }[]; plans?: Plan[] },
+) {
+  const products =
+    preloaded?.products ??
+    (await db("products")
+      .where({ tenant_id: tenantId })
+      .select<{ id: string; name: string }[]>("id", "name"));
+  const byProduct = new Map(products.map(({ id, name }) => [id, {
+    productId: id, productName: name, activeLicenses: 0, expiredLicenses: 0, lifetimeLicenses: 0,
+    activeInstallations: 0, seatsUsed: 0, seatAllowance: 0,
+  }]));
+  const planRows =
+    preloaded?.plans ??
+    (await db<Plan>("plans").where({ tenant_id: tenantId }));
+  const plans = new Map(planRows.map(plan => [plan.id, plan]));
+  const revenue = new Map<string, { mrrMinor: bigint; arrMinor: bigint; activeSubscriptions: number }>();
+  const retention = {
+    activeSubscriptions: 0, canceledPendingExpiry: 0, expiredLicenses: 0,
+    expiringIn30Days: 0, lifetimeLicenses: 0, complimentaryActive: 0,
+  };
+  const warningEnd = now + 30 * 86400000;
+  for (const license of licenses) {
+    const product = byProduct.get(license.product_id);
+    const end = entitlementEnd(license);
+    const lifetime = license.billing_status === "lifetime";
+    if (lifetime) {
+      retention.lifetimeLicenses++;
+      if (product) product.lifetimeLicenses++;
+    } else if (end <= now && !license.revoked && !license.refund_revoked && !license.suspended) {
+      retention.expiredLicenses++;
+      if (product) product.expiredLicenses++;
+    }
+    const effective = entitled.get(license.id);
+    if (!effective) continue;
+    if (product) {
+      product.activeLicenses++;
+      product.seatAllowance += effective.site_allowance;
+    }
+    if (!lifetime && end <= warningEnd) retention.expiringIn30Days++;
+    if (license.billing_status === "canceled") retention.canceledPendingExpiry++;
+    if (license.provenance === "complimentary") {
+      retention.complimentaryActive++;
+      continue;
+    }
+    if (license.billing_status !== "active" && license.billing_status !== "trialing") continue;
+    const plan = effective.plan_id === null ? undefined : plans.get(effective.plan_id);
+    if (plan?.billing_interval === "lifetime") continue;
+    retention.activeSubscriptions++;
+    const amount = Number(plan?.unit_amount);
+    if (!plan?.currency || !Number.isSafeInteger(amount) || amount <= 0) continue;
+    const total = revenue.get(plan.currency) ?? { mrrMinor: 0n, arrMinor: 0n, activeSubscriptions: 0 };
+    const monthly = plan.billing_interval === "month";
+    total.mrrMinor += BigInt(monthly ? amount : Math.round(amount / 12));
+    total.arrMinor += BigInt(amount) * (monthly ? 12n : 1n);
+    total.activeSubscriptions++;
+    revenue.set(plan.currency, total);
+  }
+  for (const installation of installations) {
+    const product = byProduct.get(installation.product_id);
+    if (!product) continue;
+    product.activeInstallations++;
+    if (!installation.exempt && entitled.has(installation.license_id)) product.seatsUsed++;
+  }
+  return {
+    recurringByCurrency: [...revenue].sort(([a], [b]) => a.localeCompare(b)).map(([currency, total]) => ({
+      currency, mrrMinor: String(total.mrrMinor), arrMinor: String(total.arrMinor), activeSubscriptions: total.activeSubscriptions,
+    })),
+    retention,
+    byProduct: [...byProduct.values()].sort((a, b) => a.productName.localeCompare(b.productName) || a.productId.localeCompare(b.productId)),
+  };
+}
+
+export async function tenantAnalytics(db: DB, tenant: Tenant, now = Date.now(), exemptSuffixes: readonly string[] = []) {
+  const source = await loadLicenseMetrics(db, tenant.id, now, exemptSuffixes);
+  return summarizeAnalytics(db, tenant.id, now, source);
+}
+
+export async function tenantMetrics(
+  db: DB,
+  tenant: Tenant,
+  now = Date.now(),
+  exemptSuffixes: readonly string[] = [],
+  preloaded?: { products?: { id: string; name: string }[]; plans?: Plan[] },
+) {
+  const source = await loadLicenseMetrics(db, tenant.id, now, exemptSuffixes);
+  const { licenses, installations, entitled } = source;
   const releases = await db("releases").where({ tenant_id: tenant.id });
   const reservations = await db("upload_reservations").where({ tenant_id: tenant.id });
-  const entitled = licenses.filter(l => entitlementEnd(l) > now && !l.revoked && !l.refund_revoked && !l.suspended);
-  const entitledIds = new Set(entitled.map(l => l.id));
-  const used = installations.filter(i => !i.exempt && entitledIds.has(i.license_id)).length;
-  let allowance=0;
-  for(const license of entitled)allowance+=(await effectiveLicense(license,db,tenant.id,now)).site_allowance;
+  const used = installations.filter(i => !i.exempt && entitled.has(i.license_id)).length;
+  let allowance = 0;
+  for (const license of entitled.values()) allowance += license.site_allowance;
   const downloads = await db("download_metrics").where({ tenant_id: tenant.id });
   const since = new Date(now - 30 * 86400000).toISOString().slice(0,10);
   const totals = new Map<string, {paid:bigint;refunded:bigint}>();
@@ -29,7 +129,7 @@ export async function tenantMetrics(db: DB, tenant: Tenant, now = Date.now(), ex
     totals.set(invoice.currency,total);
   }
   return {
-    licenses: {issued:licenses.length,entitled:entitled.length,
+    licenses: {issued:licenses.length,entitled:entitled.size,
       expired:licenses.filter(l=>entitlementEnd(l)<=now).length,
       revoked:licenses.filter(l=>l.revoked || l.refund_revoked).length,
       suspended:licenses.filter(l=>l.suspended).length},
@@ -38,6 +138,7 @@ export async function tenantMetrics(db: DB, tenant: Tenant, now = Date.now(), ex
     releases:{published:releases.filter(r=>!r.withdrawn && Number(r.published_at)<=now).length,withdrawn:releases.filter(r=>r.withdrawn).length},
     storage:{usedBytes:releases.reduce((sum,r)=>sum+Number(r.size),0),reservedBytes:reservations.reduce((sum,r)=>sum+Number(r.bytes),0),limitBytes:Number(tenant.max_storage_bytes)},
     downloads:{successfulResponses:downloads.reduce((sum,d)=>sum+Number(d.successful_responses),0),last30Days:downloads.filter(d=>d.day>=since).reduce((sum,d)=>sum+Number(d.successful_responses),0),servedBytes:downloads.reduce((sum,d)=>sum+Number(d.served_bytes),0),last30DaysServedBytes:downloads.filter(d=>d.day>=since).reduce((sum,d)=>sum+Number(d.served_bytes),0),storageReadBytes:downloads.reduce((sum,d)=>sum+Number(d.storage_read_bytes),0),storageReads:downloads.reduce((sum,d)=>sum+Number(d.storage_reads),0)},
+    analytics: await summarizeAnalytics(db, tenant.id, now, source, preloaded),
     payments:[...totals.entries()].sort(([a],[b])=>a.localeCompare(b)).map(([currency,total])=>({currency,paidMinor:String(total.paid),refundedMinor:String(total.refunded),netMinor:String(total.paid-total.refunded)})),
   };
 }

@@ -19,7 +19,7 @@ Content-Type: application/json
 
 {
   "url": "https://hooks.example.com/entitle",
-  "events": ["license.created", "license.renewed", "release.published"]
+  "events": ["license.created", "license.renewed", "license.canceled", "license.expired"]
 }
 ```
 
@@ -36,11 +36,15 @@ addresses for each request and preserves TLS hostname verification.
 
 ## Events and payload
 
+An endpoint can subscribe to any of the nine event types.
+
 | Type                 | Resource identified                           |
 | -------------------- | --------------------------------------------- |
 | `license.created`    | Newly created license.                        |
-| `license.renewed`    | License with a renewed paid period.           |
+| `license.renewed`    | License renewed in place or granted more access time. |
 | `license.revoked`    | License whose revocation event was recorded.  |
+| `license.canceled`   | License whose subscription moved to canceled. Paid access can continue through the entitlement end. |
+| `license.expired`    | License whose access window ended. The lifecycle scan records expiry for licenses without revocation or suspension and skips lifetime licenses. |
 | `activation.changed` | Installation whose activation state changed.  |
 | `release.published`  | Published release.                            |
 | `release.withdrawn`  | Withdrawn release.                            |

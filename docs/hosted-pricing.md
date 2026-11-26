@@ -16,22 +16,19 @@ PLATFORM_STRIPE_PRICE_ID; review the configured amount at checkout.
 | Infrastructure | Operated by the hosted provider, within the service allowances | Publisher supplies and pays for compute, database, S3, email and backups |
 | Capacity | Trial/paid platform allowances shown in the dashboard | Operator-configured product, storage, upload and security limits |
 
-Both versions use the publisher's Stripe account for buyer payments and provide
-the same core licensing and update workflows, including monthly and annual
-plans. Self-hosting avoids platform charges, but you still pay providers and do
-the operating work. The planned hosted address and self-hosting entry points are
-in the [README](../README.md#choose-how-to-run-it). See
-[deployment](deployment.md) for the two setup paths and licensing boundary.
-Publishers can export their workspace and move to self-hosting on any tier.
+Both versions use the publisher's Stripe account for buyer payments and support
+monthly and annual plans. Once you connect and verify your merchant account, you
+can [export your workspace and move to self-hosting](portability.md) on any tier.
+See [deployment](deployment.md) for setup and the licensing terms that apply.
 
 ## Configuration and behavior
 
-Set DEPLOYMENT_MODE=hosted. HOSTED_APPLICATION_FEE_PERCENT defaults to 1 and
-accepts 0-100 with at most two decimal places. Zero omits the fee parameter.
+Set `DEPLOYMENT_MODE=hosted`. `HOSTED_APPLICATION_FEE_PERCENT` defaults to 1 and
+accepts 0–100 with at most two decimal places. Zero omits the fee parameter.
 Standalone defaults to zero and rejects an explicitly nonzero setting.
 The browser and seller API cannot override the rate.
 
-Checkout passes subscription_data.application_fee_percent on the seller's
+Checkout passes `subscription_data.application_fee_percent` on the seller's
 connected account for both Stripe-hosted Checkout and Elements. Stripe retains
 that rate on the resulting subscription for renewals. Changing environment
 configuration changes newly created subscriptions only, and does not rewrite

@@ -8,6 +8,18 @@ import { licenseKeyEmail } from "./transactional-email.ts";
 import { lock } from "./db.ts";
 import { z } from "zod";
 import { activationKind, validateFramework, validateFrameworkConfig } from "./frameworks.ts";
+export const LIFETIME_PAID_THROUGH = 253402300799000;
+
+const renewableBillingStatuses = ["canceled", "incomplete_expired", "unpaid"];
+export function licenseCanRenew(license: License, now: number, reconciling = false) {
+  return !license.revoked && !license.refund_revoked && !license.suspended &&
+    license.billing_status !== "lifetime" &&
+    (license.provenance === "complimentary" ||
+      (reconciling && !license.subscription_id) ||
+      renewableBillingStatuses.includes(license.billing_status) ||
+      entitlementEnd(license) <= now);
+}
+
 export function normalizeSite(input: string) {
   const url = new URL(input);
   check(

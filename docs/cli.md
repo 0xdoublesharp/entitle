@@ -25,7 +25,7 @@ but license/customer output still needs private handling.
 
 | Command                                            | Required scope      | What it does                                                                              |
 | -------------------------------------------------- | ------------------- | ----------------------------------------------------------------------------------------- |
-| `product [FILE]`                                   | `catalog:write`     | Saves a product and its monthly or annual plans from JSON; defaults to `product.json`. Saving an existing slug adds plans. |
+| `product [FILE]`                                   | `catalog:write`     | Saves monthly, annual, or one-time lifetime plans from JSON. Defaults to `product.json`. Saving an existing slug adds plans. |
 | `publish PRODUCT VERSION ZIP METADATA_FILE`        | `releases:write`    | Publishes a WordPress ZIP.                                                                |
 | `publish-asset PRODUCT VERSION FILE METADATA_FILE` | `releases:write`    | Streams one native asset with declared length.                                            |
 | `licenses`                                         | `read`              | Returns seller overview, including safe license/release data and metrics.                 |
@@ -36,11 +36,12 @@ but license/customer output still needs private handling.
 | `jobs`                                             | `read`              | Lists safe tenant work/email states, attempts and errors.                                 |
 | `work`                                             | `billing:reconcile` | Runs a bounded batch of tenant work.                                                      |
 | `demo-purchase PLAN_ID EMAIL`                      | `licenses:write`    | Creates entitlement in local billing mode only, without a real charge.                    |
-| `features`, `prices`, `operations`, `webhooks`      | `read`              | Reads workspace capabilities, monthly and annual prices, operational status, or webhook inventory. |
+| `features`, `prices`, `operations`, `webhooks`      | `read`              | Reads workspace capabilities, monthly, annual, and lifetime prices, operational status, or webhook inventory. |
 
-The `licenses` command is an overview, not a paginated all-history export. Use
-the dedicated [encrypted export API](portability.md#export) for a workspace
-transfer. Automation keys cannot perform interactive owner-only actions.
+Use `licenses` for the workspace overview and `licenses-list` to page through
+filtered licenses. For a workspace transfer use the [encrypted export
+API](portability.md#export). Automation keys cannot perform interactive
+owner-only actions.
 
 ## Named management commands
 
@@ -51,20 +52,30 @@ requirements still apply.
 
 | Command | Input and purpose |
 | --- | --- |
+| `promotions-list` | No input. List active Stripe promotion codes. Requires `read`. |
+| `licenses-list` | `{productId?, provenance?, status?, expiringWithinDays?, q?, limit?, after?}`. Requires `read`. Pass `nextCursor` as `after` for the next page. |
+| `licenses-export` | `{format?, productId?, provenance?, status?, expiringWithinDays?, q?, output}`. Requires `data:export`. Set `format` to `csv` or `json` and `output` to a new private file path. |
 | `license-detail` | `{id, after?, limit?}`; a license and a page of installations. Follow `nextCursor` until null. |
+| `license-update` | `{id, internalNote?, expiresAt?, siteAllowance?}`. Requires `licenses:write` and at least one field to update. Use `null` to clear the note. Expiration and seat changes apply to complimentary licenses. |
 | `license-installation-deactivate` | `{id, installationId}`; deactivate one installation on a license to free its seat for a customer. Requires `licenses:write`. |
 | `plan-archive` | `{id, archived}`; `true` removes the plan from the catalog and refuses new checkout, and `false` restores it. Existing licenses are unchanged. Requires `catalog:write`. |
 | `license-complimentary` | `{email, productId, siteAllowance, expiresAt, requestId, confirm:true, note?}`; issue an emailed key. Reuse the same request ID and details on an uncertain result. |
 | `job-retry` / `jobs-retry-failed` | `{table, id}` / `{table, limit?}` with `table` of `work` or `emails`. `job-retry TABLE ID` also works. |
 | `platform-job-retry` / `platform-jobs-retry-failed` | The same inputs with `platform_work` or `platform_emails` and the operator token. |
 | `reports` / `operations-settings` | `{days?}` / `{settings:{...}}`; read reports or change thresholds. |
-| `webhook-create` / `webhook-rotate` / `webhook-delete` / `webhook-retry` | `{url, events}` / `{id}`; manage endpoints and retry deliveries. Signing secrets are returned once. |
+| `analytics` | No input. Read recurring revenue, retention, and per-product license metrics. Requires `read`. |
+| `webhook-create` / `webhook-rotate` / `webhook-delete` / `webhook-retry` | `{url, events}` / `{id}`. Manage endpoints and deliveries. The [event list](webhooks.md#events-and-payload) includes `license.canceled` and `license.expired`. Save signing secrets when returned. |
 | `export-list` / `export-delete` | No input / `{id}`; inspect or remove export handles. |
 | `catalog` / `activation-status` / `activation-deactivate` / `update-check` | No input, except `{product}` for updates. Status and update checks use `ENTITLE_AUTHORIZATION=Bearer …`. |
 | `product-save` / `release-publish` / `asset-publish` | Structured product, plan and release metadata. Release and asset inputs include a local `file` path; the API performs package and identity validation. |
 | `update-joomla`, `update-electron`, `update-tauri`, `update-sparkle`, `update-jetbrains`, `update-generic` | Native feeds for an installation bearer; XML and YAML return bounded text and 204 means no update. |
 | `installation-release-download` / `installation-asset-download` | Save an entitled package to a new owner-only `output` file using an installation bearer. |
 | `owner-sessions`, `owner-session-revoke`, `owner-sessions-revoke-others`, `owner-sessions-revoke-all` | Inspect or revoke seller sessions; use an interactive owner session. |
+
+Run `pnpm cli licenses-list filters.json` to query a page or
+`pnpm cli licenses-export export.json` to save matching records. Use the
+[license management filters](api.md#license-management-and-analytics) to select
+the records and protect the exported customer information.
 
 `pnpm cli export-create PRIVATE_BODY_JSON_FILE` creates an export using an
 owner-only file containing `{"passphrase":"..."}`. `pnpm cli export-download
@@ -114,6 +125,12 @@ not transfer its private cookie into a browser. Stripe approval remains with the
 account owner. Browser-bound email links must likewise be consumed with the
 pre-authentication session that requested them, as in the steps above.
 
+To accept promotion codes, run `pnpm cli commerce-settings-update settings.json`
+with `settings.allowPromotionCodes` set to `true`. Include `automaticTax`,
+`collectTaxId`, and `collectBillingAddress` in `settings` using the values you
+want to retain. Use `pnpm cli promotions-list` with a workspace `read` key to
+find codes for [shareable sale links](seller-guide.md#share-a-promotion).
+
 ## Buyer session and actions
 
 Set `PUBLIC_ORIGIN` and `TENANT_SLUG`, run `buyer-login-start EMAIL`, and place
@@ -134,6 +151,13 @@ stores the new key in that file; replacement revokes prior installation tokens.
 The output path is reserved before the request. Do not repeat an uncertain key
 replacement: inspect the account and use its recovery flow. A closure request
 records intent; completion remains the separate operator maintenance procedure.
+
+Run `pnpm cli checkout-create checkout.json` with
+`{planId, email, uiMode?, promotionCode?, renewLicenseId?}` to start hosted or
+Elements checkout. A promotion requires a positive amount due. Set
+`ENTITLE_BUYER_SESSION_FILE` for an existing buyer. To renew or convert an
+eligible complimentary license in place, include its UUID in `renewLicenseId`
+and choose a plan for the same product. See the [checkout contract](api.md#tenant-buyer--software-api).
 
 ## Other API operations
 

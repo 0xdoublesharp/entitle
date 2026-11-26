@@ -1,17 +1,12 @@
 import { mkdtemp, rm } from "node:fs/promises";
-import { createTenant, type DB, type Tenant } from "../src/db.ts";
+import { createTenant, migrate, type DB, type Tenant } from "../src/db.ts";
 import { isolatedDatabase } from "./helpers/database.ts";
-import { up } from "../src/migrations/010_operations.ts";
 
 export async function operationsFixture(run: (db: DB, tenant: Tenant, other: Tenant) => Promise<void>) {
   const directory = await mkdtemp("/Volumes/Scratch/entitle/tmp/operations-case-");
   const { db, close } = await isolatedDatabase(`sqlite:${directory}/db`);
   try {
-    // Exercise our schema against the stable predecessor, independently of
-    // parallel agents' in-progress migration registration and DDL.
-    const migrations=["001_initial","002_plugin_identity","003_tenants","004_stripe_status","005_security","006_checkout","007_frameworks"];
-    await db.migrate.latest({migrationSource:{getMigrations:async()=>migrations,getMigrationName:(name:string)=>name,getMigration:async(name:string)=>import(`../src/migrations/${name}.ts`)}});
-    await up(db);
+    await migrate(db);
     const tenant = await createTenant(db, { id: "operations-a", slug: "operations-a", name: "A", trial_ends_at: Number.MAX_SAFE_INTEGER });
     const other = await createTenant(db, { id: "operations-b", slug: "operations-b", name: "B", trial_ends_at: Number.MAX_SAFE_INTEGER });
     await run(db, tenant, other);

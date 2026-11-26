@@ -119,7 +119,7 @@ export const WorkspaceManager = defineComponent({
               ]),
               h(
                 "p",
-                "Archiving keeps licenses, updates and billing running. Archived workspaces still count toward your account limit. Restore them here anytime.",
+                "Archive a workspace to hide it from the active list. Its licenses, updates, and billing continue, and it still counts toward your account limit.",
               ),
             ]),
             h("label", { class: "workspace-view-label" }, [
@@ -180,7 +180,7 @@ export const WorkspaceManager = defineComponent({
                         h(
                           "p",
                           { class: "muted" },
-                          "Its publisher workspace is archived. Restore the publisher to return this sandbox to the active list.",
+                          "Its publisher workspace is archived. Restore the publisher workspace first.",
                         ),
                     ]),
                     h("div", { class: "button-row" }, [

@@ -1181,6 +1181,7 @@ test("public liveness and catalog expose current product plans without private S
     tenant: { slug: "primary", name: "Primary" },
     products: [],
     billingAvailable: true,
+    allowPromotionCodes: false,
   });
   const { product, plan } = await seed(f);
   const catalog = await f.app.inject({

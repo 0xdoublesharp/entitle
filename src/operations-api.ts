@@ -144,7 +144,7 @@ export async function operationsRoutes(
     const input = z
       .object({
         url: z.string().min(1).max(1000),
-        events: z.array(z.enum(outboundEventTypes)).min(1).max(7),
+        events: z.array(z.enum(outboundEventTypes)).min(1).max(outboundEventTypes.length),
       })
       .strict()
       .parse(req.body);

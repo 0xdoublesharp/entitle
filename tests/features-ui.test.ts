@@ -345,7 +345,7 @@ test("Pro configuration and existing subscriptions select appropriate billing ac
   handler = () => ({ url: "/billing" });
   assert.match(
     dom.document.body.textContent!,
-    /After the paid subscription ends/,
+    /After your paid period ends/,
   );
   assert.doesNotMatch(dom.document.body.textContent!, /Choose Pro/);
   await click("Manage current subscription");
