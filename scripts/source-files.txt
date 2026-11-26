@@ -247,6 +247,7 @@ tests/business-events-databases.test.ts
 tests/business-events-fixtures.test.ts
 tests/business-events.test.ts
 tests/checkout-cookie.test.ts
+tests/checkout-growth-ui.test.ts
 tests/checkout-schema.test.ts
 tests/checkout.test.ts
 tests/ci-image-publication.test.mjs
@@ -362,7 +363,6 @@ web/api.ts
 web/app-entry.ts
 web/assets.d.ts
 web/auth-recovery.ts
-web/checkout-growth.test.ts
 web/checkout.ts
 web/chrome.ts
 web/docs.ts

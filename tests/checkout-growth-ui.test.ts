@@ -3,9 +3,9 @@ import { registerHooks } from "node:module";
 import { after, afterEach, test } from "node:test";
 import { Window } from "happy-dom";
 import type { App } from "vue";
-import type { License } from "./api.ts";
-import type { CheckoutLoader, CheckoutSession } from "./checkout.ts";
-import { planInterval, planPrice } from "./checkout.ts";
+import type { License } from "../web/api.ts";
+import type { CheckoutLoader, CheckoutSession } from "../web/checkout.ts";
+import { planInterval, planPrice } from "../web/checkout.ts";
 
 registerHooks({
   load(url, context, next) {
@@ -35,9 +35,9 @@ for (const name of [
   });
 }
 const { createApp, h, nextTick } = await import("vue");
-const { ApiClient } = await import("./api.ts");
-const { mountCustomerApp, mountSiteApp } = await import("./main.ts");
-const { SellerFeaturePanel } = await import("./features.ts");
+const { ApiClient } = await import("../web/api.ts");
+const { mountCustomerApp, mountSiteApp } = await import("../web/main.ts");
+const { SellerFeaturePanel } = await import("../web/features.ts");
 let app: App | undefined;
 afterEach(() => {
   app?.unmount();
