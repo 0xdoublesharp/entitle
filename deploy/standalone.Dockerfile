@@ -9,7 +9,7 @@ FROM scratch AS pnpm-arm64
 ADD --checksum=sha256:e7ca24224eb626a032828ec584c67903ad2f389911b849d009ed70a19f70d8d3 https://registry.npmjs.org/@pnpm/exe.linux-arm64/-/exe.linux-arm64-12.14.0.tgz /pnpm.tgz
 FROM pnpm-${TARGETARCH} AS pnpm
 
-FROM node:26.12.0-bookworm-slim@sha256:742a0fe7320e09e0321222b68165e6ac731d30470e7ea7f98f9bfc3a6e1034fe AS toolchain
+FROM node:26.13.1-bookworm-slim@sha256:0042e17d232a87a2cd485be1da7900fca4d10a4ad11b29e9285da1d2e54798c9 AS toolchain
 # Install the pinned native CLI directly; npm is not needed in the build stages.
 COPY --from=pnpm /pnpm.tgz /pnpm.tgz
 RUN tar -xzf /pnpm.tgz -C /usr/local/bin --strip-components=1 package/pnpm && rm /pnpm.tgz
@@ -55,7 +55,7 @@ RUN if [ -z "$WEB_PUBLIC_ORIGIN" ]; then unset WEB_PUBLIC_ORIGIN; fi \
     && node scripts/build-web.ts \
     && test -f /build/web/index.html -a -f /build/web/seller.html -a -f /build/web/legal/source.tar.gz
 
-FROM node:26.12.0-bookworm-slim@sha256:742a0fe7320e09e0321222b68165e6ac731d30470e7ea7f98f9bfc3a6e1034fe
+FROM node:26.13.1-bookworm-slim@sha256:0042e17d232a87a2cd485be1da7900fca4d10a4ad11b29e9285da1d2e54798c9
 ENV NODE_ENV=production PORT=3211 WEB_DIR=/app/web DATA_DIR=/data SERVER_ROLE=all \
     DEPLOYMENT_MODE=standalone APP_BASE_PATH=
 WORKDIR /app
